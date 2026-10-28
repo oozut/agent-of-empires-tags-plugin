@@ -1,0 +1,6 @@
+id = "dev.oozut.llm-tags"
+name = "LLM Tags"
+version = "0.1.0"
+api_version = 17
+aoe_version = ">=1.20.0, <2.0.0"
+description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."

@@ -4,7 +4,20 @@ An Agent of Empires plugin that makes each agent session attach identifying head
 request it sends, so any system on the request path — a gateway, an egress proxy, a log pipeline,
 a session-control plane — can attribute, route, or validate that request.
 
-Status: pre-M0. Planning only. See `plan/README.md`.
+Status: M0 in progress — the plugin package installs (manifest, this README, `bin/`); the CLI
+lands in M0-T02. See `plan/README.md` for status.
+
+## Install
+
+```sh
+aoe plugin install ./          # from a checkout of this repo
+aoe plugin list               # expect: dev.oozut.llm-tags
+```
+
+The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
+`/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`), which is the path the hook
+lines reference and which survives upgrades. The M0 manifest declares no capabilities: nothing in
+M0 runs inside the plugin host, the entrypoint is `bin/aoe-llm-tags` invoked by `[host_hooks]`.
 
 ## The problem
 
@@ -54,3 +67,14 @@ Plan (what ships when, and with which values):
 | `plan/milestones.md` | The ladder: constraints, M0–M4, acceptance criteria, open decisions |
 | `plan/m0.md` … `plan/m4.md` | One file per milestone: preconditions, priority-tagged tasks, parameters introduced, evidence |
 | `plan/parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
+
+## Package layout
+
+| Path | Contents |
+|---|---|
+| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 17` (`aoe_version = ">=1.20.0, <2.0.0"`), capabilities added only from M1 |
+| `bin/aoe-llm-tags` | The M0 CLI surface: `hook` / `value` / `doctor` / `setup` / `verify`, `#!/usr/bin/env python3`, mode 0755 |
+| `adapters.toml` | Per-harness header mechanism, as data |
+| `src/llm_tags/` | Resolver modules once `bin/` passes ~300 lines |
+| `worker/main.py` | M1 stdio JSON-RPC worker |
+| `tests/` | Resolver and `doctor` tests; no aoe and no network needed |

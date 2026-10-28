@@ -1,0 +1,22 @@
+# aoe writes build artifacts here; the host excludes it from the tree hash.
+.aoe-build/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editor / OS
+*.swp
+.DS_Store
+
+# Local scratch (captured headers, temp app dirs)
+/tmp/
+*.local.toml
