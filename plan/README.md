@@ -1,16 +1,16 @@
 # Plan
 
-The executable plan: one milestone per file, each with its tasks (priority-tagged), its
-**parameters**, and its evidence. The design itself lives in `docs/` and is normative over this
-folder — this folder says what to build first, with which values.
+The executable plan: one milestone per file, each with its tasks (priority-tagged, lane-tagged,
+sized), its **parameters**, and its evidence. The design lives in `docs/` and is normative over
+this folder — this folder says what to build first, with which values.
 
 | File | Contents |
 |---|---|
 | `milestones.md` | The ladder: constraints, M0–M4, acceptance criteria, open decisions |
-| `m0.md` | Prove a header on a real session — tasks, parameters, evidence |
-| `m1.md` | Settings and attribution UI — tasks, parameters, acceptance |
-| `m2.md` | Auto-discovery and one-click wiring — tasks, parameters, acceptance |
-| `m3.md` | Usage views — tasks, parameters, acceptance |
+| `m0.md` | Prove a header on a real session — tasks, task table, parameters, evidence |
+| `m1.md` | Settings and attribution UI |
+| `m2.md` | Auto-discovery and one-click wiring |
+| `m3.md` | Usage views |
 | `m4.md` | Remaining harnesses and distribution |
 | `parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
 
@@ -23,20 +23,86 @@ Design docs: `docs/header-contract.md` (what is promised) → `plan/milestones.m
 Milestones stay in dependency order: M0 → M1 → M2 → M3, with M4 rows available from M0 onward.
 Priority orders the work **inside** a milestone; it never lets a later milestone jump the queue.
 
-| Tag | Meaning | Consequence |
-|---|---|---|
-| **P0** | The milestone cannot be called done without it — an acceptance criterion depends on it. | Blocks calling the milestone complete, and blocks the next milestone. |
-| **P1** | Needed to use the milestone for real, or by the next milestone. Not needed to prove it. | May land just after the milestone's acceptance, in the same release; tracked as open. |
-| **P2** | Improvement. Nothing in the acceptance changes if it slips. | May move to a later milestone without re-planning. |
+| Tag | Meaning | Test to apply | Consequence |
+|---|---|---|---|
+| **P0** | The milestone cannot be called done without it — an acceptance criterion depends on it. | "If I delete this, which acceptance line fails?" If none, it is not P0. | Blocks calling the milestone complete, and blocks the next milestone from starting. |
+| **P1** | Needed to use the milestone for real, or by the next milestone. Not needed to prove it. | "Can the next milestone start without it?" If yes and no acceptance line names it, it is P1. | May land just after the milestone's acceptance, in the same release; tracked as open. |
+| **P2** | Improvement. Nothing in the acceptance changes if it slips. | "Would I notice in a month?" If only then, P2. | May move to a later milestone without re-planning. |
 
-Two rules keep the tags honest:
+Priority is not importance, it is **ordering under the gate**. A P2 can be more valuable than a P0;
+it still comes after, because the P0 is what makes the value provable.
+
+Three rules keep the tags honest:
 
 - **A P0 task may not depend on an unfinished P1 task.** If it does, one of the two tags is wrong;
   fix the tag, not the ordering.
 - **Anything not tagged is not planned.** If implementation needs work no task describes, add the
-  task (with a priority) before doing it, in the same change.
+  task (with priority, lane, size) before doing it, in the same change.
+- **Priority is revisable, silently.** When a P1 turns out to block an acceptance line, promote it
+  to P0 in the milestone file in the same commit that discovers it.
+
+## How tasks are split
+
+Every task is one **verifiable output** — one command, its expected result, and one commit. That is
+the sizing test, not an aesthetic one:
+
+- If verifying a task needs two unrelated commands, it is two tasks.
+- If a task has no command that distinguishes done from not-done, it is not yet a task: write the
+  check first, then the task.
+- Target size: **S** ≤ 2 h, **M** ≤ half a day, **L** ≈ a day. Anything L that is not one coherent
+  change (the consumer adapter, the harness-verification sweep) gets split before work starts.
+
+Each task carries four facts in its milestone file's task table, so it can be picked up cold:
+
+| Column | Why it is there |
+|---|---|
+| **ID** (`M0-T07`) | Stable handle for commits, notes and cross-references. Never renumber; append instead. |
+| **Priority** | P0/P1/P2 from the table above. |
+| **Lane** | Which part of the tree it touches — see below. Lanes are the parallelism unit. |
+| **Depends** | Task IDs that must be merged first. Empty means ready now. |
+| **Size** | S/M/L, for batching the small ones. |
+| **Output** | The one thing you can point at when it is done. |
+
+Lanes exist so work can run in parallel without merge pain:
+
+| Lane | Touches | Typical tasks |
+|---|---|---|
+| `core` | `bin/`, `worker/`, resolver, CLI verbs, discovery logic | CLI core, `doctor`, `status`, `setup` apply, adapter interface |
+| `wire` | aoe config and harness config on the host; nothing in `bin/` | hook install, harness mapping, second header |
+| `ui` | `aoe-plugin.toml` settings/UI declarations, worker view code | manifest, settings UI, badge, pane, page |
+| `proof` | runs and records only — no production code | sink run, consumer run, `verify` |
+| `adapters` | `adapters.toml` rows and their research notes | row statuses, row verification |
+| `release` | packaging, versioning, publishing | binary worker, `aoe_version`, publish path |
+| `docs` | `docs/`, `README.md` | install page, contract updates |
+
+Rules that make the lanes pay off:
+
+- **P0 tasks in different lanes may run at the same time.** Same-lane P0 tasks are sequential.
+- **A lane that is waiting is a signal, not a reason to idle.** If `proof` is blocked on `wire`,
+  pick up the next `core` P0 — the critical path is almost always one lane waiting on another.
+- **A task that touches two lanes is a task that will conflict.** Split it: the `core` half and the
+  `wire` half, with the wire half depending on the core half.
+
+## Ready now
+
+The queue as it stands (empty dependency means start immediately):
+
+| ID | Task | P | Lane | Size |
+|---|---|---|---|---|
+| M0-T01 | Scaffold the plugin package | P0 | core | S |
+| M0-T02 | CLI core: resolve + render + print (after T01) | P0 | core | M |
+| M4-T01 | Honest statuses for every adapter row | P0 | adapters | S |
+
+`M0-T01` and `M4-T01` share no files, so they can proceed in parallel today, and `M0-T02` follows
+the scaffold immediately. Everything else in M0 waits on `M0-T02` (the resolver every other verb
+calls) or on a host-side precondition (`plan/m0.md` §Preconditions) — so the first parallel window
+is scaffold + adapter statuses, and the second is `core` (`doctor`, tests) against `wire` (hook
+install, harness mapping) once the resolver prints its first value.
 
 ## What ships if only P0 lands
+
+Read this as the acceleration target: the P0 column is a releasable product at every milestone, so
+a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | P0 tasks | The shippable core |
 |---|---|---|
@@ -49,8 +115,8 @@ Two rules keep the tags honest:
 ## How to use a milestone file
 
 1. Read the entry in `milestones.md` for *why*, then the `mN.md` file for *what exactly*.
-2. Work P0 top to bottom, then P1, then P2. A P1 that the next milestone needs becomes P0 in that
-   milestone — do not carry it silently.
+2. Work P0 top to bottom, then P1, then P2 — but take any ready P0 from any lane rather than
+   waiting. The ladder constrains milestones, not lanes.
 3. Implement against the parameters table — a value not listed there is either a bug in the
    implementation or an amendment to `parameters.md` (add it in the same commit that needs it).
 4. Tick acceptance only with the evidence named in "Done when". "It works on my machine" is not

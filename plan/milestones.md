@@ -12,6 +12,11 @@ The ladder is fixed: M0 → M1 → M2 → M3, with M4 rows available from M0 onw
 a milestone comes first is decided by priority (P0/P1/P2, legend and P0-only subset in
 `plan/README.md`), never by moving a milestone.
 
+Every task has a stable ID (`M0-T07`) and a lane, so work can be taken in parallel without two
+people touching the same files; the task table at the top of each `mN.md` carries the ID, priority,
+lane, dependencies, size and the one output that proves it done. Milestone-level acceptance below
+is what P0 exists to satisfy — it is not a per-task checklist.
+
 **Normative order of authority:** `docs/header-contract.md` (what is promised, to whom) →
 this ladder → `docs/implementation.md` (where the code goes) →
 `docs/harness-adapters.md` (per-harness data) → `docs/reference-deployment.md` (one stack, an
