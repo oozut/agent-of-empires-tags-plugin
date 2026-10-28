@@ -1,0 +1,179 @@
+# Milestones
+
+Order matters: the header has to arrive on a real request before any UI is worth building.
+M0 is the gate for everything else.
+
+Each milestone below is summarised here and specified in its own file, where the **parameters**
+it it introduces are tabulated: `m0.md`, `m1.md`, `m2.md`, `m3.md`, `m4.md`. Every parameter also
+appears in `parameters.md`, which is the single source of truth for names, defaults and allowed
+values.
+
+The ladder is fixed: M0 → M1 → M2 → M3, with M4 rows available from M0 onward. Which task inside
+a milestone comes first is decided by priority (P0/P1/P2, legend and P0-only subset in
+`plan/README.md`), never by moving a milestone.
+
+**Normative order of authority:** `docs/header-contract.md` (what is promised, to whom) →
+this ladder → `docs/implementation.md` (where the code goes) →
+`docs/harness-adapters.md` (per-harness data) → `docs/reference-deployment.md` (one stack, an
+example, never a requirement). If a milestone here only makes sense for one gateway, one proxy
+or the harness on one host, it is wrong and belongs in the reference deployment.
+
+## Constraints
+
+- **No system is assumed on the other side.** The header is the product; whether it is read by a
+  gateway, an egress proxy, a log pipeline, a WAF or a session-control plane is the operator's
+  choice. Nothing may depend on a specific vendor's tag syntax, and the plugin must not need to
+  know which consumer is in front.
+- **Headers, plural.** The unit is a header set (`header` + `template` + `env_var` + `enabled`),
+  not one fixed tag string. Cost attribution, log joining, tenant policy and session validation
+  are different consumers with different cardinality needs — see the consumer table in the
+  contract. The shipped default is a single combined tag header; discrete headers and an
+  optional signed session id exist because other consumers need them.
+- No tagging proxy. Headers ride on each harness's own header capability.
+- The plugin never reads prompts or completions, and never logs request bodies.
+- One hook implementation, installed in **both** hook keys. aoe gives `before_session` (host
+  sessions) and `before_start` (sandboxed sessions) the same contract — the same lifecycle
+  variables and the same stdout `KEY=VALUE` minting — so the values have to come out of one CLI
+  invocation and one set of settings. Installing one key and not the other silently un-tags
+  half the sessions, so `setup` prints both and `doctor` treats each key as its own finding.
+- Effect timing differs by substrate, and the UI must name the one that applies instead of
+  saying "next launch". A host session re-mints before every agent launch, including a view
+  switch. A sandboxed session mints once when its container is created or restarted and reuses
+  those values while that container lives, so a changed value reaches it on the next container
+  start, not the next agent launch.
+- Resolution has one source of truth: the session manager. The hook reads the session row with
+  `aoe session show "$AOE_SESSION_ID" -p "$AOE_PROFILE" --json` — `id`, `title`, `path`,
+  `group`, `tool`, `profile`, `state`, `status`, `command` — and falls back to the hook
+  environment only when that call fails. (`aoe list --json` is the superset, adding `worktree`
+  and `workspace_repos`, for a template field that needs them.) This is what makes the model
+  cheap to grow: a new template field reads another field from the row, with no new environment
+  variable and no new user setup. It also supplies the fields the hook environment lacks —
+  structured host sessions get no `AOE_GROUP_PATH` or title.
+- That call is a subprocess from inside aoe's own hook, so it is bounded: 2 s timeout, exit 0
+  with the hook-environment fallback on timeout or error, and the hook environment used
+  directly when it already carries the field a template needs. A slow or blocked store must
+  never turn into a failed launch (a non-zero hook exit aborts the session start).
+- One indirection in the harness config, not two. The static mapping is always "one header
+  name → one variable" (or "→ one command"); the value is built by the plugin CLI. Renaming
+  the header, changing the value format or adding values is therefore a plugin settings or
+  plugin release change, never a re-edit of `models.json` or the hook lines.
+- Values are minted per launch, not per request. A harness that accepts a command as a header
+  value caches the result for the lifetime of the process, so a command is equivalent to a
+  launch-time variable — there is no mid-session live update to design for. Rule or template
+  edits apply on the next launch of a host session and on the next container start of a
+  sandboxed one.
+- The `[host_hooks]` entries are a one-time user step, per profile (hooks are global/profile
+  only, never repo config). The plugin generates, validates and reports them, and cannot
+  install them.
+- `aoe serve` must be running for the worker, panes, badges and pages. The hook and CLI work
+  without it, in both substrates.
+
+## M0: prove a header on a real session → `m0.md`
+
+Goal: a session launched by aoe sends the configured headers, and a system outside aoe records
+them. Any such system counts; the reference deployment says which one we test against.
+
+Acceptance, in a real aoe session (host now, sandbox once the runtime is reachable):
+
+1. Terminal view and structured view sessions of the same tool both deliver the header (host
+   launches, so `before_session`).
+2. The same session launched **sandboxed** delivers it too, through `before_start`: the value
+   reaches the container environment and the harness inside sends it. If the host cannot reach
+   a container runtime, record that as a precondition failure, not as a pass — the sandbox half
+   may be proven as (a) `hook` printing the same value under `before_start`'s environment and
+   (b) the container environment carrying the variable, with the adapter row left `documented`.
+3. Stopping and restarting a sandboxed session keeps the same session value, picks up an edit
+   made before the restart, and does not pick up one made after it while the container lives.
+4. The default header value contains at least a feature token and a stable, distinct session
+   token; a second enabled header (e.g. a discrete session header) is delivered independently.
+5. Proof of arrival in two places: a temporary local HTTP sink logging request headers, and a
+   consumer system on the real path showing the header. The consumer may be any hop that
+   records request headers; it does not have to be an LLM gateway.
+6. `doctor` reports wired with both keys present, says whether it resolved the session row or
+   fell back to the hook environment, and names exactly which of `before_session` /
+   `before_start` / static mapping / command path is missing when one is removed.
+7. A session started without the hook sends no header and the plugin says so; nothing breaks.
+   Same for a sandboxed session whose only hook is in `before_session`.
+
+Verification technique: point the harness at a local header-logging sink for one run (test
+fixture only, not a production proxy), then repeat on the real path and look for the header at
+the first hop that records requests. A harness may launch through a wrapper that regenerates its
+config or forces an upstream, in which case the sink run needs an isolated config and no proxy
+on that path; that is a per-harness note, not a change to the acceptance. For the sandbox case
+the static mapping must exist **before** the container is created: aoe copies the harness's
+config into the private per-session store at creation and never re-syncs it afterwards. Record
+harness and aoe versions in the adapter row.
+
+Out of scope: any UI, any other harness, any cost display.
+
+## M1: settings and attribution UI → `m1.md`
+
+Goal: users define the header set and the feature rules in aoe's own settings surfaces and see
+them attributed to sessions.
+
+Acceptance:
+
+1. Editing a rule changes the badge on the next launch, with no config file edits.
+2. A project-level `feature_tag` overrides the global one and is editable from the web
+   project form.
+3. An unwired harness shows a visibly different badge, not a silent empty one.
+4. Settings validation rejects header names outside the HTTP field-name grammar, values outside
+   the documented character set, and over-long values.
+5. Enabling a second header and re-running `setup --print` adds exactly one env var and one
+   mapping line, with no change to the first.
+
+## M2: auto-discovery and one-click wiring → `m2.md`
+
+Goal: pick an agent, get the right change proposed.
+
+Acceptance:
+
+1. Each supported harness reaches `wired` from a clean config and the header is seen on the
+   real path, at the consumer the operator configured.
+2. Applying twice is idempotent and `undo` restores the byte-identical original file.
+3. A config written by hand after the plugin touched it is detected, not overwritten.
+4. Unknown harness reports `unknown` with the generic env fallback, never a false `wired`.
+
+## M3: usage views → `m3.md`
+
+Goal: answer "what did this feature and this session cost", where the operator's consumer system
+can answer it.
+
+Acceptance:
+
+1. Tag spend in the page matches the consumer's own view for the same window, within its own
+   aggregation granularity.
+2. A session with no recorded spend renders an empty state, not an error.
+3. A consumer without a spend dimension degrades to wiring-only information, with a message
+   saying what it cannot answer — not a wrong number.
+
+## M4: remaining harnesses and distribution → `m4.md`
+
+- Remaining adapter rows filled from research, each marked with tested versions or left
+  `unsupported`.
+- Release-binary worker, tagged release, publish path for `aoe plugin install`.
+- Featured-index PR with the source tree hash if it should claim a reserved namespace.
+
+## Open decisions
+
+Full parameter-level consequences: `parameters.md` §Open.
+
+1. Rule semantics: accumulate every matching rule (feature + env + owner) or first match
+   wins. Accumulate reads better for header values, with a cap of about five.
+2. Value grammar: propose `[a-z0-9][a-z0-9._:-]*`, comma-separated by default, with a per-header
+   template so a consumer that needs a different shape can be served without code. JSON is one
+   such template, not a plugin mode.
+3. Session token form: `S-9f3a` short id by default, full id opt-in, never the title.
+4. Which consumer system is the reference for verification in this deployment — the first hop
+   that records headers, plus the read path the plugin may use. Deployment-specific, so the
+   concrete answer lives in `docs/reference-deployment.md`.
+5. Config writes: keep them opt-in per harness, or print-only with the user pasting. Print-only
+   is safer for M2, one-click is the better long-term UX.
+6. Header naming: ship neutral `X-AoE-*` names and let a template/consumer-facing alias fix the
+   case where a system wants its own name, or make the wire name fully operator-chosen. Not
+   blocked on any vendor; a deployment that needs `x-litellm-tags` configures it.
+7. How many headers ship enabled. Proposal: one combined tag header on, one discrete session
+   header off, everything else operator-added — with the cost of each extra header being one
+   more line in every harness's static config.
+8. Signed session ids: ship `hmac` in M1 or defer to M2. A consumer that only attributes does
+   not need it; one that validates does.
