@@ -12,6 +12,8 @@ this folder — this folder says what to build first, with which values.
 | `m2.md` | Auto-discovery and one-click wiring |
 | `m3.md` | Usage views |
 | `m4.md` | Remaining harnesses and distribution |
+| `graph.md` | Mermaid views: the ladder, one dependency graph per milestone, the M0 lane split, a relative-effort schedule |
+| `lanes/` | One brief per M0 lane (`core`, `wire`, `proof`, `docs`) — scope, read-first list, tasks, handoff, so a lane can be worked in its own session |
 | `parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
 
 Design docs: `docs/header-contract.md` (what is promised) → `plan/milestones.md` (what ships when)
@@ -85,19 +87,19 @@ Rules that make the lanes pay off:
 
 ## Ready now
 
-The queue as it stands (empty dependency means start immediately):
+Each M0 lane is its own session and its own branch (`plan/lanes/README.md`). Within a lane, the
+queue is:
 
-| ID | Task | P | Lane | Size |
+| Lane | Branch | First task | Then | Gated on |
 |---|---|---|---|---|
-| M0-T01 | Scaffold the plugin package | P0 | core | S |
-| M0-T02 | CLI core: resolve + render + print (after T01) | P0 | core | M |
-| M4-T01 | Honest statuses for every adapter row | P0 | adapters | S |
+| `core` | `m0-core` | M0-T01 scaffold | T02 → T03/T11 → T04 | nothing — start now |
+| `wire` | `m0-wire` | draft the exact lines (no code) | T06, T07 → T10 | `core` merges T05 |
+| `proof` | `m0-proof` | build `tools/header-sink.py` + self-test | T08, T09 | `wire` merges T06 + T07 |
+| `docs` | `m0-docs` | draft `docs/install.md` skeleton | T12 | `core` merges T05 |
 
-`M0-T01` and `M4-T01` share no files, so they can proceed in parallel today, and `M0-T02` follows
-the scaffold immediately. Everything else in M0 waits on `M0-T02` (the resolver every other verb
-calls) or on a host-side precondition (`plan/m0.md` §Preconditions) — so the first parallel window
-is scaffold + adapter statuses, and the second is `core` (`doctor`, tests) against `wire` (hook
-install, harness mapping) once the resolver prints its first value.
+M4-T01 (adapter row statuses) is also unblocked and shares no files with any of them, if a fifth
+worker is wanted. Everything else in M0 waits on `M0-T02` (the resolver every other verb calls) or
+on a host-side precondition (`plan/m0.md` §Preconditions).
 
 ## What ships if only P0 lands
 
