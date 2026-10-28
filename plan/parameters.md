@@ -15,7 +15,8 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | Manifest file | `aoe-plugin.toml` (repo root) | decided |
 | `name` | `LLM Tags` | proposed |
 | `version` | `0.1.0` (M0), semver after | proposed |
-| `api_version` | `19` | decided |
+| `api_version` | `17` while the host runs aoe 1.20.0 (supports 1..=17); `18` once the host is on ≥1.21.0 — required by `per_project`; `19` only for `session.lifecycle.changed` (M1-T08) | decided: floor 17, target 18 |
+| `aoe_version` | `">=1.20.0, <2.0.0"` at 17; raise to `">=1.21.0, <2.0.0"` when the manifest moves to 18 | proposed |
 | `capabilities` (M0) | none | decided |
 | `capabilities` (M1+) | `runtime.worker`, `session.read`, `net` | proposed |
 | Install dir | `<app_dir>/plugins/<id>/` (host: `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`) | decided |
