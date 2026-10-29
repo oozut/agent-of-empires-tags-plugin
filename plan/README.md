@@ -13,7 +13,7 @@ this folder — this folder says what to build first, with which values.
 | `m3.md` | Usage views |
 | `m4.md` | Remaining harnesses and distribution |
 | `graph.md` | Mermaid views: the ladder, one dependency graph per milestone, the M0 lane split, a relative-effort schedule |
-| `lanes/` | One brief per M0 lane (`core`, `wire`, `proof`, `docs`) — scope, read-first list, tasks, handoff, so a lane can be worked in its own session |
+| `lanes/` | One brief per M0 lane (`core`, `wire`, `proof`, `docs`, `release`) — scope, read-first list, tasks, handoff, so a lane can be worked in its own session |
 | `parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
 
 Design docs: `docs/header-contract.md` (what is promised) → `plan/milestones.md` (what ships when)
@@ -69,12 +69,12 @@ Lanes exist so work can run in parallel without merge pain:
 
 | Lane | Touches | Typical tasks |
 |---|---|---|
-| `core` | `bin/`, `worker/`, resolver, CLI verbs, discovery logic | CLI core, `doctor`, `status`, `setup` apply, adapter interface |
+| `core` | `src/`, `Cargo.toml`, resolver, CLI verbs, discovery logic | CLI core, `doctor`, `status`, `setup` apply, adapter interface |
 | `wire` | aoe config and harness config on the host; nothing in `bin/` | hook install, harness mapping, second header |
 | `ui` | `aoe-plugin.toml` settings/UI declarations, worker view code | manifest, settings UI, badge, pane, page |
 | `proof` | runs and records only — no production code | sink run, consumer run, `verify` |
 | `adapters` | `adapters.toml` rows and their research notes | row statuses, row verification |
-| `release` | packaging, versioning, publishing | binary worker, `aoe_version`, publish path |
+| `release` | `Cargo.toml`, `[runtime]` + `capabilities`, `tools/build-worker.sh`, `.github/workflows/` | binary worker, release-binary asset, CI matrix, `aoe_version`, publish path |
 | `docs` | `docs/`, `README.md` | install page, contract updates |
 
 Rules that make the lanes pay off:
@@ -96,6 +96,7 @@ queue is:
 | `wire` | `m0-wire` | draft the exact lines (no code) | T06, T07 → T10 | `core` merges T05 |
 | `proof` | `m0-proof` | build `tools/header-sink.py` + self-test | T08, T09 | `wire` merges T06 + T07 |
 | `docs` | `m0-docs` | draft `docs/install.md` skeleton | T12 | `core` merges T05 |
+| `release` | `m0-release` | Rust crate + `[runtime]` (`m0-release.md`) | T13 | `core` merges T05 + T11 |
 
 M4-T01 (adapter row statuses) is also unblocked and shares no files with any of them, if a fifth
 worker is wanted. Everything else in M0 waits on `M0-T02` (the resolver every other verb calls) or
@@ -108,7 +109,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | P0 tasks | The shippable core |
 |---|---|---|
-| M0 | 9 of 12 | Header minted at launch, delivered by both hook keys, visible at a local sink and at the real consumer, `doctor` that names any broken piece |
+| M0 | 10 of 13 | Header minted at launch, delivered by both hook keys, visible at a local sink and at the real consumer, `doctor` that names any broken piece |
 | M1 | 4 of 8 | Header set and rules editable in aoe, badge showing the resolved value, worker + capabilities declared once |
 | M2 | 5 of 8 | Path detection, per-substrate verdicts, diff → apply → `undo`, `verify` |
 | M3 | 3 of 6 | Consumer adapter, page board, honest degradation |
@@ -130,7 +131,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | State | Blocking |
 |---|---|---|
-| M0 | in progress — T01 and T02 done; next T03 (resolver tests) / T11 (`doctor`) / T04, then T05 (`setup --print`) unblocks `wire` | reference consumer for proof #5; sandbox runtime access (deployment) |
+| M0 | in progress — done: T01, T02, T03, T05, T07, T11, T13 (Rust port, installable runtime, CI matrix); open: T04, T06 hook re-install, T08/T09 proof, T10 second header, T12 install page | reference consumer for proof #5; sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source |
 | M1 | not started | M0 |
 | M2 | not started | M1 |
 | M3 | not started | M2 |

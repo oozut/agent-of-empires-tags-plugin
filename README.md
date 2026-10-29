@@ -4,21 +4,47 @@ An Agent of Empires plugin that makes each agent session attach identifying head
 request it sends, so any system on the request path — a gateway, an egress proxy, a log pipeline,
 a session-control plane — can attribute, route, or validate that request.
 
-Status: M0 in progress — the package installs (M0-T01) and `bin/aoe-llm-tags hook|value` resolves
-a session to one `NAME=value` per enabled header (M0-T02). Resolver tests (T03), `doctor` (T11/T04),
-`setup --print` (T05) and the proof runs (T08/T09) are still open. See `plan/README.md`.
+Status: M0 in progress — Rust port landed (M0-T13). The package installs, `aoe plugin update`
+builds and installs both binaries, `hook|value` resolves a session to one `NAME=value` per enabled
+header (M0-T02), `setup --print` emits the exact hook and mapping lines (T05) and `doctor` names any
+broken piece (T11) — 76 tests green. Open: the proof runs (T08/T09), the second header (T10) and
+`docs/install.md` (T12). See `plan/README.md`.
 
 ## Install
 
 ```sh
-aoe plugin install ./          # from a checkout of this repo
-aoe plugin list               # expect: dev.oozut.llm-tags
+aoe plugin install ./            # from a checkout: the host runs tools/build-worker.sh (needs cargo)
+aoe plugin list                  # expect: dev.oozut.llm-tags 0.1.0 local enabled
+aoe plugin info dev.oozut.llm-tags   # expect: caps: runtime.worker (granted)
 ```
 
 The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
 `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`), which is the path the hook
-lines reference and which survives upgrades. The M0 manifest declares no capabilities: nothing in
-M0 runs inside the plugin host, the entrypoint is `bin/aoe-llm-tags` invoked by `[host_hooks]`.
+lines reference and which survives upgrades.
+
+Setting it up on a session is three steps: `setup --print` shows the two `[host_hooks]` lines and
+the harness mapping line, `doctor` checks what is actually wired, and `hook` is what aoe runs per
+launch.
+
+Build and test from a checkout (the host's own build step uses the same two commands):
+
+```sh
+cargo test --locked                  # 76 tests, no aoe, no network
+cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
+```
+
+Requirements: Rust ≥ 1.89. Local builds should set `CARGO_TARGET_DIR` outside the worktree —
+`.aoe-build/` is reserved for the host's build step and its presence makes `aoe plugin install`
+refuse the tree.
+
+Two ways the binaries arrive, and the difference matters when debugging:
+
+- **Source checkout** (this host): `[runtime] kind = "command"` + `[[runtime.build]]`, so the host
+  compiles them and then launches `bin/aoe-llm-tags-worker` as the plugin worker.
+- **Release tarball**: `aoe plugin install gh:<owner>/<repo>` downloads
+  `aoe-llm-tags-${os}-${arch}.tar.gz` from the latest release and unpacks it — no build step. A
+  *local* checkout cannot use this form (the host's fetcher only downloads from GitHub), which is
+  why both are declared in `plan/parameters.md` §11 rather than picked at random.
 
 ## The problem
 
@@ -73,9 +99,14 @@ Plan (what ships when, and with which values):
 
 | Path | Contents |
 |---|---|
-| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 17` (`aoe_version = ">=1.20.0, <2.0.0"`), capabilities added only from M1 |
-| `bin/aoe-llm-tags` | The M0 CLI surface: `hook` / `value` / `doctor` / `setup` / `verify`, `#!/usr/bin/env python3`, mode 0755 |
-| `adapters.toml` | Per-harness header mechanism, as data |
-| `src/llm_tags/` | The resolver: `settings.py` (where settings live and how a profile overrides them), `resolver.py` (session facts → template fields → rendered values, env-name derivation, rule matching), `cli.py` (the verbs) |
-| `worker/main.py` | M1 stdio JSON-RPC worker |
-| `tests/` | Resolver and `doctor` tests; no aoe and no network needed |
+| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 17` (`aoe_version = ">=1.20.0, <2.0.0"`), `capabilities = ["runtime.worker"]`, one `status` command, `[runtime]` + source-install build step |
+| `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
+| `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `verify` (stub) |
+| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`) |
+| `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
+| `src/settings.rs` | Where the settings live and how a profile overrides them (arrays replace, objects recurse) |
+| `src/adapters.rs`, `adapters.toml` | Per-harness header mechanism, as data; the file is embedded, so an install without it still works |
+| `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
+| `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
+| `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |
+| `tests/` | CLI, resolver and `doctor` tests behind a sandboxed app dir and a fake `aoe`; no aoe and no network needed |

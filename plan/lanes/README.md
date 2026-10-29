@@ -10,8 +10,9 @@ below are the ones created for this milestone.
 | `wire` | `m0-wire` | M0-T06, T07, T10 | `core` merges T05 |
 | `proof` | `m0-proof` | M0-T08, T09 | `wire` merges T06 + T07 |
 | `docs` | `m0-docs` | M0-T12 | `core` merges T05 |
+| `release` | `m0-release` | M0-T13 (Rust port + runtime) | `core` merges T05 + T11 |
 
-Rules that hold for all four:
+Rules that hold for all five:
 
 - **Stay inside the lane.** Being outside your brief is how two sessions start editing `bin/` at
   once. If your lane needs a change in another lane's files, write it in the brief's "handoff"

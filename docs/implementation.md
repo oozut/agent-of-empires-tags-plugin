@@ -20,7 +20,7 @@ of it.
 |---|---|---|
 | Plugin id | `dev.oozut.llm-tags` | Namespaces config (`[plugins."<id>".settings]`), commands (`plugin.<id>.<command>`), worker logs. Changing it later orphans user settings, so pick before the first install. |
 | Install path | `<app_dir>/plugins/dev.oozut.llm-tags/` (here: `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`) | The hook line hardcodes it. The path survives upgrades; the contents are replaced. |
-| CLI entrypoint | `bin/aoe-llm-tags` (mode 0755, `#!/usr/bin/env python3`) | Must be runnable by path from a hook. `tomllib` is stdlib, so no venv for M0. |
+| CLI entrypoint | `bin/aoe-llm-tags` (mode 0755, static Rust binary) | Must be runnable by path from a hook, with no interpreter, venv or `PATH` in the hook shell. |
 | Wire unit | A **header set**: `{header, template, env_var, enabled}` list in settings. Shipped default: `X-AoE-Tags` with template `aoe,feature:{feature},session:{session}`, `env_var = "AOE_LLM_TAGS"` | One header is enough for cost attribution; discrete and signed headers exist for consumers that validate or route. The set is data, so adding one costs a settings row, not a code change. |
 | Env var naming | Default `AOE_HDR_` + upper snake of the header name (`X-AoE-Session` → `AOE_HDR_X_AOE_SESSION`); the shipped default header pins `AOE_LLM_TAGS` | The hook prints one line per enabled header, so the name must be derivable by both the CLI and `setup`. Pinning keeps the common case short. |
 | Tag model | Accumulate **all** matching rules, cap 5 values, grammar `[a-z0-9._:-]`, `session_tagging = short_id` → `S-<first 4 chars of the session id>`, never the title | Recorded decision. `S-cf11` is derivable from `sessions.list` by anyone auditing a request log. |
@@ -31,23 +31,27 @@ of it.
 ## Repo layout
 
 ```
-aoe-plugin.toml                 step 3   manifest (api_version 19); capabilities only from M1
+Cargo.toml                      step 1   one library crate (llm_tags) + two bins
+aoe-plugin.toml                 step 3   manifest: capabilities, [[commands]], [runtime] (+ build step)
 README.md                       step 0   what it is + pointing at these docs
 docs/install.md                 step 6   the one page users get: paste these lines, verify
-bin/aoe-llm-tags                step 1   the whole M0 surface: hook|value|doctor|setup|verify
-adapters.toml                   step 4   adapter rows (pi first), data not code
-src/llm_tags/*.py               step 1   split out once bin/ passes ~300 lines
-worker/main.py                  step 7   M1 JSON-RPC worker (stdio, newline JSON)
+src/lib.rs + src/main.rs        step 1   the M0 surface: hook|value|doctor|setup|verify
+src/{env,settings,resolver}.rs  step 1   facts → fields → rendering, no aoe imports
+src/{adapters,setup,doctor}.rs  step 4-5 adapter data, the mapping lines, the checks
+src/cli.rs                      step 1   clap surface + exit codes; the hook's catch_unwind lives here
+src/worker.rs + src/worker_main.rs  step 7 JSON-RPC worker (stdio, newline JSON)
+adapters.toml                   step 4   adapter rows (pi first), data not code; include_str!'d
+tools/build-worker.sh           step 10  source-install build: cargo → bin/ (release assets skip it)
+.github/workflows/ci.yml        step 10  fmt + clippy + test, then the per-os/arch asset matrix
 tools/header-sink.py            step 6   M0 proof fixture, not shipped behaviour
-tests/test_resolution.py        step 1   rule evaluation + rendering, no aoe needed
-tests/test_doctor.py            step 5   check classification against a temp app dir
+tests/common/mod.rs             step 1   sandbox app dir, fake aoe, explicit env
+tests/{cli,doctor}.rs           step 1   the verbs and the checks, no aoe and no network
 ```
 
-Generate the skeleton with the official template, then strip its example worker:
-
-```sh
-cookiecutter gh:agent-of-empires/plugin-template   # pick Python, rename to dev.oozut.llm-tags
-```
+The official template (`cookiecutter gh:agent-of-empires/plugin-template`, Rust flavour) was read
+for layout, not vendored; the crate mirrors aoe core's own idioms (clap derive, `serde` + `toml`
+typed settings, `thiserror`, exit codes as `ExitCode`) instead of importing the unpublished
+`aoe-plugin-api`.
 
 ## aoe surface this depends on
 
@@ -71,10 +75,11 @@ Verified in `/var/lib/aoe/agent-of-empires-worktrees/koreans`; treat these as th
 
 ## Step 1 — the CLI core
 
-One entrypoint (`bin/aoe-llm-tags`), one resolver (`src/llm_tags/`: `settings.py` for where the
-settings live, `resolver.py` for facts → fields → rendering, `cli.py` for the verbs), no daemon, no
-aoe imports. The entrypoint only puts `../src` on `sys.path` and calls `llm_tags.cli.main`, so the
-installed plugin dir is self-contained and the tests can import the resolver directly.
+One library (`llm_tags`), two thin entrypoints (`main.rs` → `cli::run`, `worker_main.rs` →
+`worker::run`), one resolver (`src/settings.rs` for where the settings live, `src/resolver.rs` for
+facts → fields → rendering, `src/cli.rs` for the verbs), no daemon, no aoe crate imports. The
+`[[bin]]`s are the whole interface, so the installed plugin dir is self-contained and the tests
+link the library directly.
 
 | Subcommand | Reads | Writes | Used by |
 |---|---|---|---|
@@ -94,7 +99,9 @@ Flags for `hook`/`value` (all optional; every one is a *fallback*, the row wins)
 Resolution pipeline, in order, stopping at the first success for each field:
 
 1. `aoe session show "$AOE_SESSION_ID" -p "$AOE_PROFILE" --json`, with `AOE_BIN` → `command -v aoe`
-   → `/usr/local/bin/aoe`, hard 2 s timeout, `subprocess.run(..., timeout=2)`.
+   → `/usr/local/bin/aoe`, hard 2 s timeout. `resolver::aoe_json` spawns the child with piped
+   stdio, drains both pipes on scoped threads (a child that fills a pipe would otherwise block
+   past the deadline), then polls `try_wait` against the deadline and kills + reaps on timeout.
 2. The flags (which the hook filled from `AOE_*`).
 3. Defaults: empty group, empty title, tool `unknown`.
 
@@ -106,40 +113,36 @@ global `<app_dir>/config.toml` with the profile's sparse override file
 (`<app_dir>/profiles/<profile>/config.toml`, top level = the override tree) merged onto it the way
 aoe merges: object keys recurse, **arrays replace** (`merge_configs_generic`). A missing section
 means no rules, which is not an error; an explicit `headers = []` means no headers at all.
-`src/llm_tags/settings.py` reproduces that merge, so the hook and the settings UI agree about a
+`src/settings.rs` reproduces that merge, so the hook and the settings UI agree about a
 value; a file that cannot be parsed is a warning and is ignored (profile → global → defaults).
 
 Rule evaluation (M1 grows this; M0 needs only `project` and `manual`). Rendering is per header,
-so the default tag format is just the default template:
-
-```python
-# 1. fields, for templates; row wins, hook env is the fallback
-fields = {"session": short_id(s.id), "session_id": s.id, "feature": feature,
-          "tool": s.tool, "profile": s.profile, "group_slug": slug(s.group),
-          "project": s.path, "project_slug": basename(s.path)}
-# 2. every matching rule contributes, in list order; dedupe; cap 5 values
-features = list(dict.fromkeys(r["tag"] for r in rules if matches(r, s)))[:5]
-fields["tags"] = features                              # {tags} expands to the list
-# 3. render every enabled header; a template may reference {tags} or single fields
-for h in [h for h in settings.get("headers", DEFAULT_HEADERS) if h.get("enabled", True)]:
-    value = render(h["template"], fields)             # 800-char cap, grammar check
-    print(f"{h.get('env_var') or derive_env(h['header'])}={value}")
-```
+so the default tag format is just the default template. The pipeline in `src/resolver.rs`, in
+order: `SessionFacts` (row wins, hook env is the fallback) → `build_fields` → `matched_tags`
+(every matching rule contributes, in list order, deduped, capped at 5) → `render_template` per
+enabled header (`clamp_bytes` at 800) → `hook_lines` (`NAME=value`, NAME is the env var) or
+`render_headers` (header → value, for `doctor` and the worker).
 
 Default header set shipped in code, overridable by settings:
 
-```python
-DEFAULT_HEADERS = [
-  {"header": "X-AoE-Tags", "env_var": "AOE_LLM_TAGS", "enabled": True,
-   "template": "aoe,feature:{feature},session:{session}"},
-  {"header": "X-AoE-Session", "env_var": "AOE_HDR_X_AOE_SESSION", "enabled": False,
-   "template": "{session_id}"},
-]
+```rust
+pub fn default_headers() -> Vec<Header> {
+    vec![
+        Header { header: "X-AoE-Tags".into(), env_var: "AOE_LLM_TAGS".into(), enabled: true,
+                 template: "aoe,feature:{feature},session:{session}".into() },
+        Header { header: "X-AoE-Session".into(), env_var: "AOE_HDR_X_AOE_SESSION".into(),
+                 enabled: false, template: "{session_id}".into() },
+    ]
+}
 ```
 
-Tests that need no aoe at all: accumulator order/dedup/cap, grammar rejection, `short_id`
-stability, template field coverage, env-name derivation, disabled headers emitting nothing,
-missing settings, malformed TOML (→ exit 0, env fallback).
+One resolver, every verb: `hook`, `value`, `doctor` and the worker's `status` all call
+`resolver::snapshot`, so a value cannot differ between the launch path and the UI.
+
+Tests that need no aoe at all (`tests/cli.rs`, `tests/doctor.rs`, plus the unit tests in each
+module): accumulator order/dedup/cap, grammar rejection, `short_id` stability, template field
+coverage, env-name derivation, disabled headers emitting nothing, missing settings, malformed TOML
+(→ exit 0, env fallback), and the hook exiting 0 on every failure path.
 
 ## Step 2 — the two hook lines
 
@@ -184,18 +187,36 @@ selected harness (step 4), and nothing else.
 
 ## Step 3 — manifest and settings
 
-M0 manifest is deliberately inert — no worker, no UI, no capabilities:
+M0 manifest declares the worker runtime (it is how the binaries get installed) and one command;
+no UI and no settings schema yet:
 
 ```toml
 id = "dev.oozut.llm-tags"
 name = "LLM Tags"
 version = "0.1.0"
-api_version = 19
+api_version = 17
+aoe_version = ">=1.20.0, <2.0.0"
 description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."
+capabilities = ["runtime.worker"]
+
+[[commands]]
+id = "status"
+title = "LLM Tags: status"
+description = "Report the header set this install would send, without starting a session."
+
+[runtime]
+kind = "command"                      # were: kind = "release-binary", asset = …
+command = ["./bin/aoe-llm-tags-worker"]
+
+[[runtime.build]]
+command = ["./tools/build-worker.sh"]
+platforms = ["linux", "macos"]
 ```
 
-At M1 add, in one update: `capabilities = ["runtime.worker", "session.read", "net"]`,
-`[[commands]] id = "status"`, `[[ui]] row-badge`/`pane`, and `[[settings]]` for `headers`
+The released manifest differs in exactly two lines (`kind = "release-binary"`, `bin =
+"aoe-llm-tags-worker"` instead of `command`), see step 10 and `parameters.md` §11.
+
+At M1 add, in one update: `session.read`/`net` to `capabilities`, `[[ui]] row-badge`/`pane`, and `[[settings]]` for `headers`
 (`object_list`, `item_id_key = "header"`), `rules`, `session_tagging`, `feature_tag`
 (`per_project = true` → `api_version >= 18`, satisfied), `session_signature`.
 
@@ -280,8 +301,8 @@ Each row is one check with its own line and exit contribution.
 | Effective config resolved | profile config, then global | which file it read and that no hook line exists |
 | `before_session` present | parse effective config | "host sessions will not send headers" |
 | `before_start` present | same | "sandboxed sessions will not send headers" |
-| Command path exists and is executable | `os.access(X_OK)` | the path plus "plugin moved, uninstalled, or id changed" |
-| `aoe` binary resolvable | `AOE_BIN`, `shutil.which` | the value it will use, and how to override |
+| Command path exists and is executable | `metadata.permissions().mode() & 0o111` | the path plus "plugin moved, uninstalled, or id changed" |
+| `aoe` binary resolvable | `AOE_BIN`, then `PATH` lookup | the value it will use, and how to override |
 | Row resolves for a given session | `aoe session show … --json` | "falling back to hook environment: group/title will be empty" |
 | Each enabled header mapped | adapter row + config root | which header, which file, and whether the file was created or already had it |
 | Value renders | run the same resolver locally | the template that failed and the field it needed |
@@ -354,7 +375,7 @@ half (`exec env` in the container showing the variables), leaving the adapter ro
 
 | Piece | Host API | Notes |
 |---|---|---|
-| Worker | `runtime.worker`, stdio JSON-RPC | `worker/main.py`, dispatch on the trailing segment of `plugin.dev.oozut.llm-tags.<cmd>` |
+| Worker | `runtime.worker`, stdio JSON-RPC | `src/worker.rs` + `src/worker_main.rs`, dispatch on the trailing segment of `plugin.dev.oozut.llm-tags.<cmd>` (the M0 build already answers `status`) |
 | Settings | manifest `[[settings]]` | replaces the hand-written block from step 3, same keys (`headers` as `object_list`, `item_id_key = "header"`) |
 | Row badge | `ui.state.set`, slot `row-badge`, per session | tone `warn` when unwired |
 | Pane | `ui.state.set`, slot `pane` | resolved header values, adapter, wired state, copyable command |
@@ -383,6 +404,39 @@ whatever the configured consumer system returns, sessions it never saw, and the 
 A consumer that cannot answer a dimension degrades to wiring-only information with a message
 naming what it cannot answer (`header-contract.md`, consumer table). Needs the same `net` grant
 as M2.
+
+## Step 10 — distribution (M0-T13)
+
+Three ways the same two binaries can reach `<install>/bin/`; only the first is exercised by a
+checkout, and that difference is the thing to keep honest.
+
+| Form | Manifest | What happens on install/update |
+|---|---|---|
+| Source checkout (this host) | `[runtime] kind = "command"` + `[[runtime.build]]` | the host copies the tree, runs `tools/build-worker.sh` (cargo → `.aoe-build/`, then `install -m 755` both binaries into `bin/`), re-resolves the worker command and spawns it |
+| GitHub release | `[runtime] kind = "release-binary"`, `asset = "aoe-llm-tags-${os}-${arch}.tar.gz"`, `bin = "aoe-llm-tags-worker"` | the host downloads the asset, unpacks it into the install dir, spawns `bin`; **no build step runs** |
+| Anything else | — | `download_release_binary` requires `PluginSource::Github` and bails for `PluginSource::Local`, so a checkout cannot use the release form |
+
+Consequences that shaped the code:
+
+- **Two binaries, not a subcommand.** `release-binary` launches `bin` with no arguments, so the
+  worker cannot be `aoe-llm-tags worker`.
+- **The asset is the install layout** (`bin/aoe-llm-tags`, `bin/aoe-llm-tags-worker`, `README.md`,
+  `LICENSE`), so unpacking *is* installing and the hook path is the same in both forms.
+- **`.aoe-build/` is reserved.** The host refuses a tree that already ships it, so local builds
+  use `CARGO_TARGET_DIR` outside the worktree; only the build step creates it.
+- **No cargo in the daemon's `PATH`.** `tools/build-worker.sh` searches `CARGO_BIN` → `PATH` →
+  `$CARGO_HOME/bin` → `/usr/local/{cargo,lib}/…` and fails with a message naming the toolchain
+  requirement rather than a `cargo: not found`.
+- **CI gates the port, not just the release.** `.github/workflows/ci.yml` runs
+  `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test --locked` and one
+  `hook` smoke run on every push; the tag job builds `x86_64`/`aarch64` for linux (the aarch64 leg
+  via `gcc-aarch64-linux-gnu`) and macos and attaches the four tarballs to the release.
+  Windows is out of the matrix while the manifest has a single `bin` value (`parameters.md` §11,
+  open decision #10).
+- **Release-path verification is the artifact set plus one GitHub-sourced install**, never a
+  local `aoe plugin update`; an asset-name mistake shows up as the host's "asset not found,
+  available: …" error. Record it as such in `plan/parameters.md` §11 rather than claiming the
+  release path was run here.
 
 ## Upstream aoe changes worth filing
 
@@ -416,5 +470,5 @@ Tracked per milestone, not here: `plan/m0.md` … `plan/m4.md` hold the ordered 
 acceptance evidence; `plan/README.md` holds the status table. This file stays a map, so the two
 do not drift.
 
-Step numbers above map to milestones like this: steps 1–6 are M0 (inside it, `plan/m0.md` task 1–8),
-step 7 is M1, step 8 is M2, step 9 is M3.
+Step numbers above map to milestones like this: steps 1–6 are M0 (inside it, `plan/m0.md` tasks
+1–13, step 10 is M0-T13), step 7 is M1, step 8 is M2, step 9 is M3.

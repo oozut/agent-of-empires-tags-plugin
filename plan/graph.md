@@ -213,7 +213,7 @@ be proven today, which is why M4 is the one milestone that genuinely overlaps M0
 
 ```mermaid
 flowchart TB
-    subgraph core["lane core — bin/, worker/, resolver"]
+    subgraph core["lane core — src/, resolver, CLI verbs"]
         direction TB
         T01["M0-T01 · S"]:::p0 --> T02["M0-T02 · M"]:::p0
         T02 --> T03["M0-T03 · M"]:::p0

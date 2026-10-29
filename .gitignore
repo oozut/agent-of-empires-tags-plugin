@@ -1,17 +1,10 @@
 # aoe writes build artifacts here; the host excludes it from the tree hash.
 .aoe-build/
+/target/
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-
-# Tests
-.pytest_cache/
-.coverage
-htmlcov/
+# Built binaries: a source install produces them, a release ships them.
+/bin/aoe-llm-tags
+/bin/aoe-llm-tags-worker
 
 # Editor / OS
 *.swp

@@ -18,12 +18,14 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | `api_version` | `17` is the floor this plugin ships at (aoe ≥1.20.0 supports 1..=17); `18` — required by `per_project` — is available on the ≥1.21.0 host; `19` only for `session.lifecycle.changed` (M1-T08) | decided: floor 17, target 18 |
 | Host version checked | aoe **1.21.0** on this host (2026-10-29), so 18 is available; the manifest stays at 17 through M0 because nothing in M0 uses a schema-18 feature. The bump lands in the M1-T03 commit together with `aoe_version` | decided |
 | `aoe_version` | `">=1.20.0, <2.0.0"` at 17; raise to `">=1.21.0, <2.0.0"` when the manifest moves to 18 | proposed |
-| `capabilities` (M0) | none | decided |
+| `capabilities` (M0) | `runtime.worker` — declaring any runtime requires it, and the grant is prompted on install/update | decided |
 | `capabilities` (M1+) | `runtime.worker`, `session.read`, `net` | proposed |
 | Install dir | `<app_dir>/plugins/<id>/` (host: `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`) | decided |
-| CLI path | `<install>/bin/aoe-llm-tags`, mode 0755, `#!/usr/bin/env python3` | decided |
-| Build artifacts | `<install>/.aoe-build/` only (excluded from the tree hash) | decided |
-| Worker entrypoint | `worker/main.py`, stdio JSON-RPC, newline-delimited | proposed |
+| CLI path | `<install>/bin/aoe-llm-tags`, mode 0755, a Rust binary (no interpreter) | decided |
+| Worker entrypoint | `<install>/bin/aoe-llm-tags-worker`, stdio JSON-RPC, newline-delimited | decided |
+| Source layout | one library crate `llm_tags` + two bins (`src/main.rs`, `src/worker_main.rs`); integration tests in `tests/` | decided |
+| Toolchain | Rust ≥1.89, edition 2021, `--locked` (committed `Cargo.lock`), `clippy -D warnings` | decided |
+| Build artifacts | `<install>/.aoe-build/` only (excluded from the tree hash, and refused if present in an install tree) | decided |
 
 ## 2. Hook contract (M0)
 
@@ -31,7 +33,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 |---|---|---|
 | Keys | `[host_hooks].before_session` **and** `.before_start`, same command string | decided |
 | Placement | global `<app_dir>/config.toml` (recommended); per profile `<app_dir>/profiles/<name>/config.toml`. Profile arrays replace global arrays | decided |
-| `AOE_BIN` | `AOE_BIN` → `shutil.which("aoe")` → `/usr/local/bin/aoe` | proposed |
+| `AOE_BIN` | `AOE_BIN` → `PATH` lookup → `/usr/local/bin/aoe` | proposed |
 | Contract with aoe | stdout `KEY=VALUE` per line, later wins, no trailing whitespace, exit 0 always, 2 s bound on any subprocess | decided |
 
 ## 3. Settings (`[plugins."dev.oozut.llm-tags".settings]`)
@@ -54,7 +56,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | `feature_tag` | string | `""` | tag grammar | M1 | decided |
 | `feature_tag` scope | — | `per_project = true` (requires `api_version ≥ 18`) | — | M1 | decided |
 
-M0 rule semantics (implemented in `src/llm_tags/resolver.py`, M0-T02):
+M0 rule semantics (implemented in `src/resolver.rs`, M0-T02):
 
 - `project` matches `match_value` against the project slug (basename, lowercased, non-alphanumerics
   → `-`) or the full project path, so both `agent-of-empires-tags-plugin` and the absolute path work.
@@ -98,7 +100,7 @@ template = "{session_id}"
 | `{project_slug}` | basename of path | `agent-of-empires-tags-plugin` | preferred |
 | `{branch}` | `aoe list --json` `worktree.branch` | `lithuanians` | resolved only when a template references it |
 
-Template-resolution notes (implemented in `src/llm_tags/resolver.py`, M0-T02):
+Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 
 - `{branch}` costs a **second** `aoe` call, so it is resolved only when an enabled template
   actually references it. The row query and the list query share one 2 s launch budget; when the
@@ -185,6 +187,34 @@ Template-resolution notes (implemented in `src/llm_tags/resolver.py`, M0-T02):
 | Consumer adapter keys | `kind`, `base_url`, `token_env`, `window`, `capabilities[]` (`spend`, `requests`, `sessions`) | proposed |
 | Default window | 24 h; presets 1 h / 24 h / 7 d / 30 d | proposed |
 
+## 11. Distribution and release
+
+Cross-cutting, paid for in M0-T13; not ordered with the milestone sections above.
+
+| Parameter | Value | Status |
+|---|---|---|
+| Source install runtime | `[runtime] kind = "command"`, `command = ["./bin/aoe-llm-tags-worker"]` | decided |
+| Source install build | `[[runtime.build]] command = ["./tools/build-worker.sh"]`, `platforms = ["linux", "macos"]` | decided |
+| Build script contract | search `CARGO_BIN` → `PATH` → `${CARGO_HOME:-$HOME/.cargo}/bin` → `/usr/local/{cargo,lib}/…`; `cargo build --release --locked --target-dir .aoe-build`; `install -m 755` both binaries into `bin/` | decided |
+| Release runtime | `[runtime] kind = "release-binary"`, `bin = "aoe-llm-tags-worker"` | decided |
+| Asset template | `aoe-llm-tags-${os}-${arch}.tar.gz` (`${os}` = `linux`/`macos`, `${arch}` = `x86_64`/`aarch64`); no `${version}` — one asset set per release tag | proposed |
+| Asset contents | `bin/aoe-llm-tags`, `bin/aoe-llm-tags-worker`, `README.md`, `LICENSE` — the install layout, so unpacking is the install | decided |
+| CI matrix | `ubuntu-latest`→`x86_64-unknown-linux-gnu`, `ubuntu-latest`→`aarch64-unknown-linux-gnu` (gcc cross linker), `macos-13`→`x86_64-apple-darwin`, `macos-14`→`aarch64-apple-darwin` | proposed |
+| CI gates | `cargo fmt --check`, `cargo clippy --all-targets -D warnings`, `cargo test --locked`, one `hook` smoke run | decided |
+| Release trigger | tag `v*` → build matrix → attach the four tarballs to the GitHub release | proposed |
+| Windows | not in the matrix: the manifest has one `bin` value and Windows needs the `.exe` suffix (a host limitation, not a decision) | open (#10) |
+| Why the two forms | `PluginSource::Local` + `release-binary` errors in `src/plugin/fetch.rs`, so a checkout can only build; a GitHub source downloads | decided |
+
+Verification split, and it must stay named:
+
+- **Source install** — verified on this host (2026-10-29): `aoe plugin update` compiled both
+  binaries in 26 s, `aoe plugin info` reports `caps: runtime.worker (granted)`, the reloaded
+  daemon spawned `<install>/bin/aoe-llm-tags-worker` (its log exists under
+  `<app_dir>/plugin-workers/`), and `doctor` is green from the installed binary.
+- **Release install** — verified only by the CI artifacts plus a GitHub-sourced `aoe plugin
+  install gh:oozut/android-keyboard-llm-tags`; it cannot be exercised from a local checkout. An
+  asset-name mistake surfaces as the host's "asset not found, available: …" error.
+
 ## Open
 
 | # | Question | Affects |
@@ -198,3 +228,4 @@ Template-resolution notes (implemented in `src/llm_tags/resolver.py`, M0-T02):
 | 7 | How many headers ship enabled | default header rows, every adapter's static config |
 | 8 | Ship HMAC session signatures in M1 or M2 | `session_signature`, `signing_key` |
 | 9 | Empty render: mint an empty value, or emit no line | hook output, header presence |
+| 10 | Windows: wait for a host that accepts a per-platform `bin`, or ship a `aoe-llm-tags-worker.exe` alias | §11 asset/`bin` naming |

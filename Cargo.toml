@@ -1,0 +1,37 @@
+[package]
+name = "aoe-llm-tags"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "MIT"
+description = "Send identifying headers with every LLM request a session makes (Agent of Empires plugin)"
+repository = "https://github.com/oozut/agent-of-empires-tags-plugin"
+keywords = ["agent-of-empires", "aoe", "plugin"]
+categories = ["command-line-utilities"]
+
+[lib]
+name = "llm_tags"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aoe-llm-tags"
+path = "src/main.rs"
+
+# The worker entrypoint is a separate binary because `runtime.kind =
+# "release-binary"` launches `bin` with no arguments: the mode cannot be an
+# argv flag there.
+[[bin]]
+name = "aoe-llm-tags-worker"
+path = "src/worker_main.rs"
+
+[dependencies]
+clap = { version = "4.6", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+toml = "1.1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

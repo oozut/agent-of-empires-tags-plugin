@@ -4,3 +4,21 @@ version = "0.1.0"
 api_version = 17
 aoe_version = ">=1.20.0, <2.0.0"
 description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."
+capabilities = ["runtime.worker"]
+
+# The worker answers `plugin.dev.oozut.llm-tags.status` with the header set this
+# install would send. M1 turns it into the reconciler; M0 only proves it runs.
+[[commands]]
+id = "status"
+title = "LLM Tags: status"
+description = "Report the header set this install would send, without starting a session."
+
+[runtime]
+kind = "command"
+command = ["./bin/aoe-llm-tags-worker"]
+
+# Source installs build both binaries in place. Release installs use
+# `kind = "release-binary"` and skip this step entirely; see plan/parameters.md §9.
+[[runtime.build]]
+command = ["./tools/build-worker.sh"]
+platforms = ["linux", "macos"]
