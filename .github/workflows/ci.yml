@@ -26,7 +26,7 @@ jobs:
       - name: hook smoke test
         run: |
           export AOE_SESSION_ID=cf11af87da7e4bf0 AOE_PROFILE=main AOE_TOOL=pi-proxy
-          out=$(cargo run --quiet --locked -- hook --session "$AOE_SESSION_ID")
+          out=$(cargo run --quiet --locked --bin aoe-llm-tags -- hook --session "$AOE_SESSION_ID")
           echo "$out"
           case "$out" in
             AOE_LLM_TAGS=*) ;;

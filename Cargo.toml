@@ -2,6 +2,7 @@
 name = "aoe-llm-tags"
 version = "0.1.0"
 edition = "2021"
+default-run = "aoe-llm-tags"
 rust-version = "1.89"
 license = "MIT"
 description = "Send identifying headers with every LLM request a session makes (Agent of Empires plugin)"
