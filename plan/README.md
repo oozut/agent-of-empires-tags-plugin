@@ -132,7 +132,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | State | Blocking |
 |---|---|---|
-| M0 | in progress — done: T01, T02, T03, T04, T05, T06, T07, T08 (sink leg), T10, T11, T12, T13 (Rust port, installable runtime, CI matrix); open: acceptance 2 (sandbox); T09 deferred to `roadmap.md` | sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source, not a local checkout |
+| M0 | **done** — P0 complete (T01–T03, T05–T08 incl. sink + sandbox legs, T10, T11, T13); P1 T04/T12 done; T09 (consumer leg) deferred to `roadmap.md` (decision #4) | `release-binary` verifiable only from a GitHub source, not a local checkout |
 | M1 | not started | M0 |
 | M2 | not started | M1 |
 | M3 | not started — roadmap-gated (`roadmap.md` §1) | M2 + a named consumer with a read path |

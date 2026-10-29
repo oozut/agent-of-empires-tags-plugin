@@ -56,11 +56,16 @@ contract alone.
 
 ## Preconditions this deployment is currently missing
 
-- **Sandbox leg.** `pi-proxy` needs its gateway credential from a systemd credential unit
-  (`/run/credentials/aoe-serve.service`) or `/etc/pi-proxy/onecli-acp.env`; neither exists inside a
-  container, and `aoe` (uid 996) is not in the `docker` group, so `sandbox.enabled_by_default` is
-  off and no container can be started to test against. Nothing about the contract depends on this;
-  it is a host setup gap.
+- **Sandbox leg (pi-proxy).** `pi-proxy` needs its gateway credential from a systemd credential
+  unit (`/run/credentials/aoe-serve.service`) or `/etc/pi-proxy/onecli-acp.env`; neither exists
+  inside a container, so a sandboxed session cannot use the `pi-proxy` tool. `sandbox.enabled_by_default`
+  is off for that reason.
+- **Sandbox leg (pi).** The sandbox image ships `/usr/bin/pi` and aoe injects the host proxy env
+  into the container, so an explicit `aoe add --sandbox --tool pi` works on this host (podman).
+  `before_start` minted the variables and the container's seeded `~/.pi/agent/models.json` carried
+  the header mapping, so a request made inside the container reached a local sink with both
+  headers (proof below). The minting half and the mechanism half are both green; only the
+  `pi-proxy` variant remains a host setup gap, and it is not a plugin dependency.
 - **Consumer-side tagging.** Whether the OneCLI proxy forwards an unknown header untouched, and
   whether LiteLLM turns a request header into a spend dimension at all, are unknown — and, since
   2026-10-29, deliberately not required: the plugin does not read a consumer back
@@ -107,6 +112,30 @@ Same fixture, both headers enabled in `[plugins."dev.oozut.llm-tags".settings]` 
 
 Two headers cost exactly three edits and no code: one more `[[…settings.headers]]` row, one more
 mapping line, one more `env` variable. That is the contract's "the set is data" claim, tested.
+
+## Proof run (M0-T08 sandbox leg, 2026-10-29)
+
+Same mechanism as the host proof, but with `before_start` running on the host and the request
+leaving from inside a podman container. No proxy on this path: the sink ran inside the container
+on `127.0.0.1`.
+
+| Step | Command / observation | Result |
+|---|---|---|
+| Create a sandboxed session | `aoe add --sandbox --scratch -t sandbox-probe --tool pi --launch` | session `6bb7e83de3d041ad`, container `aoe-sandbox-6bb7e83d` |
+| Read what `before_start` minted, inside the container | `podman exec aoe-sandbox-6bb7e83d env` | `AOE_LLM_TAGS=aoe,feature:,session:S-6bb7` and `AOE_HDR_X_AOE_SESSION=6bb7e83de3d041ad` |
+| Seeded harness config | `podman exec … cat /root/.pi/agent/models.json` | provider `litellm` carried both `X-AoE-Tags` and `X-AoE-Session` mappings with a non-empty `models` list |
+| Point an in-container harness at a sink | `/tmp/sink-agent/models.json`: provider `sink`, `baseUrl http://127.0.0.1:8787/v1`, both headers mapped, one model `sink` | — |
+| Send one request inside the container | `PI_CODING_AGENT_DIR=/tmp/sink-agent … /usr/bin/pi --print --model sink/sink ping` (proxies unset) | `ok` |
+| Read the far side | `/tmp/tag-sink.jsonl` inside the container | one POST, both headers: `x-aoe-tags: aoe,feature:,session:S-6bb7`, `x-aoe-session: 6bb7e83de3d041ad` |
+
+Notes:
+
+- Use the in-image pi (`/usr/bin/pi`), not the host's `pi-proxy` shim — the shim is not present
+  in the sandbox image and would regenerate `PI_CODING_AGENT_DIR` anyway.
+- The sink had to answer with SSE (`data: …` + `data: [DONE]`); a plain JSON response made pi
+  report "Stream ended without finish_reason" and retry.
+- Cleanup: `aoe rm --purge 6bb7e83de3d041ad` removed the session, container, scratch dir and
+  agent store.
 
 ## Local paths worth keeping in one place
 
