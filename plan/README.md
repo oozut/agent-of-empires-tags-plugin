@@ -131,7 +131,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | State | Blocking |
 |---|---|---|
-| M0 | in progress — done: T01, T02, T03, T05, T07, T11, T13 (Rust port, installable runtime, CI matrix); open: T04, T06 hook re-install, T08/T09 proof, T10 second header, T12 install page | reference consumer for proof #5; sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source |
+| M0 | in progress — done: T01, T02, T03, T04, T05, T06, T07, T08 (mechanism leg), T10, T11, T12, T13 (Rust port, installable runtime, CI matrix); open: T09 (consumer leg), acceptance 2 (sandbox) | open decision #4 — which consumer counts as "recorded" for T09; sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source, not a local checkout |
 | M1 | not started | M0 |
 | M2 | not started | M1 |
 | M3 | not started | M2 |

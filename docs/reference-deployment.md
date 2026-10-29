@@ -66,14 +66,56 @@ contract alone.
   not, the consumer leg needs a real change (proxy config, a metadata translation, or a different
   consumer) — and that is a deployment fact, not a reason to redesign the header set.
 
+## Proof runs (M0-T08 mechanism leg, recorded 2026-10-29)
+
+Two legs, never merged: this one proves the hook minted the value and the harness sent it. The
+consumer leg (that the far side keeps it) is still open — see open decision #4.
+
+| Step | Command | Result |
+|---|---|---|
+| Launch a session with the hook lines installed | `aoe add --scratch -t tag-sink-probe --tool pi --launch` | session `1fb406b7cbdc43c1`, title `tag-sink-probe`, tool `pi` |
+| Read what the hook minted, from the launched agent's own environment | `tr '\0' '\n' < /proc/<pane-child-pid>/environ \| grep ^AOE_LLM_TAGS` | `AOE_LLM_TAGS=aoe,feature:,session:S-1fb4` |
+| Start the fixture | `python3 tools/header-sink.py 8787 /tmp/tag-sink.jsonl --reset` | `header-sink listening on 127.0.0.1:8787` |
+| Point a harness at the sink | `/tmp/sink-agent/models.json`: provider `sink`, `baseUrl http://127.0.0.1:8787/v1`, `headers {"X-AoE-Tags": "$AOE_LLM_TAGS"}`, one model `sink` | — |
+| Send one request | `env -i HOME=/var/lib/aoe PATH=/usr/bin:/bin PI_CODING_AGENT_DIR=/tmp/sink-agent AOE_LLM_TAGS="$V" /usr/bin/pi --print --model sink/sink ping` | `ok` |
+| Read the far side | `grep -o '"x-aoe-tags": "[^"]*"' /tmp/tag-sink.jsonl` | exactly one line: `"x-aoe-tags": "aoe,feature:,session:S-1fb4"` |
+
+Notes that cost time and should not be re-derived:
+
+- Use the **real** pi (`/usr/bin/pi`), not `/usr/local/lib/pi-proxy/bin/pi`. The shim hands off to
+  `pi-proxy-acp`/`pi-proxy`, which regenerates `PI_CODING_AGENT_DIR`, so an isolated harness config
+  passed in the environment is silently replaced and the sink is never reached.
+- `/proc/<pid>/environ` for another user's process is unreadable; the pane shell is the aoe user's,
+  so resolve `tmux list-panes -a -F "#{session_name} #{pane_pid}"`, then walk `ps --ppid <pane_pid>`
+  to the agent process.
+- The fixture must answer a streaming request with SSE (`data: …` + `data: [DONE]`), otherwise the
+  client retries and the log gets several identical lines for one prompt.
+- Pass the minted value through explicitly (`AOE_LLM_TAGS="$V"`). Running pi from this agent's own
+  shell would prove pi sends a header, but not that **aoe's hook** produced the value.
+
+## Proof run (M0-T10 second header, 2026-10-29)
+
+Same fixture, both headers enabled in `[plugins."dev.oozut.llm-tags".settings]` (`X-AoE-Tags`,
+`X-AoE-Session`), mapping lines added to both `~/.pi/agent/models.json` and the sink config.
+
+| Step | Result |
+|---|---|
+| Fresh session with the two-header hook | session `9033ad4f010e44b7`; its agent environment carried `AOE_LLM_TAGS=aoe,feature:,session:S-9033` **and** `AOE_HDR_X_AOE_SESSION=9033ad4f010e44b7` |
+| One request with both variables | one POST, both headers, independent values: `x-aoe-tags: aoe,feature:,session:S-9033`, `x-aoe-session: 9033ad4f010e44b7` |
+| `doctor` | `10 ok, 0 failed, 1 warning` — one mapping check per enabled header, value rendering shows both `NAME=value` pairs |
+
+Two headers cost exactly three edits and no code: one more `[[…settings.headers]]` row, one more
+mapping line, one more `env` variable. That is the contract's "the set is data" claim, tested.
+
 ## Local paths worth keeping in one place
 
 | Thing | Path / value here |
 |---|---|
 | aoe app dir | `/var/lib/aoe/.config/agent-of-empires` |
 | Effective config | profile `profiles/main/config.toml` (absent) → global `config.toml` |
-| `[host_hooks]` today | empty |
-| Plugin install dir | `…/plugins/dev.oozut.llm-tags/` (not created yet) |
+| `[host_hooks]` today | both keys set to the plugin's `hook` command (installed 2026-10-29) |
+| Plugin install dir | `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/` |
 | `aoe` binary | `/usr/local/bin/aoe` |
-| pi agent dir | `/var/lib/aoe/.pi/agent` (no `models.json` yet) |
+| pi agent dir | `/var/lib/aoe/.pi/agent` — `models.json` present, provider `litellm` carries `X-AoE-Tags` |
+| pi-proxy shim (do not use for isolated runs) | `/usr/local/lib/pi-proxy/bin/pi` → `pi-proxy-acp` → real pi `/usr/bin/pi` |
 | aoe worktree for source facts | `/var/lib/aoe/agent-of-empires-worktrees/koreans` |
