@@ -31,7 +31,11 @@ if [ -z "$cargo_bin" ]; then
   exit 1
 fi
 
-"$cargo_bin" build --release --locked --target-dir .aoe-build
+# .aoe-build/ is the host-managed build directory, but a checkout that already contains one is
+# refused by `aoe plugin install/update` ("ships the reserved build-output directory"). Honour
+# CARGO_TARGET_DIR so a developer can build outside the tree and still install from it.
+target_dir=${CARGO_TARGET_DIR:-.aoe-build}
+"$cargo_bin" build --release --locked --target-dir "$target_dir"
 mkdir -p bin
-install -m 755 .aoe-build/release/aoe-llm-tags bin/aoe-llm-tags
-install -m 755 .aoe-build/release/aoe-llm-tags-worker bin/aoe-llm-tags-worker
+install -m 755 "$target_dir/release/aoe-llm-tags" bin/aoe-llm-tags
+install -m 755 "$target_dir/release/aoe-llm-tags-worker" bin/aoe-llm-tags-worker
