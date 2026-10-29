@@ -23,9 +23,12 @@ import os
 import re
 import shutil
 import subprocess
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
+
+from . import settings as settings_module
 
 # --- constants: plan/parameters.md §4, §5, §7 -------------------------------
 
@@ -192,6 +195,20 @@ class ResolvedHeader:
     header: str
     env_var: str
     value: str
+
+
+@dataclass(frozen=True)
+class Snapshot:
+    """One resolution pass: what the session is, what settings applied, what came out.
+
+    Every verb uses this, so `hook`, `value`, `setup` and `doctor` cannot drift.
+    """
+
+    facts: SessionFacts
+    settings: Settings
+    resolved: tuple[ResolvedHeader, ...]
+    warnings: tuple[str, ...]
+    raw: Mapping[str, Any] = field(default_factory=dict)
 
 
 Runner = Callable[[Sequence[str]], Any]
@@ -439,6 +456,45 @@ def clamp_bytes(value: str, limit: int = VALUE_MAX_BYTES) -> tuple[str, bool]:
     return data[:limit].decode("utf-8", "ignore"), True
 
 
+def enabled_headers(settings: Settings) -> tuple[Header, ...]:
+    """The headers this launch will emit or map: enabled, in settings order."""
+    return tuple(header for header in settings.headers if header.enabled)
+
+
+def snapshot(
+    flags: Flags | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    runner: Runner | None = None,
+) -> Snapshot:
+    """The whole pipeline: row → flags → settings → render, on one launch budget.
+
+    One 2 s budget covers every subprocess (the row lookup and the optional
+    ``aoe list`` for ``{branch}``), so a slow or missing `aoe` delays a launch
+    once, never twice.
+    """
+    flags = flags or Flags()
+    started = time.monotonic()
+    facts, session_warnings = resolve_session(flags, runner=runner, env=env)
+    elapsed = time.monotonic() - started
+    raw = settings_module.load(profile=facts.profile or flags.profile, env=env)
+    configured = Settings.from_table(raw.table, warnings=session_warnings + raw.warnings)
+    resolved, render_warnings = render_headers(
+        configured,
+        facts,
+        runner=runner,
+        env=env,
+        timeout=max(0.0, DEFAULT_TIMEOUT - elapsed),
+    )
+    return Snapshot(
+        facts=facts,
+        settings=configured,
+        resolved=resolved,
+        warnings=configured.warnings + render_warnings,
+        raw=dict(raw.table),
+    )
+
+
 def render_headers(
     settings: Settings,
     facts: SessionFacts,
@@ -453,7 +509,7 @@ def render_headers(
     optional ``aoe list`` call for ``{branch}`` must not push the hook past it.
     """
     warnings: list[str] = []
-    enabled = [header for header in settings.headers if header.enabled]
+    enabled = enabled_headers(settings)
 
     branch = ""
     if facts.id and any("{branch}" in header.template for header in enabled):

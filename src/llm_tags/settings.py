@@ -62,6 +62,16 @@ def profile_config_path(root: Path, profile: str) -> Path | None:
 
 
 @dataclass(frozen=True)
+class RawConfig:
+    """The effective config table (global + profile override) and where it came from."""
+
+    table: dict[str, Any] = field(default_factory=dict)
+    warnings: tuple[str, ...] = ()
+    sources: tuple[str, ...] = ()
+    present: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class RawSettings:
     """The merged ``[plugins.<id>.settings]`` table, plus how we got it.
 
@@ -73,6 +83,46 @@ class RawSettings:
     table: dict[str, Any] = field(default_factory=dict)
     warnings: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
+
+
+def load_config(
+    profile: str = "",
+    *,
+    root: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> RawConfig:
+    """The effective config: global ``config.toml`` + the profile's overrides.
+
+    ``sources`` lists the files that parsed; ``present`` lists the files that
+    existed at all (a broken file is present but not a source). ``doctor`` needs
+    both, because "no file" and "file without a hook" are different failures.
+    """
+    root = root or app_dir(env)
+    warnings: list[str] = []
+    sources: list[str] = []
+    present: list[str] = []
+
+    config: dict[str, Any] = {}
+    path = global_config_path(root)
+    loaded = _read_table(path, warnings)
+    if path.exists():
+        present.append(str(path))
+    if loaded is not None:
+        sources.append(str(path))
+        config = loaded
+
+    profile_path = profile_config_path(root, profile)
+    if profile_path is not None:
+        overrides = _read_table(profile_path, warnings)
+        if profile_path.exists():
+            present.append(str(profile_path))
+        if overrides is not None:
+            sources.append(str(profile_path))
+            config = deep_merge(config, overrides)
+
+    return RawConfig(
+        table=config, warnings=tuple(warnings), sources=tuple(sources), present=tuple(present)
+    )
 
 
 def load(
@@ -87,25 +137,10 @@ def load(
     merged plugin table. A missing file is not a warning; an unreadable or
     malformed one is, and contributes nothing.
     """
-    root = root or app_dir(env)
-    warnings: list[str] = []
-    sources: list[str] = []
-
-    config: dict[str, Any] = {}
-    path = global_config_path(root)
-    loaded = _read_table(path, warnings)
-    if loaded is not None:
-        sources.append(str(path))
-        config = loaded
-
-    profile_path = profile_config_path(root, profile)
-    if profile_path is not None:
-        overrides = _read_table(profile_path, warnings)
-        if overrides is not None:
-            sources.append(str(profile_path))
-            config = deep_merge(config, overrides)
-
-    return RawSettings(table=plugin_table(config), warnings=tuple(warnings), sources=tuple(sources))
+    config = load_config(profile, root=root, env=env)
+    return RawSettings(
+        table=plugin_table(config.table), warnings=config.warnings, sources=config.sources
+    )
 
 
 def _read_table(path: Path, warnings: list[str]) -> dict[str, Any] | None:
@@ -152,6 +187,19 @@ def plugin_table(config: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(settings, Mapping):
         return {}
     return dict(settings)
+
+
+def host_hook_entries(config: Mapping[str, Any], key: str) -> tuple[str, ...]:
+    """The effective ``[host_hooks]`` entries for ``before_session``/``before_start``."""
+    hooks = config.get("host_hooks")
+    if not isinstance(hooks, Mapping):
+        return ()
+    entries = hooks.get(key)
+    if isinstance(entries, str):
+        return (entries,)
+    if not isinstance(entries, list):
+        return ()
+    return tuple(entry for entry in entries if isinstance(entry, str))
 
 
 def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:

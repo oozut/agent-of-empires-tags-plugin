@@ -1,0 +1,134 @@
+# Harness adapter data (plan/parameters.md §8, docs/harness-adapters.md).
+#
+# One row per harness. `setup --print` renders `mapping_format` once per enabled
+# header; `doctor` reads the same row to check that the mapping is really there.
+# A harness that is not listed here cannot be set up yet — say so rather than
+# guessing a config path.
+#
+# Fields:
+#   agent           stable id, also the `--adapter` value
+#   tools           aoe `tool` values that mean this harness (prefix match: pi → pi-proxy)
+#   mechanism       see docs/harness-adapters.md §Adapter data format
+#   config_paths    in preference order; `~` and `$VAR` are expanded. The first
+#                   path that resolves is the one the mapping is written to and
+#                   checked in — for launchers that regenerate a directory, it is
+#                   the launcher's *source* file, not the generated one.
+#   config_format   json | toml | none
+#   mapping_format  one line per enabled header: {file} {header} {env_var} {provider}
+#   status          verified | documented | needs_research | unsupported
+
+[[adapter]]
+agent = "pi"
+tools = ["pi", "pi-proxy", "pi-proxy-acp"]
+label = "pi"
+mechanism = "config_headers"
+config_env = "PI_CODING_AGENT_DIR"
+config_paths = ["~/.pi/agent/models.json", "$PI_CODING_AGENT_DIR/models.json"]
+config_format = "json"
+mapping_format = '{file} → providers.{provider}.headers["{header}"] = "${env_var}"'
+status = "documented"
+notes = """
+The provider entry must keep a non-empty `models` list: this host's pi-proxy discards a
+headers-only entry and rebuilds the provider from scratch, taking `headers` with it. The first
+path is the wrapper's source file (`$HOME/.pi/agent/models.json`); `$PI_CODING_AGENT_DIR` is
+regenerated on every launch and is never the write target. `command_headers`
+(`!aoe-llm-tags value X-AoE-Tags`) is also accepted and is cached per process, so it is no more
+live than the minted variable.
+"""
+
+[[adapter]]
+agent = "claude"
+tools = ["claude"]
+label = "Claude Code"
+mechanism = "custom_headers_env"
+config_env = "CLAUDE_CONFIG_DIR"
+config_paths = ["~/.claude/settings.json"]
+config_format = "none"
+mapping_format = 'ANTHROPIC_CUSTOM_HEADERS="{header}: ${env_var}"'
+status = "documented"
+notes = """
+No static config file: the variable carries whole header lines. The shipped mapping is the
+"no static file" form, so `doctor` checks the variable rather than a file.
+"""
+
+[[adapter]]
+agent = "codex"
+tools = ["codex"]
+label = "codex"
+mechanism = "headers_from_env"
+config_env = "CODEX_HOME"
+config_paths = ["~/.codex/config.toml", "$CODEX_HOME/config.toml"]
+config_format = "toml"
+mapping_format = '{file} → [model_providers.{provider}.env_http_headers] "{header}" = "{env_var}"'
+status = "documented"
+notes = """
+aoe owns ~/.codex/hooks.json, so point the hook installer at config.toml only, never at
+hooks.json.
+"""
+
+[[adapter]]
+agent = "opencode"
+tools = ["opencode"]
+label = "opencode"
+mechanism = "config_headers"
+config_env = "XDG_CONFIG_HOME"
+config_paths = ["~/.config/opencode/opencode.json", "$XDG_CONFIG_HOME/opencode/opencode.json"]
+config_format = "json"
+mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{{env:{env_var}}}"'
+status = "documented"
+notes = "Falls back to opencode.jsonc in the same directory on some versions; not verified here."
+
+[[adapter]]
+agent = "hermes"
+tools = ["hermes"]
+label = "hermes"
+mechanism = "unknown"
+config_paths = []
+config_format = "none"
+status = "needs_research"
+notes = "Provider plugin `extra_headers` looks promising; config path unknown."
+
+[[adapter]]
+agent = "gemini"
+tools = ["gemini"]
+label = "gemini"
+mechanism = "unknown"
+config_paths = ["~/.gemini/settings.json"]
+config_format = "none"
+status = "needs_research"
+
+[[adapter]]
+agent = "vibe"
+tools = ["vibe"]
+label = "vibe"
+mechanism = "unknown"
+config_paths = ["~/.config/vibe"]
+config_format = "none"
+status = "needs_research"
+
+[[adapter]]
+agent = "kiro"
+tools = ["kiro"]
+label = "kiro"
+mechanism = "unknown"
+config_paths = []
+config_format = "none"
+status = "needs_research"
+
+[[adapter]]
+agent = "cline"
+tools = ["cline"]
+label = "cline"
+mechanism = "unknown"
+config_paths = []
+config_format = "none"
+status = "needs_research"
+
+[[adapter]]
+agent = "openclaw"
+tools = ["openclaw"]
+label = "openclaw"
+mechanism = "unknown"
+config_paths = []
+config_format = "none"
+status = "needs_research"

@@ -1,24 +1,23 @@
-"""Argument parsing and the M0 verbs implemented so far: ``hook`` and ``value``.
+"""Argument parsing and the M0 verbs: ``hook``, ``value``, ``setup --print``, ``doctor``.
 
-The whole user-visible contract for these two (``plan/parameters.md`` §6):
-stdout is machine-readable only — one ``NAME=value`` line per enabled header for
-``hook``, one value for ``value`` — and diagnostics go to stderr. Exit codes are
-0 for ok/degraded, 1 for a failing check, 2 for a usage error. A hook must never
-abort a session start, so an unexpected failure is still exit 0.
+The user-visible contract for the first two (``plan/parameters.md`` §6): stdout is
+machine-readable only — one ``NAME=value`` line per enabled header for ``hook``,
+one value for ``value`` — and diagnostics go to stderr. Exit codes are 0 for
+ok/degraded, 1 for a failing check, 2 for a usage error. A hook must never abort a
+session start, so an unexpected failure there is still exit 0.
 
-``doctor`` (M0-T11), ``setup --print`` (M0-T05) and ``verify`` (M2) are named but
-not implemented here; they report which task owns them rather than pretending to
-be a different error.
+``verify`` (M2) is named but not implemented: it reports which milestone owns it
+rather than pretending to be a different error.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
-import time
 from typing import Mapping, Sequence
 
-from . import resolver, settings
+from . import doctor, resolver, setup
 
 PROG = "aoe-llm-tags"
 EXIT_OK = 0
@@ -26,8 +25,6 @@ EXIT_FAIL = 1
 EXIT_USAGE = 2
 
 NOT_IMPLEMENTED = {
-    "doctor": "M0-T11 (plan/m0.md)",
-    "setup": "M0-T05 (plan/m0.md)",
     "verify": "M2 (plan/m2.md)",
 }
 
@@ -59,6 +56,30 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_flags(value)
 
+    setup_cmd = commands.add_parser(
+        "setup",
+        help="print the hook and header-mapping lines to paste",
+        description=(
+            "Print the two [host_hooks] lines and one mapping line per enabled header. "
+            "Print-only: nothing is written."
+        ),
+    )
+    setup_cmd.add_argument(
+        "--print",
+        action="store_true",
+        help="print the lines (the only mode implemented so far)",
+    )
+    setup_cmd.add_argument("--json", action="store_true", help="machine-readable output")
+    _add_flags(setup_cmd)
+
+    doctor_cmd = commands.add_parser(
+        "doctor",
+        help="check the wiring; exit 1 if anything would silently send nothing",
+        description="One line per check, with the absolute paths it looked at.",
+    )
+    doctor_cmd.add_argument("--json", action="store_true", help="machine-readable output")
+    _add_flags(doctor_cmd)
+
     for name, owner in NOT_IMPLEMENTED.items():
         commands.add_parser(name, help=f"not implemented yet — {owner}")
 
@@ -80,7 +101,7 @@ def _add_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--title", help="title fallback (default: $AOE_SESSION_TITLE)")
     parser.add_argument(
         "--adapter",
-        help="harness adapter row to pin instead of detecting (used by setup/doctor from M0-T05)",
+        help="harness adapter row (pi, claude, codex, …) instead of detecting it from the tool",
     )
 
 
@@ -91,9 +112,8 @@ def main(
     _soften_stdout()
     argv = list(sys.argv[1:] if argv is None else argv)
 
-    # Named-but-absent verbs answer for themselves, flags and all: `setup --print`
-    # exists only in M0-T05, and a bare argparse "unrecognized arguments" would
-    # read like a typo instead of a task that has not landed yet.
+    # A named-but-absent verb answers for itself, flags and all: a bare argparse
+    # "unrecognized arguments" would read like a typo instead of a future task.
     if argv and argv[0] in NOT_IMPLEMENTED:
         _warn(f"`{argv[0]}` is not implemented yet; it is {NOT_IMPLEMENTED[argv[0]]}")
         return EXIT_USAGE
@@ -104,6 +124,10 @@ def main(
         return _hook(args, env)
     if args.command == "value":
         return _value(args, env)
+    if args.command == "setup":
+        return _setup(args, env)
+    if args.command == "doctor":
+        return _doctor(args, env)
 
     _warn(f"`{args.command}` is not implemented yet")
     return EXIT_USAGE
@@ -111,12 +135,12 @@ def main(
 
 def _hook(args: argparse.Namespace, env: Mapping[str, str] | None) -> int:
     try:
-        resolved, warnings = _resolve(args, env)
-        lines = resolver.hook_lines(resolved)
+        snap = _snapshot(args, env)
+        lines = resolver.hook_lines(snap.resolved)
     except Exception as exc:  # the hook must never abort a session start
         _warn(f"unexpected error: {exc}")
         return EXIT_OK
-    _warn_all(warnings)
+    _warn_all(snap.warnings)
     for line in lines:
         print(line)
     return EXIT_OK
@@ -125,45 +149,55 @@ def _hook(args: argparse.Namespace, env: Mapping[str, str] | None) -> int:
 def _value(args: argparse.Namespace, env: Mapping[str, str] | None) -> int:
     wanted = args.header
     try:
-        resolved, warnings = _resolve(args, env)
+        snap = _snapshot(args, env)
     except Exception as exc:
         _warn(f"unexpected error: {exc}")
         return EXIT_OK
-    _warn_all(warnings)
-    for item in resolved:
+    _warn_all(snap.warnings)
+    for item in snap.resolved:
         if item.header.lower() == wanted.lower():
             sys.stdout.write(f"{item.value}\n")
             return EXIT_OK
     _warn(
         f"header {wanted!r} is not enabled for this session "
-        f"(enabled: {', '.join(item.header for item in resolved) or 'none'})"
+        f"(enabled: {', '.join(item.header for item in snap.resolved) or 'none'})"
     )
     return EXIT_OK
 
 
-def _resolve(
-    args: argparse.Namespace,
-    env: Mapping[str, str] | None,
-) -> tuple[tuple[resolver.ResolvedHeader, ...], tuple[str, ...]]:
-    """The single path every verb takes: flags → facts → settings → render.
-
-    One launch budget covers every subprocess: the row lookup and the optional
-    `aoe list` for {branch} share `DEFAULT_TIMEOUT`, so a slow or missing `aoe`
-    can delay a launch once, never twice.
-    """
-    started = time.monotonic()
+def _setup(args: argparse.Namespace, env: Mapping[str, str] | None) -> int:
+    if not args.print and not args.json:
+        _warn("`setup` is print-only in M0; pass --print (or --json)")
+        return EXIT_USAGE
     flags = resolver.Flags.from_args(args, env)
-    facts, session_warnings = resolver.resolve_session(flags, env=env)
-    elapsed = time.monotonic() - started
-    raw = settings.load(profile=facts.profile or flags.profile, env=env)
-    configured = resolver.Settings.from_table(raw.table, warnings=session_warnings + raw.warnings)
-    resolved, render_warnings = resolver.render_headers(
-        configured,
-        facts,
-        env=env,
-        timeout=max(0.0, resolver.DEFAULT_TIMEOUT - elapsed),
-    )
-    return resolved, configured.warnings + render_warnings
+    try:
+        plan = setup.build(flags, env=env)
+    except setup.SetupError as exc:
+        _warn(str(exc))
+        return EXIT_FAIL
+    _warn_all(plan.warnings)
+    if args.json:
+        print(json.dumps(setup.as_dict(plan), indent=2))
+    else:
+        for line in setup.text(plan):
+            print(line)
+    return EXIT_OK
+
+
+def _doctor(args: argparse.Namespace, env: Mapping[str, str] | None) -> int:
+    flags = resolver.Flags.from_args(args, env)
+    report = doctor.run(flags, env=env)
+    print(doctor.format_json(report) if args.json else doctor.format_text(report))
+    if report.ok:
+        return EXIT_OK
+    failed = [check.name for check in report.checks if check.status == doctor.FAIL]
+    _warn(f"{len(failed)} check(s) failed: {', '.join(failed)}")
+    return EXIT_FAIL
+
+
+def _snapshot(args: argparse.Namespace, env: Mapping[str, str] | None) -> resolver.Snapshot:
+    """The single path every verb takes: flags → facts → settings → render."""
+    return resolver.snapshot(resolver.Flags.from_args(args, env), env=env)
 
 
 def _warn(message: str) -> None:
