@@ -63,7 +63,7 @@ flowchart LR
     subgraph W4["wave 4 · the two proofs"]
         direction TB
         T08["M0-T08 · proof · S<br/>sink run"]:::p0
-        T09["M0-T09 · proof · S<br/>consumer run"]:::p0
+        T09["M0-T09 · proof · S<br/>consumer run<br/>(deferred → roadmap)"]:::p2
         T10["M0-T10 · wire · S<br/>second header"]:::p1
     end
 
@@ -83,11 +83,13 @@ flowchart LR
 
     classDef p0 fill:#ffe0e0,stroke:#c0392b,color:#111
     classDef p1 fill:#fff3cd,stroke:#b8860b,color:#111
+    classDef p2 fill:#eeeeee,stroke:#888,color:#111
 ```
 
-**Critical path:** `T01 → T02 → T05 → T06/T07 → T08/T09`. Everything else hangs off `T02` or off
+**Critical path:** `T01 → T02 → T05 → T06/T07 → T08`. Everything else hangs off `T02` or off
 the host preconditions. `T08` and `T09` are two independent proofs of the same wiring — the sink
-(mechanism) and the real consumer (delivery) — and must not be collapsed into one task.
+(mechanism) and the real consumer (delivery) — and must not be collapsed into one task; `T09` is
+deferred (`plan/roadmap.md` §1), so the wave completes on `T08`.
 
 ## 3. M1 — settings and attribution UI
 
@@ -133,7 +135,7 @@ flowchart LR
     T02["M2-T02 · core · M<br/>classification, 5 verdicts"]:::p0
     T03["M2-T03 · core · M<br/>diff → apply"]:::p0
     T04["M2-T04 · core · S<br/>undo"]:::p0
-    T05["M2-T05 · proof · M<br/>verify"]:::p0
+    T05["M2-T05 · proof · M<br/>verify<br/>(roadmap-gated)"]:::p2
     T06["M2-T06 · ui · S<br/>pane actions"]:::p1
     T07["M2-T07 · adapters · M<br/>two more mechanisms"]:::p1
     T08["M2-T08 · adapters · S<br/>capability probe"]:::p2
@@ -229,7 +231,7 @@ flowchart TB
     subgraph proof["lane proof — runs and records only"]
         direction TB
         T08["M0-T08 · sink · S"]:::p0
-        T09["M0-T09 · consumer · S"]:::p0
+        T09["M0-T09 · consumer · S<br/>(deferred)"]:::p2
     end
     subgraph docs["lane docs"]
         direction TB
@@ -245,9 +247,10 @@ flowchart TB
 
     classDef p0 fill:#ffe0e0,stroke:#c0392b,color:#111
     classDef p1 fill:#fff3cd,stroke:#b8860b,color:#111
+    classDef p2 fill:#eeeeee,stroke:#888,color:#111
 ```
 
-Two workers: one in `core` (T02 → T03/T11) and one in `wire` (T05 → T06/T07 → T08/T09). They meet
+Two workers: one in `core` (T02 → T03/T11) and one in `wire` (T05 → T06/T07 → T08). They meet
 only at the single arrow `T02 → T05`, which is the hook line's command string — so the `wire`
 worker can start as soon as `setup --print` exists, and never has to rebase onto `bin/`.
 

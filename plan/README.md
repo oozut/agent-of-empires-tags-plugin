@@ -15,6 +15,7 @@ this folder — this folder says what to build first, with which values.
 | `graph.md` | Mermaid views: the ladder, one dependency graph per milestone, the M0 lane split, a relative-effort schedule |
 | `lanes/` | One brief per M0 lane (`core`, `wire`, `proof`, `docs`, `release`) — scope, read-first list, tasks, handoff, so a lane can be worked in its own session |
 | `parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
+| `roadmap.md` | Deferred work with the decision that has to be taken first: consumer read-back (`verify`, M3), signed session ids, Windows assets, tag-based release verification |
 
 Design docs: `docs/header-contract.md` (what is promised) → `plan/milestones.md` (what ships when)
 → `docs/implementation.md` (where the code goes) → `docs/harness-adapters.md` (per-harness data) →
@@ -109,10 +110,10 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | P0 tasks | The shippable core |
 |---|---|---|
-| M0 | 10 of 13 | Header minted at launch, delivered by both hook keys, visible at a local sink and at the real consumer, `doctor` that names any broken piece |
+| M0 | 11 of 13 | Header minted at launch, delivered by both hook keys, visible at a local sink, `doctor` that names any broken piece |
 | M1 | 4 of 8 | Header set and rules editable in aoe, badge showing the resolved value, worker + capabilities declared once |
-| M2 | 5 of 8 | Path detection, per-substrate verdicts, diff → apply → `undo`, `verify` |
-| M3 | 3 of 6 | Consumer adapter, page board, honest degradation |
+| M2 | 4 of 8 | Path detection, per-substrate verdicts, diff → apply → `undo` (`verify` is roadmap-gated) |
+| M3 | 3 of 6 | Consumer adapter, page board, honest degradation — **roadmap-gated**, cannot start before a consumer is named |
 | M4 | 2 of 6 | Honest row statuses for every target, install from the published source |
 
 ## How to use a milestone file
@@ -131,10 +132,10 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | State | Blocking |
 |---|---|---|
-| M0 | in progress — done: T01, T02, T03, T04, T05, T06, T07, T08 (mechanism leg), T10, T11, T12, T13 (Rust port, installable runtime, CI matrix); open: T09 (consumer leg), acceptance 2 (sandbox) | open decision #4 — which consumer counts as "recorded" for T09; sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source, not a local checkout |
+| M0 | in progress — done: T01, T02, T03, T04, T05, T06, T07, T08 (sink leg), T10, T11, T12, T13 (Rust port, installable runtime, CI matrix); open: acceptance 2 (sandbox); T09 deferred to `roadmap.md` | sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source, not a local checkout |
 | M1 | not started | M0 |
 | M2 | not started | M1 |
-| M3 | not started | M2 |
+| M3 | not started — roadmap-gated (`roadmap.md` §1) | M2 + a named consumer with a read path |
 | M4 | not started | M0 (P0 rows and publish path can start earlier) |
 
 Pre-M0 setup work that is not a milestone: `plan/m0.md` §Preconditions.

@@ -248,12 +248,14 @@ fn a_recorded_verification_is_not_a_warning() {
 }
 
 #[test]
-fn never_verified_is_a_warning_not_a_failure() {
+fn no_recorded_verification_is_skipped_not_warned() {
+    // The plugin does not read a consumer back (plan/roadmap.md), so "never verified" is not a
+    // degraded install: it is a check that does not apply to this build.
     let (sandbox, _) = wired();
     let report = report(&sandbox);
     let last = check(&report, "last verification");
-    assert_eq!(last.status, llm_tags::doctor::WARN);
-    assert!(last.detail.contains("never verified"));
+    assert_eq!(last.status, llm_tags::doctor::SKIP);
+    assert!(last.detail.contains("out of scope"), "{}", last.detail);
     assert!(report.ok());
 }
 

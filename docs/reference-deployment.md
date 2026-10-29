@@ -62,9 +62,10 @@ contract alone.
   off and no container can be started to test against. Nothing about the contract depends on this;
   it is a host setup gap.
 - **Consumer-side tagging.** Whether the OneCLI proxy forwards an unknown header untouched, and
-  whether LiteLLM turns a request header into a spend dimension at all, are unknown. If it does
-  not, the consumer leg needs a real change (proxy config, a metadata translation, or a different
-  consumer) — and that is a deployment fact, not a reason to redesign the header set.
+  whether LiteLLM turns a request header into a spend dimension at all, are unknown — and, since
+  2026-10-29, deliberately not required: the plugin does not read a consumer back
+  (`plan/roadmap.md` §1), so the consumer leg is a deployment exercise, not a plugin gate. The
+  probe, when someone wants the answer, is in that roadmap entry.
 
 ## Proof runs (M0-T08 mechanism leg, recorded 2026-10-29)
 

@@ -138,11 +138,11 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `setup <agent> --dry-run` | diff only | M2 |
 | `setup <agent> --yes` | apply with backup | M2 (open #5) |
 | `setup <agent> --undo` | restore the backup / remove the marker block | M2 |
-| `verify [--window 24h]` | one request, then look for the header consumer-side | M2 |
+| `verify [--window 24h]` | one request, then look for the header consumer-side — **roadmap-gated** (`plan/roadmap.md` §1): not in M0–M2 | roadmap |
 | `--session` `--profile` `--tool` `--project` `--group` `--title` | fallbacks for row fields (values from `AOE_*`) | M0 |
 | `--adapter <agent>` | pin the adapter row instead of detecting | M0 |
 | `--json` | machine-readable output (doctor, status) | M0 |
-| Exit codes | `0` ok/degraded, `1` doctor or verify failure, `2` usage error | M0 |
+| Exit codes | `0` ok/degraded, `1` a failing `doctor` check, `2` usage error | M0 |
 
 ## 7. Runtime constants
 
@@ -177,7 +177,10 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Backup suffix | `.aoe-llm-tags.bak` (same directory, one generation) | proposed |
 | Write method | temp file in the same directory + atomic rename; refuse symlinks and non-regular files | decided |
 
-## 10. Usage views (M3)
+## 10. Usage views (M3) — roadmap-gated
+
+Every parameter in this section belongs to the deferred consumer read-back (`plan/roadmap.md` §1),
+not to a milestone that can start today.
 
 | Parameter | Value | Status |
 |---|---|---|
@@ -222,7 +225,7 @@ Verification split, and it must stay named:
 | 1 | Accumulate every matching rule, or first match wins | `rules[]` semantics, `{tags}` |
 | 2 | Value grammar per header (comma list vs JSON vs custom template) | `headers[].template` |
 | 3 | `{session}` short vs full id default | `session_tagging` |
-| 4 | Which consumer is the reference for `verify` here | `verify`, `consumer.*` |
+| 4 | ~~Which consumer is the reference for `verify` here~~ — **resolved 2026-10-29: deferred.** The plugin mints and delivers; it does not read a consumer back. `verify` and every `consumer.*` parameter are roadmap (`plan/roadmap.md` §1), and `doctor`'s `last verification` line is `skip` until one is recorded | `verify`, `consumer.*`, M3 |
 | 5 | Apply config edits on `--yes`, or print only | `setup` flags, §9 |
 | 6 | Neutral `X-AoE-*` names vs operator-chosen wire names | default header rows |
 | 7 | How many headers ship enabled | default header rows, every adapter's static config |

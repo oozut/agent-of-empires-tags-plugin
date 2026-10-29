@@ -146,10 +146,14 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
             status: OK.to_string(),
             detail: value.to_string(),
         }),
+        // Read-back is deliberately out of scope: the plugin mints and delivers the header, it
+        // does not ask a gateway or a billing system what it did with it. That is roadmap work
+        // (`plan/roadmap.md`), so an install that never recorded one is not a degraded install.
         _ => checks.push(Check {
             name: "last verification".to_string(),
-            status: WARN.to_string(),
-            detail: "never verified against a consumer system; proving arrival is M0-T09"
+            status: SKIP.to_string(),
+            detail: "consumer read-back is out of scope for this build; prove arrival with \
+                     tools/header-sink.py (docs/install.md \u{a7}5)"
                 .to_string(),
         }),
     }

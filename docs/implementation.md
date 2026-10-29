@@ -87,7 +87,7 @@ link the library directly.
 | `value [header]` | same | one header's value alone (default: the shipped tag header) | harnesses that take a command as the header value (`!aoe-llm-tags value X-AoE-Session`) |
 | `doctor` | both hook keys, plugin path, every enabled header's mapping, `aoe` binary | human report, exit 1 on any failure | the user, after installing |
 | `setup --print` | adapter row + install path + enabled headers | the exact hook lines + one mapping line per header | the user, before pasting |
-| `verify` | the configured consumer's request/usage records (M2) | pass/fail | M2 |
+| `verify` | the configured consumer's request/usage records | pass/fail | roadmap — consumer read-back is deferred (`plan/roadmap.md` §1) |
 
 Flags for `hook`/`value` (all optional; every one is a *fallback*, the row wins):
 
@@ -287,10 +287,11 @@ why `enabled = false` costs nothing anywhere else.
   existing container. Whether the harness can run inside a sandbox at all is a deployment fact
   (a wrapper that needs a credential may not) — record it in the adapter row's sandbox verdict
   instead of assuming it.
-- Unknown, and cheap to check once: whether every hop between the agent and the consumer keeps an
-  unknown request header, and whether the consumer can turn one into a dimension at all. That is
-  deployment knowledge (`reference-deployment.md`), not a design input — if a hop strips it, the
-  hop is the thing to change.
+- Whether every hop between the agent and the consumer keeps an unknown request header, and whether
+  the consumer can turn one into a dimension at all: deployment knowledge
+  (`reference-deployment.md`), not a plugin input. Since decision #4 was resolved as *deferred*
+  (2026-10-29) nothing here blocks a release — a hop that strips the header is the hop's problem to
+  fix, and the plugin's obligation ends at the sink proof (`plan/roadmap.md` §1).
 
 ## Step 5 — `doctor`
 
@@ -306,7 +307,7 @@ Each row is one check with its own line and exit contribution.
 | Row resolves for a given session | `aoe session show … --json` | "falling back to hook environment: group/title will be empty" |
 | Each enabled header mapped | adapter row + config root | which header, which file, and whether the file was created or already had it |
 | Value renders | run the same resolver locally | the template that failed and the field it needed |
-| Last verification | stored in plugin settings | "never verified against a consumer system" |
+| Last verification | `last_verified` in plugin settings, if one was ever recorded | `skip` when absent: consumer read-back is roadmap work (`plan/roadmap.md` §1), so an install without one is not degraded |
 
 Exit non-zero if any line fails. Print the absolute paths it used, always — a hook debugging
 session with no visible paths is the expensive failure mode.
@@ -396,7 +397,11 @@ with the marker `"// aoe-llm-tags: managed"` so `undo` is exact, atomic replace 
 the same directory + rename), re-read and re-parse after writing, and never write a config the
 user has not seen in the diff.
 
-## Step 9 — M3 page
+## Step 9 — M3 page (roadmap-gated)
+
+> Do not start this before a consumer is named again: every number on the page comes from the
+> deferred read-back (`plan/roadmap.md` §1). The section describes the shape, not current work.
+
 
 `[[ui]] slot = "page"` with a single self-contained HTML file (inline CSS/JS, `data:` images),
 state pushed by the worker with `ui.state.set` (slot `page`, ≤64 KiB): usage per tag keyed by
@@ -454,9 +459,9 @@ None of these block M0; each one removes a workaround.
 The general ones live in `plan/milestones.md` §Open decisions and `plan/parameters.md` §Open.
 These are the two that bite during M0 and are about the build, not the design:
 
-1. Which consumer system on the reference path counts as "recorded" — the first hop that keeps
-   headers, or the system that can later answer a query about them. Deployment-specific, answered
-   in `reference-deployment.md`; the plugin only needs to know where to look for `verify`.
+1. ~~Which consumer system on the reference path counts as "recorded"~~ — **resolved 2026-10-29:
+   deferred.** The plugin does not read a consumer back, so no vendor's read API is a dependency;
+   `verify`, `consumer.*` and M3 wait on `plan/roadmap.md` §1.
 2. Whether `setup <agent>` stays print-only in M2 or applies the mapping on `--yes` with a
    backup. The edit rules above are written for the "applies" case, so deciding "print-only" is
    a subtraction, not a redesign.

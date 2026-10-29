@@ -71,12 +71,12 @@ Expect `0 failed` and one line per check, each naming the absolute path it looke
   [ok  ] before_session hook    AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook …
   [ok  ] mapping X-AoE-Tags     ~/.pi/agent/models.json → litellm (value: $AOE_LLM_TAGS, models: 1)
   [ok  ] value rendering        X-AoE-Tags=AOE_LLM_TAGS="aoe,feature:,session:S-cf11"
-  [warn] last verification      never verified against a consumer system; proving arrival is M0-T09
+  [skip] last verification      consumer read-back is out of scope for this build; prove arrival …
 ```
 
-`[warn] last verification` is expected until you have seen the header arrive somewhere. It is a
-warning because the plugin cannot know what consumes headers on your path; it is not a broken
-install. Every other `warn`/`fail` names the piece to fix.
+`[skip] last verification` is expected and permanent: this build mints and delivers the header, it
+does not ask a gateway or a billing system what it did with it (`plan/roadmap.md` §1). Prove
+arrival with the fixture in §5. Every `warn`/`fail` names the piece to fix.
 
 Exit codes: `0` all good (warnings allowed), `1` at least one check failed, `2` bad usage.
 
@@ -104,9 +104,10 @@ python3 tools/header-sink.py 8787 /tmp/tag-sink.jsonl --reset &
 grep -o '"x-aoe-tags": "[^"]*"' /tmp/tag-sink.jsonl
 ```
 
-A worked run, with the exact commands and the two traps (use the real `pi`, not a wrapper that
-regenerates its config; the fixture must answer streaming requests), is in
-`docs/reference-deployment.md` §Proof runs.
+That run is the verification this build offers: the header leaves the harness with the value aoe's
+hook minted for the session. A worked example, with the exact commands and the two traps (use the
+real `pi`, not a wrapper that regenerates its config; the fixture must answer streaming requests),
+is in `docs/reference-deployment.md` §Proof runs.
 
 ## Updating, disabling, removing
 
@@ -132,3 +133,4 @@ them, so turning the plugin off is two edits, not one.
 | `doctor`: mapping missing | paste the mapping line into the file it names; for `pi` keep a non-empty `models` list |
 | `env` shows nothing in a session | the session started before you edited the config — restart it; values are launch-time |
 | `doctor`: asset not found (release installs) | the release is missing that platform's tarball; the error lists the assets it found |
+| `doctor`: `[skip] last verification` | expected — consumer read-back is roadmap work, not a broken install |

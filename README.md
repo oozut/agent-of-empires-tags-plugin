@@ -4,11 +4,13 @@ An Agent of Empires plugin that makes each agent session attach identifying head
 request it sends, so any system on the request path — a gateway, an egress proxy, a log pipeline,
 a session-control plane — can attribute, route, or validate that request.
 
-Status: M0 in progress — Rust port landed (M0-T13). The package installs, `aoe plugin update`
-builds and installs both binaries, `hook|value` resolves a session to one `NAME=value` per enabled
-header (M0-T02), `setup --print` emits the exact hook and mapping lines (T05) and `doctor` names any
-broken piece (T11) — 76 tests green. Open: the proof runs (T08/T09), the second header (T10) and
-`docs/install.md` (T12). See `plan/README.md`.
+Status: M0 nearly done — Rust port landed (M0-T13, CI green on `main`). The package installs,
+`aoe plugin update` builds and installs both binaries, `hook|value` resolves a session to one
+`NAME=value` per enabled header (T02), `setup --print` emits the exact hook and mapping lines (T05),
+`doctor` names any broken piece (T11), two independent headers reach a request (T10), and the sink
+proof plus `docs/install.md` are done (T08, T12) — 76 tests green. Open: the sandbox acceptance leg
+(host has no reachable container runtime for `pi-proxy`). Reading a consumer back is deferred, not
+missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
 
@@ -94,6 +96,7 @@ Plan (what ships when, and with which values):
 | `plan/milestones.md` | The ladder: constraints, M0–M4, acceptance criteria, open decisions |
 | `plan/m0.md` … `plan/m4.md` | One file per milestone: preconditions, priority-tagged tasks, parameters introduced, evidence |
 | `plan/parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
+| `plan/roadmap.md` | Work deliberately deferred, with what has to be decided before it comes back — notably consumer read-back (`verify`, M3 usage views) |
 
 ## Package layout
 

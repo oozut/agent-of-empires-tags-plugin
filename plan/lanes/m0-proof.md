@@ -21,13 +21,13 @@ Build and self-test the sink fixture — it depends on nothing:
 | ID | Do | Output that proves it |
 |---|---|---|
 | M0-T08 | **mechanism leg:** one request from inside a session, isolated harness config pointed at the sink, no proxy in the path | one sink line carrying the header, `feature` and `session` tokens present |
-| M0-T09 | **consumer leg:** the same session through its normal launcher on its real path | the header visible at the first hop that records requests; record the hop and the exact query in `docs/reference-deployment.md` |
+| M0-T09 | **consumer leg — deferred** (`plan/roadmap.md` §1, decision #4): the same session through its normal launcher on its real path | the header visible at the first hop that records requests; record the hop and the exact query in `docs/reference-deployment.md`. Not needed for M0: the plugin delivers, it does not read a consumer back |
 
 ## Rules of evidence
 
 - **Two legs, never merged.** The sink proves the plugin mints and the harness sends; the consumer
-  proves the real path delivers. A pass on one is not a pass on the other, and a failure names which
-  leg broke.
+  would prove the real path delivers. Only the first is in scope (decision #4, 2026-10-29): a pass
+  on one is never reported as a pass on the other, and the consumer leg is roadmap, not a gate.
 - **Record the command, not the conclusion.** Every claim in the milestone's evidence table is a
   command plus its output, with the timestamp and the session id.
 - **A precondition failure is a recorded result.** If the consumer is unreachable or the sandbox

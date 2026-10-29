@@ -76,7 +76,8 @@ or the harness on one host, it is wrong and belongs in the reference deployment.
 ## M0: prove a header on a real session → `m0.md`
 
 Goal: a session launched by aoe sends the configured headers, and a system outside aoe records
-them. Any such system counts; the reference deployment says which one we test against.
+them. The proof is a local header sink, so it needs no named consumer: the plugin mints and delivers
+a header, and reading a consumer back is roadmap work (`plan/roadmap.md`, decision #4).
 
 Acceptance, in a real aoe session (host now, sandbox once the runtime is reachable):
 
@@ -91,9 +92,10 @@ Acceptance, in a real aoe session (host now, sandbox once the runtime is reachab
    made before the restart, and does not pick up one made after it while the container lives.
 4. The default header value contains at least a feature token and a stable, distinct session
    token; a second enabled header (e.g. a discrete session header) is delivered independently.
-5. Proof of arrival in two places: a temporary local HTTP sink logging request headers, and a
-   consumer system on the real path showing the header. The consumer may be any hop that
-   records request headers; it does not have to be an LLM gateway.
+5. Proof of arrival: a temporary local HTTP sink logging request headers, fed by the harness with
+   the value aoe's hook minted for a real session. The second half (the same header seen in a
+   named consumer's records) is deferred with decision #4 — proving it needs a consumer, a read
+   credential and a header→dimension mapping, none of which the plugin should depend on.
 6. `doctor` reports wired with both keys present, says whether it resolved the session row or
    fell back to the hook environment, and names exactly which of `before_session` /
    `before_start` / static mapping / command path is missing when one is removed.
@@ -101,10 +103,11 @@ Acceptance, in a real aoe session (host now, sandbox once the runtime is reachab
    Same for a sandboxed session whose only hook is in `before_session`.
 
 Verification technique: point the harness at a local header-logging sink for one run (test
-fixture only, not a production proxy), then repeat on the real path and look for the header at
-the first hop that records requests. A harness may launch through a wrapper that regenerates its
-config or forces an upstream, in which case the sink run needs an isolated config and no proxy
-on that path; that is a per-harness note, not a change to the acceptance. For the sandbox case
+fixture only, not a production proxy), with the value read from the launched agent's environment
+so aoe's hook is what is being proven, not just the harness. A harness may launch through a
+wrapper that regenerates its config or forces an upstream, in which case the sink run needs an
+isolated config and no proxy on that path; that is a per-harness note, not a change to the
+acceptance. For the sandbox case
 the static mapping must exist **before** the container is created: aoe copies the harness's
 config into the private per-session store at creation and never re-syncs it afterwards. Record
 harness and aoe versions in the adapter row.
@@ -141,6 +144,10 @@ Acceptance:
 
 ## M3: usage views → `m3.md`
 
+**Roadmap-gated.** Every acceptance line below needs a consumer the plugin can query, which decision
+#4 deferred (`plan/roadmap.md` §1). M3 stays in the ladder because it is the honest shape of the
+feature, but no M3 task may start before that decision is taken again.
+
 Goal: answer "what did this feature and this session cost", where the operator's consumer system
 can answer it.
 
@@ -169,9 +176,13 @@ Full parameter-level consequences: `parameters.md` §Open.
    template so a consumer that needs a different shape can be served without code. JSON is one
    such template, not a plugin mode.
 3. Session token form: `S-9f3a` short id by default, full id opt-in, never the title.
-4. Which consumer system is the reference for verification in this deployment — the first hop
-   that records headers, plus the read path the plugin may use. Deployment-specific, so the
-   concrete answer lives in `docs/reference-deployment.md`.
+4. ~~Which consumer system is the reference for verification in this deployment.~~
+   **Resolved 2026-10-29: deferred — the plugin does not read a consumer back.** Naming a consumer
+   would make one vendor's read API a hard dependency for `verify`, the M3 usage page and one
+   `doctor` line, and it changes nothing about whether the header is minted or delivered. The M0
+   proof is the local sink; `doctor`'s `last verification` line is `skip` when nothing is recorded.
+   Coming back: `plan/roadmap.md` §1, which also states what to decide first (consumer, read path,
+   header→dimension mapping).
 5. Config writes: keep them opt-in per harness, or print-only with the user pasting. Print-only
    is safer for M2, one-click is the better long-term UX.
 6. Header naming: ship neutral `X-AoE-*` names and let a template/consumer-facing alias fix the
