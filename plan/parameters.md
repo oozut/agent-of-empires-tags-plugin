@@ -15,7 +15,8 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | Manifest file | `aoe-plugin.toml` (repo root) | decided |
 | `name` | `LLM Tags` | proposed |
 | `version` | `0.1.0` (M0), semver after | proposed |
-| `api_version` | `17` while the host runs aoe 1.20.0 (supports 1..=17); `18` once the host is on ≥1.21.0 — required by `per_project`; `19` only for `session.lifecycle.changed` (M1-T08) | decided: floor 17, target 18 |
+| `api_version` | `17` is the floor this plugin ships at (aoe ≥1.20.0 supports 1..=17); `18` — required by `per_project` — is available on the ≥1.21.0 host; `19` only for `session.lifecycle.changed` (M1-T08) | decided: floor 17, target 18 |
+| Host version checked | aoe **1.21.0** on this host (2026-10-29), so 18 is available; the manifest stays at 17 through M0 because nothing in M0 uses a schema-18 feature. The bump lands in the M1-T03 commit together with `aoe_version` | decided |
 | `aoe_version` | `">=1.20.0, <2.0.0"` at 17; raise to `">=1.21.0, <2.0.0"` when the manifest moves to 18 | proposed |
 | `capabilities` (M0) | none | decided |
 | `capabilities` (M1+) | `runtime.worker`, `session.read`, `net` | proposed |
@@ -53,6 +54,19 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | `feature_tag` | string | `""` | tag grammar | M1 | decided |
 | `feature_tag` scope | — | `per_project = true` (requires `api_version ≥ 18`) | — | M1 | decided |
 
+M0 rule semantics (implemented in `src/llm_tags/resolver.py`, M0-T02):
+
+- `project` matches `match_value` against the project slug (basename, lowercased, non-alphanumerics
+  → `-`) or the full project path, so both `agent-of-empires-tags-plugin` and the absolute path work.
+- `manual` is an **unconditional** operator-written tag in M0: it matches every session.
+  `match_value` is only the `object_list` item key. Assignable per-session manual tags arrive in
+  M3-T06; until then an unconditional rule is what a hand-written settings block can honour.
+- M1 kinds (`group`, `tool`, `title_regex`) are parsed and kept but never match in M0, each with one
+  stderr warning per launch. Unknown kinds likewise never match.
+- Settings resolution: global `config.toml`, then the profile's sparse override file merged onto it
+  the way aoe merges (object keys recurse, **arrays replace**). A missing section means the defaults
+  below; hand-written settings survive the plugin being disabled.
+
 Default header rows:
 
 ```toml
@@ -82,7 +96,17 @@ template = "{session_id}"
 | `{group_slug}` | slugged group | `backend` | preferred over `{group}` |
 | `{project}` | row `path` | `/var/lib/aoe/…/koreans` | may contain a username; opt-in |
 | `{project_slug}` | basename of path | `agent-of-empires-tags-plugin` | preferred |
-| `{branch}` | `aoe list --json` `worktree.branch` | `lithuanians` | requires the list call |
+| `{branch}` | `aoe list --json` `worktree.branch` | `lithuanians` | resolved only when a template references it |
+
+Template-resolution notes (implemented in `src/llm_tags/resolver.py`, M0-T02):
+
+- `{branch}` costs a **second** `aoe` call, so it is resolved only when an enabled template
+  actually references it. The row query and the list query share one 2 s launch budget; when the
+  budget is gone the field renders empty with a warning instead of delaying the session.
+- `{group_slug}` slugs the whole group string (`Backend/web` → `backend-web`); `{project_slug}`
+  slugs the basename of `{project}`.
+- A field the session genuinely lacks renders empty (never an error). A field that does not exist
+  at all (a template typo) also renders empty, with one stderr warning naming it.
 
 ## 5. Value rules
 
@@ -94,13 +118,19 @@ template = "{session_id}"
 | Default separator | `,` between tokens; `feature:<tag>` for a rule hit | decided |
 | Forbidden content | titles, raw paths, group prose, newlines, non-ASCII unless the operator writes them into a template | decided |
 | Empty result | empty value ⇒ the env var is minted empty and the harness sends an empty header | open |
+| Over-long render | truncate to 800 bytes on a UTF-8 boundary, warn on stderr, still exit 0 | proposed |
+| Control characters | stripped from the rendered value (a newline would corrupt the `KEY=VALUE` stdout contract); outer whitespace trimmed | decided |
+| Invalid header / env name | that header is skipped with a warning; `doctor` reports it | decided |
+| Invalid / over-cap rule tags | invalid tags dropped with a warning; valid tags deduped, then capped at 5 | decided |
+| Absent `headers` key | built-in header set (default rows above); an explicit `headers = []` means no headers | decided |
+| Malformed config TOML | warn on stderr, ignore that file (profile falls back to global, global to defaults), exit 0 | decided |
 
 ## 6. CLI surface
 
 | Command / flag | Value | Milestone |
 |---|---|---|
-| `hook` | prints one `env_var=value` per enabled header | M0 |
-| `value [header]` | prints one header's value; default `X-AoE-Tags` | M0 |
+| `hook` | prints one `env_var=value` per enabled header (implemented, M0-T02) | M0 |
+| `value [header]` | prints one header's value; default `X-AoE-Tags` (implemented, M0-T02) | M0 |
 | `doctor` | report; exit 1 if any check fails | M0 |
 | `setup --print` | hook lines + mapping lines, writes nothing | M0 |
 | `setup <agent> --dry-run` | diff only | M2 |
@@ -117,6 +147,7 @@ template = "{session_id}"
 | Constant | Value | Why |
 |---|---|---|
 | Session-row query timeout | 2 s | hook must never block a launch |
+| Launch budget | 2 s total across every subprocess (row query + optional `aoe list` for `{branch}`) | one slow `aoe` delays a launch once, never twice |
 | Fallback on timeout/error | hook environment, exit 0 | a non-zero hook exit aborts the session |
 | Doctor output | absolute paths always | hook debugging without paths is the expensive failure |
 

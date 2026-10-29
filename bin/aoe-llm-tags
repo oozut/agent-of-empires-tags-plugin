@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""The aoe llm-tags CLI. Run from a [host_hooks] line; nothing here imports aoe.
+
+    aoe-llm-tags hook  [flags]    # one NAME=value per enabled header
+    aoe-llm-tags value [header]   # one header's value (command form)
+
+The implementation lives in ../src/llm_tags so the resolver can be imported by
+the tests and, from M1, by the worker without duplicating it. This file is the
+stable path a hook line points at: <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+from llm_tags.cli import main  # noqa: E402  (path set up above)
+
+if __name__ == "__main__":
+    sys.exit(main())

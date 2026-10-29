@@ -130,7 +130,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | State | Blocking |
 |---|---|---|
-| M0 | not started | reference consumer for proof #5; sandbox runtime access (deployment) |
+| M0 | in progress — T01 and T02 done; next T03 (resolver tests) / T11 (`doctor`) / T04, then T05 (`setup --print`) unblocks `wire` | reference consumer for proof #5; sandbox runtime access (deployment) |
 | M1 | not started | M0 |
 | M2 | not started | M1 |
 | M3 | not started | M2 |

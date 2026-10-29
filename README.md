@@ -4,8 +4,9 @@ An Agent of Empires plugin that makes each agent session attach identifying head
 request it sends, so any system on the request path — a gateway, an egress proxy, a log pipeline,
 a session-control plane — can attribute, route, or validate that request.
 
-Status: M0 in progress — the plugin package installs (manifest, this README, `bin/`); the CLI
-lands in M0-T02. See `plan/README.md` for status.
+Status: M0 in progress — the package installs (M0-T01) and `bin/aoe-llm-tags hook|value` resolves
+a session to one `NAME=value` per enabled header (M0-T02). Resolver tests (T03), `doctor` (T11/T04),
+`setup --print` (T05) and the proof runs (T08/T09) are still open. See `plan/README.md`.
 
 ## Install
 
@@ -75,6 +76,6 @@ Plan (what ships when, and with which values):
 | `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 17` (`aoe_version = ">=1.20.0, <2.0.0"`), capabilities added only from M1 |
 | `bin/aoe-llm-tags` | The M0 CLI surface: `hook` / `value` / `doctor` / `setup` / `verify`, `#!/usr/bin/env python3`, mode 0755 |
 | `adapters.toml` | Per-harness header mechanism, as data |
-| `src/llm_tags/` | Resolver modules once `bin/` passes ~300 lines |
+| `src/llm_tags/` | The resolver: `settings.py` (where settings live and how a profile overrides them), `resolver.py` (session facts → template fields → rendered values, env-name derivation, rule matching), `cli.py` (the verbs) |
 | `worker/main.py` | M1 stdio JSON-RPC worker |
 | `tests/` | Resolver and `doctor` tests; no aoe and no network needed |

@@ -71,7 +71,10 @@ Verified in `/var/lib/aoe/agent-of-empires-worktrees/koreans`; treat these as th
 
 ## Step 1 — the CLI core
 
-One file, five subcommands, no daemon, no aoe imports.
+One entrypoint (`bin/aoe-llm-tags`), one resolver (`src/llm_tags/`: `settings.py` for where the
+settings live, `resolver.py` for facts → fields → rendering, `cli.py` for the verbs), no daemon, no
+aoe imports. The entrypoint only puts `../src` on `sys.path` and calls `llm_tags.cli.main`, so the
+installed plugin dir is self-contained and the tests can import the resolver directly.
 
 | Subcommand | Reads | Writes | Used by |
 |---|---|---|---|
@@ -98,10 +101,13 @@ Resolution pipeline, in order, stopping at the first success for each field:
 Then: read settings → evaluate rules → render every enabled header's template → print one
 `NAME=value` line per header. Any exception is a `stderr` line and exit 0.
 
-Settings read: `[plugins."dev.oozut.llm-tags".settings]` from the effective config
-(`<app_dir>/profiles/<profile>/config.toml` if present, else `<app_dir>/config.toml`; which one
-applies here is in `reference-deployment.md`). Missing section = no rules = an empty value, which
-is not an error.
+Settings read: `[plugins."dev.oozut.llm-tags".settings]` from the effective config. That is the
+global `<app_dir>/config.toml` with the profile's sparse override file
+(`<app_dir>/profiles/<profile>/config.toml`, top level = the override tree) merged onto it the way
+aoe merges: object keys recurse, **arrays replace** (`merge_configs_generic`). A missing section
+means no rules, which is not an error; an explicit `headers = []` means no headers at all.
+`src/llm_tags/settings.py` reproduces that merge, so the hook and the settings UI agree about a
+value; a file that cannot be parsed is a warning and is ignored (profile → global → defaults).
 
 Rule evaluation (M1 grows this; M0 needs only `project` and `manual`). Rendering is per header,
 so the default tag format is just the default template:
