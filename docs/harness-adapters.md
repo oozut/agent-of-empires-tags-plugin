@@ -147,10 +147,12 @@ root (`docs/guides/sandbox.md`, `src/session/config/container_config.rs`): for p
 list includes `agent/models.json`, and the root comes from `PI_CODING_AGENT_DIR` or
 `[session.agent_config_dir]`, not a hardcoded `~/.pi`. When a launcher regenerates that
 directory at start, the file to seed is the launcher's source instead (see "Launchers that
-regenerate the harness config" above). Two consequences either way: the mapping must be
-in place before the container is created, because the store is not re-synced afterwards; and
-an adapter that cannot name the file aoe will seed is `unsupported` for sandboxes even when it
-is `verified` on the host.
+regenerate the harness config" above). Two consequences either way. First, the mapping must be
+in place before the container **starts**: aoe re-seeds the store at come-up and on re-attach
+(`refresh_agent_configs_for_instance` + `sync_agent_config`), but a *running* container keeps the
+copy it started with, so an edit lands on the next start, never mid-flight. Second, an adapter that
+cannot name the file aoe will seed is `unsupported` for sandboxes even when it is `verified` on the
+host.
 
 **Where the values come from, and when.** Two independent choices, and only the first one is
 worth optimising:
