@@ -60,6 +60,18 @@ enum Command {
         /// print the lines (the only mode implemented so far)
         #[arg(long = "print")]
         print: bool,
+        /// show the diff without writing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// apply the change (requires --yes to write)
+        #[arg(long = "apply")]
+        apply: bool,
+        /// confirm the write
+        #[arg(long = "yes")]
+        yes: bool,
+        /// restore the previous file from backup
+        #[arg(long = "undo")]
+        undo: bool,
         /// machine-readable output
         #[arg(long)]
         json: bool,
@@ -142,7 +154,15 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
     match cli.command {
         Command::Hook(flags) => hook(&flags, env),
         Command::Value { header, flags } => value(&header, &flags, env),
-        Command::Setup { print, json, flags } => setup_cmd(print, json, &flags, env),
+        Command::Setup {
+            print,
+            dry_run,
+            apply,
+            yes,
+            undo,
+            json,
+            flags,
+        } => setup_cmd(print, dry_run, apply, yes, undo, json, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
@@ -199,9 +219,42 @@ fn value(wanted: &str, args: &FlagArgs, env: &Env) -> i32 {
     EXIT_OK
 }
 
-fn setup_cmd(print: bool, json: bool, args: &FlagArgs, env: &Env) -> i32 {
-    if !print && !json {
-        warn("`setup` is print-only in M0; pass --print (or --json)");
+#[allow(clippy::too_many_arguments)]
+fn setup_cmd(
+    print: bool,
+    dry_run: bool,
+    apply: bool,
+    yes: bool,
+    undo: bool,
+    json: bool,
+    args: &FlagArgs,
+    env: &Env,
+) -> i32 {
+    if undo {
+        return setup::undo_cmd(&args.flags(env), env);
+    }
+    if apply {
+        if !yes {
+            // Show the diff and require confirmation.
+            match setup::build(&args.flags(env), env, None, None) {
+                Err(err) => {
+                    warn(&err.to_string());
+                    return EXIT_FAIL;
+                }
+                Ok(plan) => {
+                    warn_all(&plan.warnings);
+                    for line in setup::text(&plan) {
+                        println!("{line}");
+                    }
+                    warn("rerun with --apply --yes to write");
+                    return EXIT_OK;
+                }
+            }
+        }
+        return setup::apply_cmd(&args.flags(env), env);
+    }
+    if !(print || dry_run || json) {
+        warn("`setup` is print-only unless --apply/--undo; pass --print (or --json)");
         return EXIT_USAGE;
     }
     match setup::build(&args.flags(env), env, None, None) {

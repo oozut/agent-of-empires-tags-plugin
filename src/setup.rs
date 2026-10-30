@@ -221,6 +221,215 @@ fn adapter_for<'a>(tool: &str, flags: &Flags, adapters: &'a [Adapter]) -> Option
     adapters::match_tool(adapters, tool)
 }
 
+/// Apply the pi mapping to the resolved config file (backup + atomic rename).
+pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
+    let plan = match build(flags, env, None, None) {
+        Ok(plan) => plan,
+        Err(err) => {
+            crate::cli::warn(&err.to_string());
+            return crate::cli::EXIT_FAIL;
+        }
+    };
+    let Some(adapter) = plan.adapter.clone() else {
+        crate::cli::warn("no adapter resolved");
+        return crate::cli::EXIT_FAIL;
+    };
+    if adapter.agent != "pi" {
+        crate::cli::warn(&format!(
+            "apply is implemented for pi only (adapter {})",
+            adapter.agent
+        ));
+        return crate::cli::EXIT_FAIL;
+    }
+    let (path, path_warnings) = crate::adapters::config_path(&adapter, env);
+    let Some(path) = path else {
+        for warning in path_warnings {
+            crate::cli::warn(&warning);
+        }
+        return crate::cli::EXIT_FAIL;
+    };
+    if let Err(err) = guard_regular_file(&path) {
+        crate::cli::warn(&err);
+        return crate::cli::EXIT_FAIL;
+    }
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            crate::cli::warn(&format!("{} could not be read: {err}", path.display()));
+            return crate::cli::EXIT_FAIL;
+        }
+    };
+    let mut data: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(err) => {
+            crate::cli::warn(&format!("{} is not valid JSON: {err}", path.display()));
+            return crate::cli::EXIT_FAIL;
+        }
+    };
+
+    let backup = backup_path(&path);
+    if !backup.exists() {
+        if let Err(err) = std::fs::copy(&path, &backup) {
+            crate::cli::warn(&format!("backup failed: {err}"));
+            return crate::cli::EXIT_FAIL;
+        }
+    }
+
+    // Find the provider entry that carries a non-empty models list.
+    let Some(providers) = data.get_mut("providers").and_then(|v| v.as_object_mut()) else {
+        crate::cli::warn("no providers object in config");
+        return crate::cli::EXIT_FAIL;
+    };
+    let mut target: Option<String> = None;
+    for (name, value) in providers.iter() {
+        let models = value
+            .get("models")
+            .and_then(|v| v.as_array())
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        if models {
+            target = Some(name.clone());
+            break;
+        }
+    }
+    let target = match target {
+        Some(name) => name,
+        None => {
+            crate::cli::warn("no provider entry with a non-empty models list");
+            return crate::cli::EXIT_FAIL;
+        }
+    };
+
+    let headers = providers
+        .get_mut(&target)
+        .and_then(|v| v.as_object_mut())
+        .and_then(|obj| {
+            if !obj.contains_key("headers") {
+                obj.insert("headers".to_string(), serde_json::json!({}));
+            }
+            obj.get_mut("headers").and_then(|v| v.as_object_mut())
+        });
+    let Some(headers) = headers else {
+        crate::cli::warn("provider headers is not an object");
+        return crate::cli::EXIT_FAIL;
+    };
+    for item in &plan.mapping {
+        headers.insert(
+            item.header.clone(),
+            serde_json::Value::String(format!("${}", item.env_var)),
+        );
+    }
+
+    let new = match serde_json::to_string_pretty(&data) {
+        Ok(text) => text,
+        Err(err) => {
+            crate::cli::warn(&format!("serialize failed: {err}"));
+            return crate::cli::EXIT_FAIL;
+        }
+    };
+    let tmp = path.with_extension("aoe-llm-tags.tmp");
+    if let Err(err) = std::fs::write(&tmp, &new) {
+        crate::cli::warn(&format!("write failed: {err}"));
+        return crate::cli::EXIT_FAIL;
+    }
+    if let Err(err) = std::fs::rename(&tmp, &path) {
+        crate::cli::warn(&format!("rename failed: {err}"));
+        return crate::cli::EXIT_FAIL;
+    }
+
+    // Re-read and re-parse.
+    match std::fs::read_to_string(&path) {
+        Ok(reread) => {
+            if serde_json::from_str::<serde_json::Value>(&reread).is_err() {
+                crate::cli::warn("re-parse failed after write");
+                return crate::cli::EXIT_FAIL;
+            }
+        }
+        Err(err) => {
+            crate::cli::warn(&format!("re-read failed: {err}"));
+            return crate::cli::EXIT_FAIL;
+        }
+    }
+
+    println!(
+        "applied {} header(s) to {}",
+        plan.mapping.len(),
+        path.display()
+    );
+    println!("backup: {}", backup.display());
+    crate::cli::EXIT_OK
+}
+
+pub fn undo_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
+    let plan = match build(flags, env, None, None) {
+        Ok(plan) => plan,
+        Err(err) => {
+            crate::cli::warn(&err.to_string());
+            return crate::cli::EXIT_FAIL;
+        }
+    };
+    let Some(adapter) = plan.adapter.clone() else {
+        crate::cli::warn("no adapter resolved");
+        return crate::cli::EXIT_FAIL;
+    };
+    let (path, _) = crate::adapters::config_path(&adapter, env);
+    let Some(path) = path else {
+        crate::cli::warn("no config path");
+        return crate::cli::EXIT_FAIL;
+    };
+    let backup = backup_path(&path);
+    if !backup.exists() {
+        crate::cli::warn(&format!("no backup at {}", backup.display()));
+        return crate::cli::EXIT_FAIL;
+    }
+    if let Err(err) = guard_regular_file(&path) {
+        crate::cli::warn(&err);
+        return crate::cli::EXIT_FAIL;
+    }
+    // Restore exactly, then remove backup.
+    if let Err(err) = std::fs::rename(&backup, &path) {
+        crate::cli::warn(&format!("restore failed: {err}"));
+        return crate::cli::EXIT_FAIL;
+    }
+    // Re-read and re-parse.
+    match std::fs::read_to_string(&path) {
+        Ok(reread) => {
+            if adapter.config_format == "json"
+                && serde_json::from_str::<serde_json::Value>(&reread).is_err()
+            {
+                crate::cli::warn("re-parse failed after restore");
+                return crate::cli::EXIT_FAIL;
+            }
+        }
+        Err(err) => {
+            crate::cli::warn(&format!("re-read failed: {err}"));
+            return crate::cli::EXIT_FAIL;
+        }
+    }
+    println!("restored {} from backup", path.display());
+    crate::cli::EXIT_OK
+}
+
+fn backup_path(path: &std::path::Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".aoe-llm-tags.bak");
+    path.with_file_name(name)
+}
+
+fn guard_regular_file(path: &std::path::Path) -> Result<(), String> {
+    let meta = std::fs::symlink_metadata(path).map_err(|err| err.to_string())?;
+    if meta.file_type().is_symlink() {
+        return Err(format!("{} is a symlink; refusing", path.display()));
+    }
+    if !meta.is_file() {
+        return Err(format!(
+            "{} is not a regular file; refusing",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
