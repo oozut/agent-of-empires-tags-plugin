@@ -133,7 +133,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 | Milestone | State | Blocking |
 |---|---|---|
 | M0 | **done** — P0 complete (T01–T03, T05–T08 incl. sink + sandbox legs, T10, T11, T13); P1 T04/T12 done; T09 (consumer leg) deferred to `roadmap.md` (decision #4) | `release-binary` verifiable only from a GitHub source, not a local checkout |
-| M1 | in progress — manifest (caps, ui slots, settings), resolver M1 match kinds + priority, worker protocol + shared-resolver test; outbound badge publishing, pane, lifecycle cache deferred | M0 |
+| M1 | in progress — manifest (caps, ui slots, settings), resolver M1 match kinds + priority, worker protocol + bidirectional host RPC wiring + row-badge publishing; pane and lifecycle cache deferred | M0 |
 | M2 | not started | M1 |
 | M3 | not started — roadmap-gated (`roadmap.md` §1) | M2 + a named consumer with a read path |
 | M4 | not started | M0 (P0 rows and publish path can start earlier) |
