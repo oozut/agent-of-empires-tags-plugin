@@ -191,7 +191,8 @@ impl Host {
             .call_host("config.get", serde_json::json!({"key": "headers"}))
             .ok()
             .and_then(|v| v.get("value").cloned());
-        let feature_tag_val = self
+        // feature_tag is per_project; fetch the global value once as a fallback.
+        let feature_tag_global = self
             .call_host("config.get", serde_json::json!({"key": "feature_tag"}))
             .ok()
             .and_then(|v| v.get("value").cloned());
@@ -210,11 +211,7 @@ impl Host {
                 table.insert("headers".to_string(), converted);
             }
         }
-        if let Some(value) = feature_tag_val {
-            if let Some(converted) = json_to_toml(&value) {
-                table.insert("feature_tag".to_string(), converted);
-            }
-        }
+
         if let Some(value) = session_tagging_val {
             if let Some(converted) = json_to_toml(&value) {
                 table.insert("session_tagging".to_string(), converted);
@@ -263,11 +260,30 @@ impl Host {
             };
 
             // snapshot_with_table ignores the runner; pass None.
+            let mut session_table = table.clone();
+            let mut params = serde_json::json!({"key": "feature_tag"});
+            if let Some(project_path) = session
+                .get("project_path")
+                .and_then(serde_json::Value::as_str)
+            {
+                params["project_path"] = serde_json::Value::String(project_path.to_string());
+            }
+            let feature_tag_value = self
+                .call_host("config.get", params)
+                .ok()
+                .and_then(|v| v.get("value").cloned())
+                .or_else(|| feature_tag_global.clone());
+            if let Some(value) = feature_tag_value {
+                if let Some(converted) = json_to_toml(&value) {
+                    session_table.insert("feature_tag".to_string(), converted);
+                }
+            }
+
             let snap = resolver::snapshot_with_table(
                 &flags,
                 &self.env,
                 None,
-                Some(table.clone()),
+                Some(session_table),
                 Some(facts_override),
             );
             let text = snap
