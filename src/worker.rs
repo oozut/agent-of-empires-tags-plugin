@@ -91,7 +91,10 @@ impl Host {
             .get("method")
             .and_then(serde_json::Value::as_str)
             .unwrap_or_default();
-        let params = value.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        let params = value
+            .get("params")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         if let Some(id) = value.get("id").cloned() {
             let result = self.handle_request(method, &params);
             let response = match result {
@@ -153,7 +156,10 @@ impl Host {
                 if let Some(error) = response.get("error") {
                     return Err(error.to_string());
                 }
-                return Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                return Ok(response
+                    .get("result")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null));
             }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
@@ -269,6 +275,15 @@ impl Host {
                 .first()
                 .map(|item| item.value.clone())
                 .unwrap_or_default();
+            let body = if snap.resolved.is_empty() {
+                "No headers resolved.".to_string()
+            } else {
+                snap.resolved
+                    .iter()
+                    .map(|item| format!("{}: {}", item.header, item.value))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
 
             let _ = self.call_host(
                 "ui.state.set",
@@ -278,6 +293,18 @@ impl Host {
                     "session_id": id,
                     "payload": {
                         "text": text,
+                    }
+                }),
+            );
+            let _ = self.call_host(
+                "ui.state.set",
+                serde_json::json!({
+                    "slot": "pane",
+                    "id": "llm_tags_pane",
+                    "session_id": id,
+                    "payload": {
+                        "title": "LLM Tags",
+                        "body": body,
                     }
                 }),
             );
