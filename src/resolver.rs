@@ -109,6 +109,7 @@ pub struct Rule {
     pub tag: String,
     pub match_kind: String,
     pub match_value: String,
+    pub priority: i32,
 }
 
 impl Rule {
@@ -117,7 +118,13 @@ impl Rule {
             tag: tag.to_string(),
             match_kind: match_kind.to_string(),
             match_value: match_value.to_string(),
+            priority: 0,
         }
+    }
+
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
     }
 }
 
@@ -679,8 +686,11 @@ fn valid_env_name(name: &str) -> bool {
 /// Every matching rule contributes; dedupe, then cap at 5 (parameters §5).
 pub fn matched_tags(settings: &Settings, facts: &SessionFacts) -> Vec<String> {
     let slugged = project_slug(&facts.path);
+    // Stable sort by priority (descending); equal priorities keep list order.
+    let mut ordered: Vec<&Rule> = settings.rules.iter().collect();
+    ordered.sort_by_key(|a| std::cmp::Reverse(a.priority));
     let mut tags: Vec<String> = Vec::new();
-    for rule in &settings.rules {
+    for rule in ordered {
         if tags.contains(&rule.tag) {
             continue;
         }
@@ -712,6 +722,26 @@ pub fn rule_matches(rule: &Rule, facts: &SessionFacts, slugged_project: &str) ->
                 slugged_project.to_string()
             };
             rule.match_value == slugged || rule.match_value == facts.path
+        }
+        "group" => {
+            if rule.match_value.is_empty() {
+                return false;
+            }
+            rule.match_value == facts.group || rule.match_value == slug(&facts.group)
+        }
+        "tool" => {
+            if rule.match_value.is_empty() {
+                return false;
+            }
+            rule.match_value == facts.tool
+        }
+        "title_regex" => {
+            if rule.match_value.is_empty() {
+                return false;
+            }
+            regex::Regex::new(&rule.match_value)
+                .map(|re| re.is_match(&facts.title))
+                .unwrap_or(false)
         }
         _ => false,
     }
@@ -1056,17 +1086,10 @@ fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Ru
                 continue;
             }
         };
-        if !MATCH_KINDS_M0.contains(&kind.as_str()) {
-            if MATCH_KINDS_M1.contains(&kind.as_str()) {
-                warnings.push(format!(
-                    "settings: rules[{index}] ({tag}) match_kind {kind:?} is not evaluated until M1; \
-                     it never matches yet"
-                ));
-            } else {
-                warnings.push(format!(
-                    "settings: rules[{index}] ({tag}) match_kind {kind:?} is unknown; it never matches"
-                ));
-            }
+        if !MATCH_KINDS_M0.contains(&kind.as_str()) && !MATCH_KINDS_M1.contains(&kind.as_str()) {
+            warnings.push(format!(
+                "settings: rules[{index}] ({tag}) match_kind {kind:?} is unknown; it never matches"
+            ));
         }
         let value = match row.get("match_value") {
             None => String::new(),
@@ -1078,10 +1101,21 @@ fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Ru
                 continue;
             }
         };
+        let priority = match row.get("priority") {
+            None => 0,
+            Some(toml::Value::Integer(n)) => (*n).clamp(-100, 100) as i32,
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: rules[{index}] ({tag}) priority is not an integer; using 0"
+                ));
+                0
+            }
+        };
         rules.push(Rule {
             tag: tag.to_string(),
             match_kind: kind,
             match_value: value,
+            priority,
         });
     }
     rules

@@ -1,24 +1,103 @@
 id = "dev.oozut.llm-tags"
 name = "LLM Tags"
 version = "0.1.0"
-api_version = 17
-aoe_version = ">=1.20.0, <2.0.0"
+api_version = 18
+aoe_version = ">=1.21.0, <2.0.0"
 description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."
-capabilities = ["runtime.worker"]
+capabilities = ["runtime.worker", "session.read", "net"]
 
-# The worker answers `plugin.dev.oozut.llm-tags.status` with the header set this
-# install would send. M1 turns it into the reconciler; M0 only proves it runs.
 [[commands]]
 id = "status"
 title = "LLM Tags: status"
 description = "Report the header set this install would send, without starting a session."
 
+[[ui]]
+slot = "row-badge"
+id = "llm_tags_badge"
+
+[[ui]]
+slot = "pane"
+id = "llm_tags_pane"
+
+[[settings]]
+key = "headers"
+label = "Headers"
+type = "object_list"
+min_items = 1
+max_items = 8
+
+[[settings.fields]]
+key = "header"
+label = "Header name"
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "template"
+label = "Template"
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "env_var"
+label = "Environment variable"
+type = "string"
+
+[[settings.fields]]
+key = "enabled"
+label = "Enabled"
+type = "bool"
+default = true
+
+[[settings]]
+key = "rules"
+label = "Rules"
+type = "object_list"
+
+[[settings.fields]]
+key = "tag"
+label = "Tag"
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "match_kind"
+label = "Match kind"
+type = "select"
+options = ["project", "group", "tool", "title_regex", "manual"]
+default = "project"
+
+[[settings.fields]]
+key = "match_value"
+label = "Match value"
+type = "string"
+
+[[settings.fields]]
+key = "priority"
+label = "Priority"
+type = "integer"
+default = 0
+min = -100
+max = 100
+
+[[settings]]
+key = "session_tagging"
+label = "Session tagging"
+type = "select"
+options = ["none", "short_id", "full_id"]
+default = "short_id"
+
+[[settings]]
+key = "feature_tag"
+label = "Feature tag"
+type = "string"
+default = ""
+per_project = true
+
 [runtime]
 kind = "command"
 command = ["./bin/aoe-llm-tags-worker"]
 
-# Source installs build both binaries in place. Release installs use
-# `kind = "release-binary"` and skip this step entirely; see plan/parameters.md §9.
 [[runtime.build]]
 command = ["./tools/build-worker.sh"]
 platforms = ["linux", "macos"]

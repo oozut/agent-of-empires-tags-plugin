@@ -140,4 +140,24 @@ mod tests {
     fn garbage_is_ignored() {
         assert!(handle_line("not json", &Env::default()).is_none());
     }
+
+    #[test]
+    fn status_and_hook_share_one_resolver() {
+        let env = Env::new([("HOME", "/tmp"), ("AOE_SESSION_ID", "abcd1234")]);
+        let flags = Flags::from_given(&Given::default(), &env);
+        let snap = resolver::snapshot(&flags, &env, None);
+        let response = handle_line(
+            &line(json!({"jsonrpc": "2.0", "id": 9, "method": "plugin.dev.oozut.llm-tags.status"})),
+            &env,
+        )
+        .expect("a response");
+        let headers = response["result"]["headers"].as_object().expect("headers");
+        assert_eq!(headers.len(), snap.resolved.len());
+        for item in &snap.resolved {
+            assert_eq!(
+                headers.get(&item.header).and_then(Value::as_str),
+                Some(item.value.as_str())
+            );
+        }
+    }
 }
