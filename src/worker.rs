@@ -18,24 +18,302 @@ use crate::resolver::{self, Flags, Given};
 
 pub const METHOD_NOT_FOUND: i64 = -32601;
 
-/// Read requests until stdin closes.
+/// Read requests until stdin closes, supporting outbound host RPCs.
 pub fn run() -> i32 {
     let env = Env::current();
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout().lock();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
-        if line.trim().is_empty() {
-            continue;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        for line in stdin.lock().lines() {
+            match line {
+                Ok(line) => {
+                    if tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
         }
-        let Some(response) = handle_line(&line, &env) else {
-            continue;
-        };
-        if writeln!(stdout, "{response}").is_err() || stdout.flush().is_err() {
-            break;
+    });
+    let mut host = Host {
+        env,
+        rx,
+        stdout: std::sync::Mutex::new(std::io::stdout()),
+        pending: std::collections::HashMap::new(),
+        next_id: 1_000_000,
+    };
+    while host.process_one() {}
+    0
+}
+
+struct Host {
+    env: Env,
+    rx: std::sync::mpsc::Receiver<String>,
+    stdout: std::sync::Mutex<std::io::Stdout>,
+    pending: std::collections::HashMap<i64, std::sync::mpsc::Sender<serde_json::Value>>,
+    next_id: i64,
+}
+
+impl Host {
+    fn write_line(&self, value: &serde_json::Value) {
+        if let Ok(mut out) = self.stdout.lock() {
+            let _ = writeln!(out, "{value}");
+            let _ = out.flush();
         }
     }
-    0
+
+    fn process_one(&mut self) -> bool {
+        match self.rx.recv() {
+            Ok(line) => {
+                self.dispatch_line(&line);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    fn dispatch_line(&mut self, line: &str) {
+        if line.trim().is_empty() {
+            return;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+        if value.get("method").is_none() {
+            if let Some(id) = value.get("id").and_then(serde_json::Value::as_i64) {
+                if let Some(sender) = self.pending.remove(&id) {
+                    let _ = sender.send(value);
+                }
+            }
+            return;
+        }
+        let method = value
+            .get("method")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        let params = value.get("params").cloned().unwrap_or(serde_json::Value::Null);
+        if let Some(id) = value.get("id").cloned() {
+            let result = self.handle_request(method, &params);
+            let response = match result {
+                Ok(result) => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": result,
+                }),
+                Err((code, message)) => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": { "code": code, "message": message },
+                }),
+            };
+            self.write_line(&response);
+        } else {
+            self.handle_notification(method, &params);
+        }
+    }
+
+    fn handle_request(
+        &mut self,
+        method: &str,
+        _params: &serde_json::Value,
+    ) -> Result<serde_json::Value, (i64, String)> {
+        let command = method.rsplit('.').next().unwrap_or_default();
+        match command {
+            "status" => Ok(status(&self.env)),
+            _ => Err((METHOD_NOT_FOUND, format!("unknown method {method:?}"))),
+        }
+    }
+
+    fn handle_notification(&mut self, method: &str, _params: &serde_json::Value) {
+        let command = method.rsplit('.').next().unwrap_or_default();
+        // Publish badges on any host event; failures are best-effort.
+        let _ = command;
+        self.publish_badges();
+    }
+
+    fn call_host(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.pending.insert(id, sender);
+        self.write_line(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        }));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(response) = receiver.try_recv() {
+                self.pending.remove(&id);
+                if let Some(error) = response.get("error") {
+                    return Err(error.to_string());
+                }
+                return Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null));
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                self.pending.remove(&id);
+                return Err("timeout".to_string());
+            }
+            match self.rx.recv_timeout(remaining) {
+                Ok(line) => self.dispatch_line(&line),
+                Err(_) => {
+                    self.pending.remove(&id);
+                    return Err("timeout".to_string());
+                }
+            }
+        }
+    }
+
+    fn publish_badges(&mut self) {
+        let sessions = match self.call_host("sessions.list", serde_json::json!({})) {
+            Ok(value) => value,
+            Err(_) => return,
+        };
+        let sessions = sessions
+            .get("sessions")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let headers_val = self
+            .call_host("config.get", serde_json::json!({"key": "headers"}))
+            .ok()
+            .and_then(|v| v.get("value").cloned());
+        let feature_tag_val = self
+            .call_host("config.get", serde_json::json!({"key": "feature_tag"}))
+            .ok()
+            .and_then(|v| v.get("value").cloned());
+        let session_tagging_val = self
+            .call_host("config.get", serde_json::json!({"key": "session_tagging"}))
+            .ok()
+            .and_then(|v| v.get("value").cloned());
+        let rules_val = self
+            .call_host("config.get", serde_json::json!({"key": "rules"}))
+            .ok()
+            .and_then(|v| v.get("value").cloned());
+
+        let mut table = toml::Table::new();
+        if let Some(value) = headers_val {
+            if let Some(converted) = json_to_toml(&value) {
+                table.insert("headers".to_string(), converted);
+            }
+        }
+        if let Some(value) = feature_tag_val {
+            if let Some(converted) = json_to_toml(&value) {
+                table.insert("feature_tag".to_string(), converted);
+            }
+        }
+        if let Some(value) = session_tagging_val {
+            if let Some(converted) = json_to_toml(&value) {
+                table.insert("session_tagging".to_string(), converted);
+            }
+        }
+        if let Some(value) = rules_val {
+            if let Some(converted) = json_to_toml(&value) {
+                table.insert("rules".to_string(), converted);
+            }
+        }
+
+        let flags = Flags::from_given(&Given::default(), &self.env);
+
+        for session in sessions {
+            let id = session
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if id.is_empty() {
+                continue;
+            }
+            let title = session
+                .get("title")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let tool = session
+                .get("tool")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let path = session
+                .get("project_path")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let facts_override = resolver::SessionFacts {
+                id: id.clone(),
+                title,
+                tool,
+                path,
+                profile: "default".to_string(),
+                group: String::new(),
+                branch: String::new(),
+            };
+
+            // snapshot_with_table ignores the runner; pass None.
+            let snap = resolver::snapshot_with_table(
+                &flags,
+                &self.env,
+                None,
+                Some(table.clone()),
+                Some(facts_override),
+            );
+            let text = snap
+                .resolved
+                .first()
+                .map(|item| item.value.clone())
+                .unwrap_or_default();
+
+            let _ = self.call_host(
+                "ui.state.set",
+                serde_json::json!({
+                    "slot": "row-badge",
+                    "id": "llm_tags_badge",
+                    "session_id": id,
+                    "payload": {
+                        "text": text,
+                    }
+                }),
+            );
+        }
+    }
+}
+
+fn json_to_toml(value: &serde_json::Value) -> Option<toml::Value> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(v) => Some(toml::Value::Boolean(*v)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml::Value::Integer(i))
+            } else {
+                n.as_f64().map(toml::Value::Float)
+            }
+        }
+        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                out.push(json_to_toml(item)?);
+            }
+            Some(toml::Value::Array(out))
+        }
+        serde_json::Value::Object(map) => {
+            let mut table = toml::Table::new();
+            for (key, val) in map {
+                if let Some(converted) = json_to_toml(val) {
+                    table.insert(key.clone(), converted);
+                }
+            }
+            Some(toml::Value::Table(table))
+        }
+    }
 }
 
 /// One request line → one response document (`None` for a notification).

@@ -854,18 +854,37 @@ pub fn enabled_headers(settings: &Settings) -> Vec<&Header> {
 }
 
 pub fn snapshot(flags: &Flags, env: &Env, runner: Option<Runner<'_>>) -> Snapshot {
+    snapshot_with_table(flags, env, runner, None, None)
+}
+
+pub fn snapshot_with_table(
+    flags: &Flags,
+    env: &Env,
+    runner: Option<Runner<'_>>,
+    table_override: Option<toml::Table>,
+    facts_override: Option<SessionFacts>,
+) -> Snapshot {
     let started = Instant::now();
-    let (mut facts, session_warnings) = resolve_session(flags, runner, env, DEFAULT_TIMEOUT);
+    let (mut facts, session_warnings) = match facts_override {
+        Some(facts) => (facts, Vec::new()),
+        None => resolve_session(flags, runner, env, DEFAULT_TIMEOUT),
+    };
     let elapsed = started.elapsed();
     let profile = if facts.profile.is_empty() {
         flags.profile.clone()
     } else {
         facts.profile.clone()
     };
-    let raw = settings::load(&profile, None, env);
+    let (raw_table, raw_warnings) = match table_override {
+        Some(table) => (table, Vec::new()),
+        None => {
+            let raw = settings::load(&profile, None, env);
+            (raw.table, raw.warnings)
+        }
+    };
     let mut warnings = session_warnings;
-    warnings.extend(raw.warnings.iter().cloned());
-    let configured = Settings::from_table(&raw.table, warnings);
+    warnings.extend(raw_warnings.iter().cloned());
+    let configured = Settings::from_table(&raw_table, warnings);
 
     let remaining = DEFAULT_TIMEOUT.saturating_sub(elapsed);
     let (resolved, render_warnings) =
@@ -878,7 +897,7 @@ pub fn snapshot(flags: &Flags, env: &Env, runner: Option<Runner<'_>>) -> Snapsho
         settings: configured,
         resolved,
         warnings: all_warnings,
-        raw: raw.table,
+        raw: raw_table,
     }
 }
 
