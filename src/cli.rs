@@ -51,27 +51,30 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
-    /// print the hook and header-mapping lines to paste
+    /// show how this session's targets are delivered, and build the session copy
     #[command(
-        about = "Print the two [host_hooks] lines and one mapping line per enabled header. \
-                 Print-only: nothing is written."
+        about = "Show the hook lines and one mapping line per enabled target. --apply builds \
+                 this session's config; the user's own config is never edited."
     )]
     Setup {
-        /// print the lines (the only mode implemented so far)
+        /// print the hook lines and one mapping line per enabled target
         #[arg(long = "print")]
         print: bool,
-        /// show the diff without writing
+        /// show the session config this launch would build, without writing it
         #[arg(long = "dry-run")]
         dry_run: bool,
-        /// apply the change (requires --yes to write)
+        /// build this session's config now (the hook does this at launch)
         #[arg(long = "apply")]
         apply: bool,
-        /// confirm the write
+        /// confirm --apply (nothing is written to the user's config either way)
         #[arg(long = "yes")]
         yes: bool,
-        /// restore the previous file from backup
+        /// remove this session's generated config
         #[arg(long = "undo")]
         undo: bool,
+        /// with --undo: remove every session's generated config
+        #[arg(long = "all")]
+        all: bool,
         /// machine-readable output
         #[arg(long)]
         json: bool,
@@ -160,9 +163,10 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             apply,
             yes,
             undo,
+            all,
             json,
             flags,
-        } => setup_cmd(print, dry_run, apply, yes, undo, json, &flags, env),
+        } => setup_cmd(print, dry_run, apply, yes, undo, all, json, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
@@ -172,7 +176,25 @@ fn hook(args: &FlagArgs, env: &Env) -> i32 {
     // and exit 0, including a panic in a code path we did not anticipate.
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let snap = resolver::snapshot(&args.flags(env), env, None);
-        (resolver::hook_lines(&snap.resolved), snap.warnings)
+        let mut lines = resolver::hook_lines(&snap.resolved);
+        let mut warnings = snap.warnings.clone();
+        // Per-session harness config (`docs/harness-adapters.md`): the values are
+        // baked into a copy this session owns, and the harness is pointed at it.
+        // A failure here costs the file delivery, never the session.
+        match setup::overlay_for(&snap, env) {
+            Ok(Some((overlay, overlay_warnings))) => {
+                warnings.extend(overlay_warnings);
+                for (name, why) in &overlay.skipped {
+                    warnings.push(format!(
+                        "{name} was not written to the session config: {why}"
+                    ));
+                }
+                lines.extend(overlay.env_lines());
+            }
+            Ok(None) => {}
+            Err(err) => warnings.push(err),
+        }
+        (lines, warnings)
     }));
     let (lines, warnings) = match outcome {
         Ok(pair) => pair,
@@ -226,12 +248,13 @@ fn setup_cmd(
     apply: bool,
     yes: bool,
     undo: bool,
+    all: bool,
     json: bool,
     args: &FlagArgs,
     env: &Env,
 ) -> i32 {
     if undo {
-        return setup::undo_cmd(&args.flags(env), env);
+        return setup::undo_cmd(&args.flags(env), env, all);
     }
     if apply {
         if !yes {
@@ -254,7 +277,7 @@ fn setup_cmd(
         return setup::apply_cmd(&args.flags(env), env);
     }
     if !(print || dry_run || json) {
-        warn("`setup` is print-only unless --apply/--undo; pass --print (or --json)");
+        warn("`setup` only reads unless --apply/--undo; pass --print (or --json)");
         return EXIT_USAGE;
     }
     match setup::build(&args.flags(env), env, None, None) {

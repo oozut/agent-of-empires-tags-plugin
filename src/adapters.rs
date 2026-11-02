@@ -37,6 +37,19 @@ pub struct Adapter {
     pub env_ref: String,
     /// Delivery kinds this harness can actually carry (`header`, `query`, `body`).
     pub supports: Vec<String>,
+    /// How the harness is pointed at a per-session config: `env_only`,
+    /// `overlay_file`, `overlay_dir` or `none` (`docs/harness-adapters.md`).
+    pub write_mode: String,
+    /// The variable that points the harness at the session artifact.
+    pub overlay_env: String,
+    /// Our file inside the artifact (defaults to the source file's name).
+    pub overlay_file: String,
+    /// Which writer builds that file (`src/writer.rs`).
+    pub writer: String,
+    /// For `env_only` rows: the harness's own variable that carries headers.
+    pub native_env: String,
+    /// How one target renders into that variable (`{header}`, `{param}`, `{value}`).
+    pub native_format: String,
     pub status: String,
     pub notes: String,
 }
@@ -134,6 +147,12 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         mapping_format: text("mapping_format"),
         interpolates: list("interpolates"),
         env_ref: or_default(text("env_ref"), "${env_var}"),
+        write_mode: or_default(text("write_mode"), "none"),
+        overlay_env: text("overlay_env"),
+        overlay_file: text("overlay_file"),
+        writer: text("writer"),
+        native_env: text("native_env"),
+        native_format: text("native_format"),
         supports: {
             let listed = list("supports");
             if listed.is_empty() {

@@ -1236,6 +1236,17 @@ fn parse_tags(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<St
     tags
 }
 
+/// The variable the hook exports for one target: the row's own `env_var`, else
+/// the per-kind spelling (`AOE_HDR_`, `AOE_QRY_`, `AOE_BODY_`). One definition so
+/// the hook, the overlay writer and `doctor` can never disagree.
+pub fn target_env_var(target: &Target) -> String {
+    if target.env_var.is_empty() {
+        derive_env_var_for(&target.kind, &target.name)
+    } else {
+        target.env_var.clone()
+    }
+}
+
 /// The effective query/body parameter name for a settings row.
 pub fn param_name(name: &str, param: &str) -> String {
     if param.is_empty() {

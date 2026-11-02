@@ -46,7 +46,7 @@ request-body field — and **which slice** of the set it carries:
 | `kind` | `header` (default), `query` or `body`. A harness that cannot carry a kind is refused rather than written (pi appends the endpoint path to `baseUrl`, so it has no query channel). |
 | `name` | Wire name, e.g. `X-AoE-Tags`, `X-AoE-Session`, `x-tenant`, or a parameter name. A header name must be a valid HTTP field name; no plugin-owned prefix is required. |
 | `template` | Value template with fields from the session, e.g. `aoe,feature:{feature},session:{session}`, or `{tags}` for the whole set. |
-| `literal` | Value written as-is, for a kind the harness does not env-interpolate (pi's `samplingParams`, for instance). A literal that is JSON object/array is written as JSON. |
+| `literal` | Optional override: written as-is instead of the rendered template. A literal that is JSON object/array becomes a JSON value in the session config. |
 | `env_var` | Variable that carries the rendered value at launch. Default: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for compatibility. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
 

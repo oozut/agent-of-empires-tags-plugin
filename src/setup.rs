@@ -164,14 +164,6 @@ pub fn build(
     let mut mapping = Vec::new();
     let mut unmappable = Vec::new();
     for item in snap.settings.targets.iter().filter(|row| row.enabled) {
-        if !adapters::interpolates(adapter, &item.kind) && item.literal.is_empty() {
-            unmappable.push(item.name.clone());
-            warnings.push(format!(
-                "adapter {} does not expand $VAR in a {} delivery; {} needs `literal` there \
-                 or `delivery = \"header\"`",
-                adapter.agent, item.kind, item.name
-            ));
-        }
         if !adapters::supports(adapter, &item.kind) {
             unmappable.push(item.name.clone());
             warnings.push(format!(
@@ -238,6 +230,13 @@ pub fn text(plan: &Plan) -> Vec<String> {
 pub fn as_dict(plan: &Plan) -> serde_json::Value {
     json!({
         "adapter": plan.adapter.as_ref().map(|adapter| adapter.agent.clone()).unwrap_or_default(),
+        "session_config": plan.adapter.as_ref().map(|adapter| json!({
+            "verdict": crate::overlay::verdict(adapter),
+            "write_mode": adapter.write_mode,
+            "env_var": adapter.overlay_env,
+            "file": adapter.overlay_file,
+            "writer": adapter.writer,
+        })),
         "aoe": plan.aoe,
         "cli": plan.cli.to_string_lossy(),
         "hooks": plan.hooks.iter().cloned().collect::<std::collections::BTreeMap<_, _>>(),
@@ -262,290 +261,138 @@ fn adapter_for<'a>(tool: &str, flags: &Flags, adapters: &'a [Adapter]) -> Option
     adapters::match_tool(adapters, tool)
 }
 
-/// Apply the pi mapping to the resolved config file (backup + atomic rename).
-pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
-    let plan = match build(flags, env, None, None) {
-        Ok(plan) => plan,
-        Err(err) => {
-            crate::cli::warn(&err.to_string());
-            return crate::cli::EXIT_FAIL;
-        }
-    };
-    if !plan.unmappable.is_empty() {
-        // Name the reason per entry before the summary.
-        crate::cli::warn_all(&plan.warnings);
+/// Materialise this session's artifact, or say why it cannot be done.
+///
+/// Nothing here touches the user's config: `docs/harness-adapters.md`
+/// §Per-session config. Called by `hook` (every launch) and by
+/// `setup --apply` (a one-off rebuild for debugging).
+pub fn apply_cmd(flags: &Flags, env: &Env) -> i32 {
+    let snap = resolver::snapshot(flags, env, None);
+    let (rows, adapter_warnings) = adapters::load(None);
+    let mut warnings = snap.warnings.clone();
+    warnings.extend(adapter_warnings);
+
+    let Some(adapter) = adapters::match_tool(&rows, &snap.facts.tool)
+        .or_else(|| adapters::find(&rows, &flags.adapter))
+        .cloned()
+    else {
+        crate::cli::warn_all(&warnings);
         crate::cli::warn(&format!(
-            "refusing to write: {} entr{} cannot be delivered by this adapter ({})",
-            plan.unmappable.len(),
-            if plan.unmappable.len() == 1 {
-                "y"
-            } else {
-                "ies"
-            },
-            plan.unmappable.join(", ")
+            "no adapter for tool {:?}; pass --adapter <agent>",
+            snap.facts.tool
         ));
         return crate::cli::EXIT_FAIL;
-    }
-    let Some(adapter) = plan.adapter.clone() else {
-        crate::cli::warn("no adapter resolved");
-        return crate::cli::EXIT_FAIL;
     };
-    if adapter.agent != "pi" {
+
+    // Refuse the whole plan rather than write a config with a hole in it.
+    let unsupported = crate::overlay::unsupported(&adapter, &snap.settings.targets);
+    if !unsupported.is_empty() {
+        crate::cli::warn_all(&warnings);
+        for (name, why) in &unsupported {
+            crate::cli::warn(&format!("{name}: {why}"));
+        }
         crate::cli::warn(&format!(
-            "apply is implemented for pi only (adapter {})",
+            "refusing to write: {} target(s) cannot be delivered by adapter {}",
+            unsupported.len(),
             adapter.agent
         ));
         return crate::cli::EXIT_FAIL;
     }
-    let (path, path_warnings) = crate::adapters::config_path(&adapter, env);
-    let Some(path) = path else {
-        for warning in path_warnings {
-            crate::cli::warn(&warning);
-        }
-        return crate::cli::EXIT_FAIL;
-    };
-    if let Err(err) = guard_regular_file(&path) {
-        crate::cli::warn(&err);
-        return crate::cli::EXIT_FAIL;
-    }
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            crate::cli::warn(&format!("{} could not be read: {err}", path.display()));
-            return crate::cli::EXIT_FAIL;
-        }
-    };
-    let mut data: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(value) => value,
-        Err(err) => {
-            crate::cli::warn(&format!("{} is not valid JSON: {err}", path.display()));
-            return crate::cli::EXIT_FAIL;
-        }
-    };
 
-    let backup = backup_path(&path);
-    if !backup.exists() {
-        if let Err(err) = std::fs::copy(&path, &backup) {
-            crate::cli::warn(&format!("backup failed: {err}"));
-            return crate::cli::EXIT_FAIL;
-        }
-    }
-
-    // Find the provider entry that carries a non-empty models list.
-    let Some(providers) = data.get_mut("providers").and_then(|v| v.as_object_mut()) else {
-        crate::cli::warn("no providers object in config");
-        return crate::cli::EXIT_FAIL;
-    };
-    let mut target: Option<String> = None;
-    for (name, value) in providers.iter() {
-        let models = value
-            .get("models")
-            .and_then(|v| v.as_array())
-            .map(|a| !a.is_empty())
-            .unwrap_or(false);
-        if models {
-            target = Some(name.clone());
-            break;
-        }
-    }
-    let target = match target {
-        Some(name) => name,
-        None => {
-            crate::cli::warn("no provider entry with a non-empty models list");
-            return crate::cli::EXIT_FAIL;
-        }
-    };
-
-    // Every entry needs a value this harness will actually deliver.
-    for item in &plan.mapping {
-        if item.value.is_empty() {
-            crate::cli::warn(&format!(
-                "{} uses a {} delivery, but adapter {agent} does not expand $VAR there; \
-                 add `literal` to that entry or use `delivery = \"header\"`",
-                item.header,
-                item.delivery,
-                agent = adapter.agent
-            ));
-            return crate::cli::EXIT_FAIL;
-        }
-    }
-
-    let provider = match providers.get_mut(&target).and_then(|v| v.as_object_mut()) {
-        Some(provider) => provider,
-        None => {
-            crate::cli::warn("the provider entry is not an object");
-            return crate::cli::EXIT_FAIL;
-        }
-    };
-    for item in &plan.mapping {
-        let value = serde_json::Value::String(item.value.clone());
-        match item.delivery.as_str() {
-            "header" => {
-                if !provider.contains_key("headers") {
-                    provider.insert("headers".to_string(), serde_json::json!({}));
-                }
-                let Some(headers) = provider.get_mut("headers").and_then(|v| v.as_object_mut())
-                else {
-                    crate::cli::warn("provider headers is not an object");
-                    return crate::cli::EXIT_FAIL;
-                };
-                headers.insert(item.header.clone(), value);
+    match crate::overlay::materialise(&adapter, &snap, env) {
+        Ok(overlay) => {
+            crate::cli::warn_all(&warnings);
+            for (name, why) in &overlay.skipped {
+                crate::cli::warn(&format!("{name} was not written: {why}"));
             }
-            "query" => {
-                let Some(base) = provider
-                    .get("baseUrl")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-                else {
-                    crate::cli::warn(&format!(
-                        "provider {target} has no baseUrl; cannot add the {} query parameter",
-                        item.param
-                    ));
-                    return crate::cli::EXIT_FAIL;
-                };
-                let updated = set_query_param(&base, &item.param, &item.value);
-                provider.insert("baseUrl".to_string(), serde_json::Value::String(updated));
+            match &overlay.file {
+                Some(file) => println!("wrote {}", file.display()),
+                None => println!(
+                    "adapter {} needs no file; the values ride the launch environment",
+                    adapter.agent
+                ),
             }
-            "body" => {
-                // pi reads `samplingParams` per model, not per provider: a
-                // provider-level field is dropped by its schema.
-                let Some(models) = provider
-                    .get_mut("models")
-                    .and_then(|v| v.as_array_mut())
-                    .filter(|models| !models.is_empty())
-                else {
-                    crate::cli::warn(&format!(
-                        "provider {target} has no `models` list; a body target needs a model \
-                         entry to carry {} (add one, or use a header target)",
-                        item.param
-                    ));
-                    return crate::cli::EXIT_FAIL;
-                };
-                let value = json_value(&item.value);
-                for model in models {
-                    let Some(model) = model.as_object_mut() else {
-                        crate::cli::warn("a models[] entry is not an object");
-                        return crate::cli::EXIT_FAIL;
-                    };
-                    if !model.contains_key("samplingParams") {
-                        model.insert("samplingParams".to_string(), serde_json::json!({}));
-                    }
-                    let Some(params) = model
-                        .get_mut("samplingParams")
-                        .and_then(|v| v.as_object_mut())
-                    else {
-                        crate::cli::warn("a model samplingParams is not an object");
-                        return crate::cli::EXIT_FAIL;
-                    };
-                    params.insert(item.param.clone(), value.clone());
-                }
+            for line in overlay.env_lines() {
+                println!("{line}");
             }
-            other => {
-                crate::cli::warn(&format!("unknown delivery {other:?}"));
-                return crate::cli::EXIT_FAIL;
-            }
-        }
-    }
-
-    let new = match serde_json::to_string_pretty(&data) {
-        Ok(text) => text,
-        Err(err) => {
-            crate::cli::warn(&format!("serialize failed: {err}"));
-            return crate::cli::EXIT_FAIL;
-        }
-    };
-    let tmp = path.with_extension("aoe-llm-tags.tmp");
-    if let Err(err) = std::fs::write(&tmp, &new) {
-        crate::cli::warn(&format!("write failed: {err}"));
-        return crate::cli::EXIT_FAIL;
-    }
-    if let Err(err) = std::fs::rename(&tmp, &path) {
-        crate::cli::warn(&format!("rename failed: {err}"));
-        return crate::cli::EXIT_FAIL;
-    }
-
-    // Re-read and re-parse.
-    match std::fs::read_to_string(&path) {
-        Ok(reread) => {
-            if serde_json::from_str::<serde_json::Value>(&reread).is_err() {
-                crate::cli::warn("re-parse failed after write");
-                return crate::cli::EXIT_FAIL;
-            }
+            crate::cli::EXIT_OK
         }
         Err(err) => {
-            crate::cli::warn(&format!("re-read failed: {err}"));
-            return crate::cli::EXIT_FAIL;
+            crate::cli::warn_all(&warnings);
+            crate::cli::warn(&err);
+            crate::cli::EXIT_FAIL
         }
     }
-
-    println!(
-        "applied {} target(s) to {}",
-        plan.mapping.len(),
-        path.display()
-    );
-    println!("backup: {}", backup.display());
-    crate::cli::EXIT_OK
 }
 
-pub fn undo_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
-    let plan = match build(flags, env, None, None) {
-        Ok(plan) => plan,
-        Err(err) => {
-            crate::cli::warn(&err.to_string());
-            return crate::cli::EXIT_FAIL;
-        }
+/// The session artifact for a resolved snapshot, if this harness has one.
+///
+/// `Ok(None)` means "nothing to do": no adapter for this tool, or a harness with
+/// no per-session config (claude rides the launch environment). Any real failure
+/// is `Err`, so the hook can warn without aborting the launch.
+pub fn overlay_for(
+    snap: &resolver::Snapshot,
+    env: &Env,
+) -> Result<Option<(crate::overlay::Overlay, Vec<String>)>, String> {
+    let (rows, mut warnings) = adapters::load(None);
+    let Some(adapter) = adapters::match_tool(&rows, &snap.facts.tool).cloned() else {
+        return Ok(None);
     };
-    let Some(adapter) = plan.adapter.clone() else {
-        crate::cli::warn("no adapter resolved");
-        return crate::cli::EXIT_FAIL;
-    };
-    let (path, _) = crate::adapters::config_path(&adapter, env);
-    let Some(path) = path else {
-        crate::cli::warn("no config path");
-        return crate::cli::EXIT_FAIL;
-    };
-    let backup = backup_path(&path);
-    if !backup.exists() {
-        crate::cli::warn(&format!("no backup at {}", backup.display()));
-        return crate::cli::EXIT_FAIL;
+    if !crate::overlay::can_write(&adapter) {
+        return Ok(None);
     }
-    if let Err(err) = guard_regular_file(&path) {
-        crate::cli::warn(&err);
-        return crate::cli::EXIT_FAIL;
+    if adapter.write_mode == crate::overlay::MODE_ENV_ONLY && adapter.native_env.is_empty() {
+        // Nothing beyond the tag variables is needed for this harness.
+        return Ok(None);
     }
-    // Restore exactly, then remove backup.
-    if let Err(err) = std::fs::rename(&backup, &path) {
-        crate::cli::warn(&format!("restore failed: {err}"));
-        return crate::cli::EXIT_FAIL;
-    }
-    // Re-read and re-parse.
-    match std::fs::read_to_string(&path) {
-        Ok(reread) => {
-            if adapter.config_format == "json"
-                && serde_json::from_str::<serde_json::Value>(&reread).is_err()
-            {
-                crate::cli::warn("re-parse failed after restore");
-                return crate::cli::EXIT_FAIL;
-            }
-        }
-        Err(err) => {
-            crate::cli::warn(&format!("re-read failed: {err}"));
-            return crate::cli::EXIT_FAIL;
-        }
-    }
-    println!("restored {} from backup", path.display());
-    crate::cli::EXIT_OK
+    warnings.clear();
+    Ok(Some((
+        crate::overlay::materialise(&adapter, snap, env)?,
+        warnings,
+    )))
 }
 
-/// A body value: JSON when the literal is JSON (`{"tags": ["aoe"]}`), else a string.
-pub fn json_value(literal: &str) -> serde_json::Value {
-    let trimmed = literal.trim();
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-            return value;
+/// Remove this session's artifact (or every session's with `--all`).
+///
+/// The user's config was never edited, so there is nothing to restore: undoing a
+/// session's tagging is deleting the copy this plugin built for it.
+pub fn undo_cmd(flags: &Flags, env: &Env, all: bool) -> i32 {
+    let app_dir = settings::app_dir(env);
+    if all {
+        let sessions = crate::overlay::all_sessions(&app_dir);
+        let mut removed = 0;
+        for session in &sessions {
+            if std::fs::remove_dir_all(session).is_ok() {
+                removed += 1;
+            }
         }
+        println!(
+            "removed {removed} session config(s) from {}",
+            app_dir.join("sessions").display()
+        );
+        return crate::cli::EXIT_OK;
     }
-    serde_json::Value::String(literal.to_string())
+    if flags.session.is_empty() {
+        crate::cli::warn(
+            "no session: pass --session <id>, run inside a session, or use --undo --all",
+        );
+        return crate::cli::EXIT_USAGE;
+    }
+    let (rows, _) = adapters::load(None);
+    let agent = adapters::find(&rows, &flags.adapter)
+        .map(|row| row.agent.clone())
+        .or_else(|| adapters::match_tool(&rows, &flags.tool).map(|row| row.agent.clone()));
+    let removed = crate::overlay::remove(&app_dir, &flags.session, agent.as_deref());
+    if removed == 0 {
+        crate::cli::warn(&format!(
+            "no session config for {} under {}",
+            flags.session,
+            app_dir.join("sessions").display()
+        ));
+        return crate::cli::EXIT_FAIL;
+    }
+    println!("removed the session config for {}", flags.session);
+    crate::cli::EXIT_OK
 }
 
 /// Set (or replace) one query parameter, keeping the rest of the URL intact.
@@ -580,39 +427,9 @@ pub fn set_query_param(base: &str, name: &str, value: &str) -> String {
     out
 }
 
-fn backup_path(path: &std::path::Path) -> std::path::PathBuf {
-    let mut name = path.file_name().unwrap_or_default().to_os_string();
-    name.push(".aoe-llm-tags.bak");
-    path.with_file_name(name)
-}
-
-fn guard_regular_file(path: &std::path::Path) -> Result<(), String> {
-    let meta = std::fs::symlink_metadata(path).map_err(|err| err.to_string())?;
-    if meta.file_type().is_symlink() {
-        return Err(format!("{} is a symlink; refusing", path.display()));
-    }
-    if !meta.is_file() {
-        return Err(format!(
-            "{} is not a regular file; refusing",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn a_json_literal_becomes_a_json_body_value() {
-        assert_eq!(
-            json_value("{\"tags\": [\"aoe\"]}"),
-            serde_json::json!({"tags": ["aoe"]})
-        );
-        assert_eq!(json_value("aoe,tags"), serde_json::json!("aoe,tags"));
-        assert_eq!(json_value("{not json"), serde_json::json!("{not json"));
-    }
 
     #[test]
     fn set_query_param_replaces_and_appends() {

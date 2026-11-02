@@ -389,14 +389,23 @@ hook, and that is the one thing worth a shared unit test in both directions.
 
 ## Step 8 — M2 discovery
 
-Per adapter row: resolve config path (setting → harness env var → aoe `agent_config_dir` →
-default), classify per substrate (`wired`, `detected-not-wired`, `sandbox-stale`, `unknown`,
-`unsupported`), cache with the file hash, show a diff, apply only on `--yes`.
+Per adapter row: resolve the source config (setting → harness env var → `config_paths`),
+classify per substrate (`wired`, `detected-not-wired`, `sandbox-stale`, `unknown`,
+`unsupported`), and report the session artifact the row would build.
 
-Edit rules, all mandatory: backup beside the file, refuse symlinks and non-regular files, write
-with the marker `"// aoe-llm-tags: managed"` so `undo` is exact, atomic replace (temp file in
-the same directory + rename), re-read and re-parse after writing, and never write a config the
-user has not seen in the diff.
+**Nothing is written into the user's config.** A row's `write_mode` decides how a session gets
+its own copy (`docs/harness-adapters.md` §Per-session config):
+
+- `env_only` — the hook exports the harness's own variable (`native_env`); no file at all.
+- `overlay_file` / `overlay_dir` — the hook builds
+  `<app dir>/sessions/<session id>/<agent>/…` from the user's file, bakes this session's values
+  in, and exports `overlay_env` pointing at it. `overlay_dir` link the user's other entries
+  (auth, session stores) next to our file so writes through them still reach the real ones.
+
+Edit rules for the session copy, all mandatory: build it in this plugin's app dir, write via a
+temp file in the same directory plus rename, re-read and re-parse after writing, export no
+override when nothing could be placed, and prune directories whose session is gone. Undo is
+`rm -rf` of the copy — there is no backup to restore because the original is never modified.
 
 ## Step 9 — M3 page (roadmap-gated)
 
@@ -463,9 +472,9 @@ These are the two that bite during M0 and are about the build, not the design:
 1. ~~Which consumer system on the reference path counts as "recorded"~~ — **resolved 2026-10-29:
    deferred.** The plugin does not read a consumer back, so no vendor's read API is a dependency;
    `verify`, `consumer.*` and M3 wait on `plan/roadmap.md` §1.
-2. Whether `setup <agent>` stays print-only in M2 or applies the mapping on `--yes` with a
-   backup. The edit rules above are written for the "applies" case, so deciding "print-only" is
-   a subtraction, not a redesign.
+2. ~~Whether `setup <agent>` stays print-only in M2 or applies the mapping on `--yes` with a
+   backup.~~ **resolved 2026-11-02:** neither — `setup --apply` builds the session's own copy and
+   the user's config is never edited (see §Step 8).
 3. Whether the default template should carry fewer or more fields (`tool:` today looks free, but
    every consumer that keys on the string makes a later change a breaking one). Cheap to decide
    before the first real integration, expensive after.

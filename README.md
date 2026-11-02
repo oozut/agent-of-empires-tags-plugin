@@ -5,11 +5,13 @@ parameters, or request-body fields — to every LLM request it sends, so any sys
 path — a gateway, an egress proxy, a log pipeline, a session-control plane — can attribute,
 route, or validate that request.
 
-Status: M0 done — Rust port landed (M0-T13, CI green), the package installs, `aoe plugin update`
-builds and installs both binaries, `hook|value` resolves a session to one `NAME=value` per enabled
-header (T02), `setup --print` emits the exact hook and mapping lines (T05), `doctor` names any
-broken piece (T11), two independent headers reach a request (T10), the sink proof (incl. a
-sandboxed leg via podman, 2026-10-29) and `docs/install.md` are done (T08, T12) — 76 tests green.
+Status: M0 and M1 done, M2 delivering per session. M0's proof (two independent headers reaching a
+request, including a sandboxed leg via podman) still holds; M2 changed *where* a value is written.
+`setup --apply` no longer edits any user config: it builds this session's own copy of the
+harness's config under the plugin's app dir and the hook exports the harness variable that points
+at it. Verified end to end on this host for `pi` (header **and** a `samplingParams` body field),
+`claude` (env-only header), `codex` (TOML) and `opencode` — evidence in
+`docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>`. 98 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -25,13 +27,15 @@ The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
 lines reference and which survives upgrades.
 
 Setting it up on a session is three steps: `setup --print` shows the two `[host_hooks]` lines and
-the harness mapping line, `doctor` checks what is actually wired, and `hook` is what aoe runs per
-launch.
+the mapping line per target, `doctor` says how each installed harness can be delivered
+(`wired` / `overlay` / `unsupported`), and `hook` is what aoe runs per launch — it mints the
+values, builds this session's config copy, and exports the variable that points the harness at
+it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modified.
 
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 76 tests, no aoe, no network
+cargo test --locked                  # 98 tests, no aoe, no network
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

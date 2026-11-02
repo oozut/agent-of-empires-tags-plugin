@@ -334,7 +334,9 @@ fn an_unresolvable_aoe_binary_fails() {
 }
 
 #[test]
-fn an_unmapped_header_fails_and_names_the_provider() {
+fn an_overlay_row_needs_no_static_entry_in_the_users_config() {
+    // The session copy is written by our own writer, so the user's file is only
+    // the starting point: a provider with no header entry is exactly right.
     let (mut sandbox, _) = wired();
     Wire {
         headers: Some(vec![]),
@@ -342,8 +344,8 @@ fn an_unmapped_header_fails_and_names_the_provider() {
     }
     .apply(&mut sandbox);
     let check = check(&report(&sandbox), "mapping X-AoE-Tags").clone();
-    assert_eq!(check.status, llm_tags::doctor::FAIL);
-    assert!(check.detail.contains("is not mapped"), "{}", check.detail);
+    assert_eq!(check.status, llm_tags::doctor::OK, "{}", check.detail);
+    assert!(check.detail.contains("overlay"), "{}", check.detail);
     assert!(check.detail.contains("litellm"), "{}", check.detail);
 }
 

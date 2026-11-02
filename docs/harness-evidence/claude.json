@@ -1,0 +1,27 @@
+{
+  "agent": "claude",
+  "binary": "/var/lib/aoe/.local/bin/claude",
+  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
+  "checked_at": "2026-11-02T22:27:52Z",
+  "exit_code": 1,
+  "session_override": {
+    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: aoe,feature:,session:S-prob"
+  },
+  "minted_values": [
+    "aoe,feature:,session:S-prob"
+  ],
+  "requests": 2,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "X-AoE-Tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "X-AoE-Tags",
+      "value": "aoe,feature:,session:S-prob"
+    }
+  ],
+  "delivered": true
+}

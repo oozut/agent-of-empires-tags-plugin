@@ -85,6 +85,20 @@ impl Sandbox {
         fs::write(path, body).expect("config");
     }
 
+    /// Replace the fake session this sandbox reports: the session row beats the
+    /// environment, so a test that needs another harness says so here.
+    pub fn session(&mut self, id: &str, tool: &str) {
+        let json = format!(
+            r#"{{"id":"{id}","title":"Lithuanians","path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","group":"","tool":"{tool}","profile":"main"}}"#
+        );
+        let path = self.fake_aoe(&json);
+        self.env
+            .insert("AOE_BIN".to_string(), path.display().to_string());
+        self.env
+            .insert("AOE_SESSION_ID".to_string(), id.to_string());
+        self.env.insert("AOE_TOOL".to_string(), tool.to_string());
+    }
+
     /// `$HOME/.pi/agent/models.json` — where the pi adapter writes.
     pub fn pi_models_path(&self) -> PathBuf {
         self.path("home/.pi/agent/models.json")

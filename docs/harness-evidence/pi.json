@@ -1,0 +1,27 @@
+{
+  "agent": "pi",
+  "binary": "/usr/bin/pi",
+  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
+  "checked_at": "2026-11-02T22:28:05Z",
+  "exit_code": 0,
+  "session_override": {
+    "PI_CODING_AGENT_DIR": "/tmp/aoe-probe-pi-GO2laD/home/.config/agent-of-empires/sessions/probe-pi-594121/pi"
+  },
+  "minted_values": [
+    "aoe,team:core,session:S-prob",
+    "{\"tags\":[\"team:core\"]}"
+  ],
+  "requests": 1,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,team:core,session:S-prob"
+    },
+    {
+      "where": "body",
+      "value": "{\"tags\":[\"team:core\"]}"
+    }
+  ],
+  "delivered": true
+}

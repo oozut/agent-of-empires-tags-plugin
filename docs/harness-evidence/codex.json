@@ -1,0 +1,47 @@
+{
+  "agent": "codex",
+  "binary": "/var/lib/aoe/.local/bin/codex",
+  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
+  "checked_at": "2026-11-02T22:27:53Z",
+  "exit_code": 1,
+  "session_override": {
+    "CODEX_HOME": "/tmp/aoe-probe-codex-6b6uCJ/home/.config/agent-of-empires/sessions/probe-codex-593397/codex"
+  },
+  "minted_values": [
+    "aoe,feature:,session:S-prob"
+  ],
+  "requests": 6,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    }
+  ],
+  "delivered": true
+}

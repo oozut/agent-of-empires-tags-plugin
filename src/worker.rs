@@ -187,6 +187,22 @@ impl Host {
             .cloned()
             .unwrap_or_default();
 
+        // A session's generated config must not outlive the session: the worker
+        // already holds the live list, so it is the natural place to sweep.
+        let live: Vec<String> = sessions
+            .iter()
+            .filter_map(|session| session.get("id"))
+            .filter_map(serde_json::Value::as_str)
+            .map(str::to_string)
+            .collect();
+        if !live.is_empty() {
+            let app_dir = crate::settings::app_dir(&crate::env::Env::current());
+            let removed = crate::overlay::prune(&app_dir, &live);
+            if removed > 0 {
+                eprintln!("pruned {removed} stale session config(s)");
+            }
+        }
+
         let headers_val = self
             .call_host("config.get", serde_json::json!({"key": "headers"}))
             .ok()

@@ -26,6 +26,9 @@ in `baseUrl` does **not** work — pi appends the endpoint path, so `http://h/v1
 
 ## Adapter data format
 
+A row describes two things: where the harness keeps a mapping, and how this plugin gets a
+*session-scoped* copy of it in front of the harness. The second half is the `write_mode` group.
+
 ```toml
 [[adapter]]
 agent = "pi"
@@ -33,45 +36,127 @@ label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
 interpolates = ["header"]           # delivery points that expand `$NAME`
 supports = ["header", "body"]       # delivery kinds this harness can carry
-config_env = "PI_CODING_AGENT_DIR"  # optional: directory override variable
+config_env = "PI_CODING_AGENT_DIR"  # directory override the harness itself honours
 # Where the mapping is *written* can differ from where the launched process reads it, when a
 # launcher regenerates the directory. The first entry is the file a harness reads from; a
 # rewritten directory is never the target.
 config_paths = ["~/.pi/agent/models.json", "$PI_CODING_AGENT_DIR/models.json"]
-config_format = "json"
-status = "documented"               # verified | documented | needs_research | unsupported
-notes = "header values resolve like apiKey: $NAME, ${NAME}, or !command"
+config_format = "json"              # json | toml
+status = "verified"                 # verified | documented | needs_research | unsupported
+
+# --- how a session gets its own config (docs/harness-adapters.md §Per-session config)
+write_mode = "overlay_dir"          # env_only | overlay_file | overlay_dir | none
+overlay_env = "PI_CODING_AGENT_DIR" # variable that points the harness at the session copy
+overlay_file = "models.json"        # our file inside that copy
+writer = "pi_models"                # src/writer.rs
+
+# --- only for write_mode = "env_only"
+native_env = "ANTHROPIC_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
 ```
 
-| `mechanism` | Meaning | Static setup needed |
+| `write_mode` | What a session gets | The user's config |
 |---|---|---|
-| `custom_headers_env` | The harness reads one env var holding whole header lines | no |
-| `headers_from_env` | The harness config maps a header name to a variable it reads | yes, once |
-| `config_headers` | The harness config holds the header value with env interpolation | yes, once |
-| `command_headers` | The harness config runs a command per request to produce the value | yes, once |
-| `url_param` | Only a base URL override exists; the value travels in path or query | yes, and the consumer must honor it |
-| `none` | No usable mechanism found | values cannot be sent |
+| `env_only` | nothing on disk: the hook exports the harness's own variable (`native_env`) carrying this session's lines | never read for writing |
+| `overlay_file` | one file this plugin generates, named by `overlay_env` | copied as the starting point, then untouched |
+| `overlay_dir` | a directory holding our file plus links to the user's other entries, named by `overlay_env` | linked, never edited |
+| `none` | nothing: only the printed mapping is available, `doctor` says `unsupported` | untouched |
+
+| `mechanism` | Meaning | Delivery |
+|---|---|---|
+| `custom_headers_env` | The harness reads one env var holding whole header lines | `env_only` |
+| `headers_from_env` | The harness config maps a header name to a variable it reads | session copy |
+| `config_headers` | The harness config holds the header value, with env interpolation | session copy |
+| `command_headers` | The harness config runs a command per request to produce the value | session copy or `env_only` |
+| `url_param` | Only a base URL override exists; the value travels in path or query | refused unless the harness keeps query strings intact |
+| `none` | No usable mechanism found | `unsupported` |
+
+## Per-session config
+
+The M0 mapping wrote a header into the user's config and relied on the harness expanding
+`$AOE_LLM_TAGS` at request time. That only survives while every session's value fits in one
+global file — it does not for body fields, query parameters or literal-only channels, where one
+session's value would freeze into everybody else's requests.
+
+So the rule is now: **the user's config is never edited.** At launch the hook builds a copy for
+that session alone, bakes this session's values into it, and exports the variable that points
+the harness at the copy:
+
+```
+hook  ──►  <app dir>/sessions/<session id>/<agent>/…    (built from the user's file)
+      ──►  PI_CODING_AGENT_DIR=<that dir>               (harness reads the copy)
+```
+
+Properties that follow, and that the tests pin down:
+
+- **Two sessions never share a file.** Different session id ⇒ different directory, so
+  concurrent sessions cannot overwrite each other's tags.
+- **Nothing is written outside the app dir.** `setup --undo` deletes the copy; there is no
+  backup to restore because the original was never touched.
+- **A copy cannot outlive its session.** The worker prunes `sessions/` against the host's live
+  session list, and `doctor` reports what is there.
+- **A copy that carries nothing is not used.** If the writer has nowhere to put any target
+  (no provider with models, no provider table), the hook exports no override, so the harness
+  keeps reading its real config instead of an empty one.
+- **The shape is preserved before it is modified.** The copy starts as a parse of the user's
+  file; the TOML writer edits the document so the user's comments survive.
+
+Writers (`src/writer.rs`) are per config format, not per vendor:
+
+| `writer` | Into | Delivery |
+|---|---|---|
+| `pi_models` | `providers.<id>.headers`, `models[].samplingParams` | header, body (query refused) |
+| `opencode_json` | `provider.<id>.options.headers` | header |
+| `codex_toml` | `[model_providers.<id>] http_headers` | header |
+
+A new harness is a row plus, at most, one small writer. `tests/overlay.rs` refuses a row that
+claims `overlay_*` without an `overlay_env` and an implemented writer, so the table cannot drift
+into lying about a capability.
+
+### Verification, portably
+
+```
+tools/probe-harness.sh <agent>            # one harness, by absolute path
+tools/probe-harness.sh --list             # agents with a recipe
+```
+
+The probe runs in a throwaway `HOME`, calls the harness binary directly (a user-prefix install
+in `~/.local/bin` is fine and need not be visible to `aoe agents`), points its provider at
+`tools/header-sink.py`, and records what arrived in `docs/harness-evidence/<agent>.json`. It
+needs no API key and no model: the harness is expected to fail at completion, and the request it
+sent is the result. `--extra-settings FILE` appends targets to the probe's own plugin config, so
+body and query delivery can be checked the same way.
+
+Verified on this host (2026-11, evidence in `docs/harness-evidence/`):
+
+| Agent | Session scope | Delivered |
+|---|---|---|
+| `pi` | `PI_CODING_AGENT_DIR` → overlay dir | header, and `samplingParams` body field |
+| `claude` | `ANTHROPIC_CUSTOM_HEADERS` from the hook | header |
+| `codex` | `CODEX_HOME` → overlay dir (TOML writer) | header |
+| `opencode` | `OPENCODE_CONFIG` → overlay file | header |
 
 ## Harness table
 
-Ten targets. Only two are installed on this host (`/usr/bin/pi`, `/usr/local/bin/hermes`), so
-verification order follows what can actually be tested — a deployment fact, not a ranking.
+Seventeen agents exist in aoe; this table covers the rows that have been researched. The four
+below are verified end to end on this host through the per-session model above — a user-prefix
+install (`~/.local/bin`) is enough, the binaries need not be visible to `aoe agents`.
 
-| Agent | Mechanism | Default header → var | Static setup | Discovery | Status |
-|---|---|---|---|---|---|
-| `pi` | `config_headers` and `command_headers` | `X-AoE-Tags` → `AOE_LLM_TAGS` | `models.json` → `providers.<id>.headers` | `~/.pi/agent/models.json`, `$PI_CODING_AGENT_DIR` | documented; verify on host (M0 gate); sandbox unverified |
-| `hermes` | `config_headers` via provider plugin `extra_headers` | `X-AoE-Tags` → `AOE_LLM_TAGS` | provider plugin/config | `hermes` config dir | needs research |
-| `claude` | `custom_headers_env` | whole header lines in one var (`ANTHROPIC_CUSTOM_HEADERS`) | none | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` | documented, verify |
-| `codex` | `headers_from_env` | `X-AoE-Tags` → `AOE_LLM_TAGS` | `[model_providers.<id>.env_http_headers]` | `$CODEX_HOME`, `~/.codex/config.toml` | documented, verify |
-| `opencode` | `config_headers` | `X-AoE-Tags` → `AOE_LLM_TAGS` | `provider.<id>.options.headers` with `{env:...}` | `$XDG_CONFIG_HOME/opencode/opencode.json` | documented, verify |
-| `gemini` | TBD | TBD | TBD | `~/.gemini/settings.json` | needs research |
-| `vibe` | TBD | TBD | TBD | `~/.config/vibe` | needs research |
-| `kiro` | TBD | TBD | TBD | agent config JSON | needs research |
-| `cline` | TBD | TBD | TBD | VS Code extension storage | needs research |
-| `openclaw` | TBD | TBD | TBD | TBD | needs research |
+| Agent | Mechanism | Session scope | Discovery | Status |
+|---|---|---|---|---|
+| `pi` | `config_headers` and `command_headers` | `overlay_dir` via `PI_CODING_AGENT_DIR` | `~/.pi/agent/models.json`, `$PI_CODING_AGENT_DIR` | verified (header + body) |
+| `claude` | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` | verified (header) |
+| `codex` | `headers_from_env` / static `http_headers` | `overlay_dir` via `CODEX_HOME` | `$CODEX_HOME`, `~/.codex/config.toml` | verified (header) |
+| `opencode` | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` | `$XDG_CONFIG_HOME/opencode/opencode.json` | verified (header) |
+| `hermes` | provider plugin `extra_headers` | TBD | provider plugins | needs research |
+| `gemini` | TBD | TBD | `~/.gemini/settings.json` | needs research |
+| `vibe` | TBD | TBD | `~/.config/vibe` | needs research |
+| `kiro` | TBD | TBD | agent config JSON | needs research |
+| `cline` | TBD | TBD | VS Code extension storage | needs research |
+| `openclaw` | TBD | TBD | TBD | needs research |
 
-Snippets for the documented rows (default header shown; a second enabled header is one more
-entry in the same map, using its own `env_var`):
+Snippets for the documented rows. They describe the *shape* of the session copy; nothing here is
+pasted into a user config by hand any more (default header shown):
 
 ```jsonc
 // pi, ~/.pi/agent/models.json — merge into the provider entry the harness actually uses;
@@ -93,10 +178,10 @@ entry in the same map, using its own `env_var`):
 A harness may be started by a wrapper, not by aoe directly. Two rules follow, and both are
 adapter facts, not vendor facts:
 
-- **Write to the wrapper's source file**, not to the directory it generates. If a launcher
+- **Start from the wrapper's source file**, not from the directory it generates. If a launcher
   recreates `$CONFIG_DIR` on every start (this deployment's `pi-proxy` does), a mapping written
-  there is deleted at the next launch, and the environment variable pointing at it is not
-  evidence of anything.
+  there is deleted at the next launch; the per-session copy is built from the source path
+  (`config_paths[0]`) instead.
 - **Keep the shape the launcher expects.** A launcher may carry over only some keys, or only
   providers it considers usable; a mapping it discards is a silent failure. Record the required
   shape in the adapter row's `notes` (here: the provider entry must keep a non-empty `models`

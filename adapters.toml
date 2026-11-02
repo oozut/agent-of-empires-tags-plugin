@@ -28,21 +28,23 @@ config_format = "json"
 mapping_format = '{file} → providers.{provider}.headers["{header}"] = "${env_var}"'
 interpolates = ["header"]
 supports = ["header", "body"]
-status = "documented"
+write_mode = "overlay_dir"
+overlay_env = "PI_CODING_AGENT_DIR"
+overlay_file = "models.json"
+writer = "pi_models"
+status = "verified"
 notes = """
-Verified on the host (2026-11): header delivery works, body delivery works through
-`models[].samplingParams`, and a query parameter in `baseUrl` does not — pi appends the endpoint
-path to `baseUrl`, so `http://h/v1?tags=x` becomes `/v1?tags=x/chat/completions`. A `query`
-target is refused for pi rather than written.
-Only `headers` values expand `$VAR` / `!command`; `samplingParams` is sent as written, so a
-`body` target there needs `literal`. For per-session cost attribution the gateway's own metadata
-header is the sturdier path, e.g. `name = "x-litellm-spend-logs-metadata"`.
+Verified on the host (2026-11) through tools/probe-harness.sh (docs/harness-evidence/pi.json):
+header delivery works, and a body target lands in `models[].samplingParams` — the session copy is
+written per launch, so the value is baked in and the harness's lack of body interpolation does
+not matter. A query parameter in `baseUrl` does not work: pi appends the endpoint path to
+`baseUrl`, so `http://h/v1?tags=x` becomes `/v1?tags=x/chat/completions`, and a `query` target is
+refused for pi rather than written.
+Headers additionally accept `$VAR` / `!command`, which is why the reference channel still works
+for a config that is not a session copy.
 The provider entry must keep a non-empty `models` list: this host's pi-proxy discards a
 headers-only entry and rebuilds the provider from scratch, taking `headers` with it. The first
-path is the wrapper's source file (`$HOME/.pi/agent/models.json`); `$PI_CODING_AGENT_DIR` is
-regenerated on every launch and is never the write target. `command_headers`
-(`!aoe-llm-tags value X-AoE-Tags`) is also accepted and is cached per process, so it is no more
-live than the minted variable.
+mapping_format is the shipped one; the second is the command variant.
 """
 
 [[adapter]]
@@ -56,7 +58,10 @@ config_format = "none"
 mapping_format = 'ANTHROPIC_CUSTOM_HEADERS="{header}: ${env_var}"'
 interpolates = ["header"]
 supports = ["header"]
-status = "documented"
+write_mode = "env_only"
+native_env = "ANTHROPIC_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+status = "verified"
 notes = """
 No static config file: the variable carries whole header lines. The shipped mapping is the
 "no static file" form, so `doctor` checks the variable rather than a file.
@@ -73,10 +78,15 @@ config_format = "toml"
 mapping_format = '{file} → [model_providers.{provider}.env_http_headers] "{header}" = "{env_var}"'
 interpolates = ["header"]
 supports = ["header"]
-status = "documented"
+write_mode = "overlay_dir"
+overlay_env = "CODEX_HOME"
+overlay_file = "config.toml"
+writer = "codex_toml"
+status = "verified"
 notes = """
-aoe owns ~/.codex/hooks.json, so point the hook installer at config.toml only, never at
-hooks.json.
+aoe owns ~/.codex/hooks.json, but this row never writes there: the session copy is built from
+config.toml, which is also where CODEX_HOME points at launch. Verified with
+tools/probe-harness.sh codex (docs/harness-evidence/codex.json).
 """
 
 [[adapter]]
@@ -90,8 +100,16 @@ config_format = "json"
 mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{{env:{env_var}}}"'
 interpolates = ["header", "query", "body"]
 supports = ["header", "query", "body"]
-status = "documented"
-notes = "Falls back to opencode.jsonc in the same directory on some versions; not verified here."
+write_mode = "overlay_file"
+overlay_env = "OPENCODE_CONFIG"
+overlay_file = "opencode.json"
+writer = "opencode_json"
+status = "verified"
+notes = """
+OPENCODE_CONFIG names one file, so the session copy is that file alone and no sibling entries are
+needed. Verified with tools/probe-harness.sh opencode (docs/harness-evidence/opencode.json). Some
+versions also read opencode.jsonc; not probed here.
+"""
 
 [[adapter]]
 agent = "hermes"

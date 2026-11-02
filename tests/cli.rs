@@ -397,7 +397,16 @@ fn a_body_target_goes_into_each_model_sampling_params() {
     );
     let run = sandbox.run(&["setup", "--adapter", "pi", "--apply", "--yes"]);
     run.assert_ok();
-    let written = sandbox.read_pi_models();
+    // The session's own copy carries the value…
+    let generated = run
+        .lines()
+        .first()
+        .and_then(|line| line.strip_prefix("wrote "))
+        .map(Path::new)
+        .expect("apply names the file it wrote");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(generated).expect("generated config"))
+            .expect("valid JSON");
     for model in written["providers"]["litellm"]["models"]
         .as_array()
         .unwrap()
@@ -407,6 +416,15 @@ fn a_body_target_goes_into_each_model_sampling_params() {
     assert!(written["providers"]["litellm"]
         .get("samplingParams")
         .is_none());
+    // …and the user's config is untouched.
+    assert!(sandbox.read_pi_models()["providers"]["litellm"]
+        .get("headers")
+        .is_none());
+    assert!(
+        sandbox.read_pi_models()["providers"]["litellm"]["models"][0]
+            .get("samplingParams")
+            .is_none()
+    );
 }
 
 #[test]

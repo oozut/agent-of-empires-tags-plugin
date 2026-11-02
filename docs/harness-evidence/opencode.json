@@ -1,0 +1,27 @@
+{
+  "agent": "opencode",
+  "binary": "/var/lib/aoe/.local/bin/opencode",
+  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
+  "checked_at": "2026-11-02T22:28:00Z",
+  "exit_code": 0,
+  "session_override": {
+    "OPENCODE_CONFIG": "/tmp/aoe-probe-opencode-FDufbX/home/.config/agent-of-empires/sessions/probe-opencode-593882/opencode/opencode.json"
+  },
+  "minted_values": [
+    "aoe,feature:,session:S-prob"
+  ],
+  "requests": 2,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "value": "aoe,feature:,session:S-prob"
+    }
+  ],
+  "delivered": true
+}
