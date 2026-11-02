@@ -24,37 +24,60 @@ dimension, a log join key, a rate-limit bucket, a tenant check, or a validity as
 
 The plugin commits to exactly three:
 
-1. **Presence.** Every outbound LLM request from a session carries the configured headers, or the
-   plugin says plainly that it cannot, and why (`doctor`).
-2. **Derivation.** Header values are computed from the session's identity and the plugin's
-   settings, at launch, by one implementation shared by every harness and both hook substrates.
-3. **Opacity.** Nothing else about the request changes: no body, no prompt, no response, no
-   ordering, no extra network hop. Values the plugin emits are strings it constructed; it never
-   inspects traffic.
+1. **Presence.** Every outbound LLM request from a session carries the configured payload on the
+   channels that harness supports, or the plugin says plainly that it cannot, and why (`doctor`).
+2. **Derivation.** Values are computed from the session's identity and the plugin's settings, at
+   launch, by one implementation shared by every harness and both hook substrates.
+3. **Opacity.** Nothing else about the request changes: no prompt, no response, no ordering, no
+   extra network hop, and no body edit beyond the field a `body` target names. Values the plugin
+   emits are values it constructed or was configured with; it never inspects traffic.
 
 Everything else is a consumer's business: whether a header is trusted, parsed, stored, expired,
 charged against, or ignored.
 
-## What is in the headers
+## What travels: one payload, three channels
 
-A set of targets, not a single tag. The tag set is resolved once (`tags` plus the rule matches);
-each target then chooses **where** it travels — a request header, a query parameter, or a
-request-body field — and **which slice** of the set it carries:
+A tag is a **key and a value**, not a word in a string. `tags` is a set of them:
+
+| You write | It means |
+|---|---|
+| `team:core` | `"team": "core"` |
+| `cost:=1.5` | `"cost": 1.5` — `:=` takes any JSON value: `true`, `2`, `["a","b"]`, `{"k":1}` |
+| `platform` | `"platform": true` — a marker that carries no value |
+
+The resolved payload is a JSON object: the session fields first, then every tag. It is what a
+target carries unless the target says otherwise, so a consumer reads `tags["team"]` instead of
+splitting a comma list, and adding a dimension later never changes the shape a consumer already
+parses.
+
+```json
+{"session":"S-9f3a","session_id":"9f3a...","tool":"pi","profile":"main",
+ "group":"Payments","project":"core","project_path":"/w/core","branch":"main",
+ "feature":"billing","team":"core","cost":1.5}
+```
+
+Fields are included only when they have a value, and `feature` is written last so a `feature:`
+tag overrides the derived one. A tag whose key is a session field cannot shadow it: the session
+wins and the tag is dropped with a warning.
+
+### Targets: where a payload goes, and which slice
+
+A target chooses **where** the payload travels and **what** of it travels there.
 
 | Field | Meaning |
 |---|---|
-| `kind` | `header` (default), `query` or `body`. A harness that cannot carry a kind is refused rather than written (pi appends the endpoint path to `baseUrl`, so it has no query channel). |
-| `name` | Wire name, e.g. `X-AoE-Tags`, `X-AoE-Session`, `x-tenant`, or a parameter name. A header name must be a valid HTTP field name; no plugin-owned prefix is required. |
-| `template` | Value template with fields from the session, e.g. `aoe,feature:{feature},session:{session}`, or `{tags}` for the whole set. |
-| `literal` | Optional override: written as-is instead of the rendered template. A literal that is JSON object/array becomes a JSON value in the session config. |
-| `env_var` | Variable that carries the rendered value at launch. Default: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for compatibility. |
+| `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
+| `name` | Wire name: a header name, a query parameter, or the body field to set. |
+| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. |
+| `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, or one field such as `{feature}`. |
+| `literal` | Written as-is instead of the rendered template. |
+| `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
 
-Available template fields, all resolved from the session manager first and the hook environment
-second:
+Template fields, resolved from the session manager first and the hook environment second:
 
 `{session}` `{session_id}` `{feature}` `{tool}` `{profile}` `{group}` `{group_slug}` `{project}`
-`{project_slug}` `{branch}` `{tags}`
+`{project_slug}` `{branch}` `{tags}` `{tags_csv}` `{tags_json}` `{payload_json}`
 
 Rules that keep the contract honest:
 
@@ -64,8 +87,11 @@ Rules that keep the contract honest:
   A path can contain a username; a title can contain anything at all.
 - **Fixed per launch.** The value cannot change while the process lives — that is a property of
   the delivery mechanism, not a limitation to be worked around.
-- **Bounded.** At most 5 tag values per target, and the grammar is the consumer's; the plugin
-  emits lowercase `[a-z0-9._:-]` tokens, one list per target, comma-separated by default.
+- **Bounded.** Keys start with a letter or digit and stop at 96 characters; values are printable
+  JSON. A key or value outside the grammar is dropped with a warning rather than written.
+- **Values are typed.** `:=` is the only way to get a number, boolean or nested value into a
+  payload, and it stays typed all the way to the consumer; a `csv` target flattens it back to
+  text, because a comma list has no types.
 
 ## Who reads it
 
@@ -85,12 +111,17 @@ is a list of templates rather than one fixed format.
 
 ## Delivery, and why it is launch-scoped
 
-Two paths, both fed by the same resolved values:
+Three paths, all fed by the same resolved payload:
 
-1. **Environment** (default). The hook prints `AOE_HDR_…=<value>` lines; a harness maps its header
-   to that variable once, statically. This is the portable path — it needs no proxy, no daemon,
-   and no network call from inside a sandbox.
-2. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
+1. **Environment.** The hook prints `AOE_HDR_…=<value>` lines and the harness's own config maps
+   its header to that variable once, statically. This is the portable path — no proxy, no daemon,
+   no network call from inside a sandbox — and it is the only one that works for a harness whose
+   config aoe itself writes hooks into, because aoe refuses a launch that moves that file.
+2. **A per-session file** (`overlay_file` / `overlay_dir`). For a harness whose config can only
+   hold a literal, the plugin builds a generated config inside the session's own directory and
+   points the harness at it with an environment variable. The user's config is never touched, and
+   the copy is deleted when the session is gone. A copy that would carry nothing is not used.
+3. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
    directly (`!aoe-llm-tags value X-AoE-Session`). Same values, one process later, and subject to
    the harness's own caching.
 

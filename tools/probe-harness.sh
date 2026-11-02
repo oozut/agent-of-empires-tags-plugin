@@ -144,6 +144,11 @@ name = "probe"
 base_url = "$base/v1"
 env_key = "PROBE_KEY"
 wire_api = "responses"
+
+# The reference aoe cannot generate for codex: the config names the variable,
+# the hook exports it, so nothing per-session is written anywhere.
+[model_providers.probe.env_http_headers]
+"X-AoE-Tags" = "AOE_LLM_TAGS"
 EOF
     run=("$bin" exec --skip-git-repo-check "hi")
     extra=(PROBE_KEY=probe OPENAI_API_KEY=probe)
@@ -222,21 +227,70 @@ evidence = {
     "deliveries": [],
     "delivered": False,
 }
+# A delivery counts when the far side can read the tag set back. The default
+# format is one JSON object, so a header/query/body value is parsed and compared
+# field by field; a flat `csv` value still matches as a substring.
+import urllib.parse
+
+wanted = []
+for tag in tags:
+    try:
+        wanted.append(json.loads(tag))
+    except ValueError:
+        wanted.append(tag)
+
+
+def holds(candidate):
+    """The minted tag set, read out of `candidate`, or None."""
+    if not candidate:
+        return None
+    parsed = candidate
+    if isinstance(candidate, str):
+        try:
+            parsed = json.loads(candidate)
+        except ValueError:
+            parsed = None
+    for want in wanted:
+        if isinstance(want, dict) and isinstance(parsed, dict):
+            if all(parsed.get(key) == value for key, value in want.items()):
+                return parsed
+        elif isinstance(want, str) and want and want in str(candidate):
+            return candidate
+    return None
+
+
+def find(candidate):
+    found = holds(candidate)
+    if found is not None:
+        return found
+    if isinstance(candidate, dict):
+        for item in candidate.values():
+            found = find(item)
+            if found is not None:
+                return found
+    if isinstance(candidate, list):
+        for item in candidate:
+            found = find(item)
+            if found is not None:
+                return found
+    return None
+
+
 for row in rows:
     for name, value in (row.get("headers") or {}).items():
-        if any(matches(value, tag) for tag in tags) or any(tag in str(value) for tag in tags):
-            evidence["deliveries"].append({"where": "header", "name": name, "value": value})
-    body = row.get("body") or {}
-    compact = json.dumps(body, separators=(",", ":"))
-    for tag in tags:
-        for needle in {tag, json.dumps(tag, separators=(",", ":"))[1:-1]}:
-            if needle and needle in compact:
-                evidence["deliveries"].append({"where": "body", "value": tag})
+        found = holds(str(value))
+        if found is not None:
+            evidence["deliveries"].append({"where": "header", "name": name, "value": found})
+    found = find(row.get("body") or {})
+    if found is not None:
+        evidence["deliveries"].append({"where": "body", "value": found})
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(row.get("path", "")).query)
+    for name, values in query.items():
+        for value in values:
+            found = holds(urllib.parse.unquote(value))
+            if found is not None:
+                evidence["deliveries"].append({"where": "query", "name": name, "value": found})
                 break
-    query = row.get("path", "")
-    for tag in tags:
-        if tag in query:
-            evidence["deliveries"].append({"where": "query", "value": tag})
 evidence["delivered"] = bool(evidence["deliveries"])
 pathlib.Path(out).write_text(json.dumps(evidence, indent=2) + "\n")
 print(json.dumps(evidence, indent=2))

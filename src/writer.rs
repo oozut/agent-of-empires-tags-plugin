@@ -201,21 +201,27 @@ fn opencode_json(doc: &mut Value, targets: &[Resolved]) -> Result<Vec<(String, S
         return Ok(named_skip(targets, "provider options is not an object"));
     };
     for item in targets {
-        if item.kind != "header" {
-            skipped.push((
-                item.name.clone(),
-                format!("opencode carries headers only, not a {} value", item.kind),
-            ));
-            continue;
-        }
-        let headers = options
-            .entry("headers")
+        // `options.headers` and `options.queryParams` both reach the AI SDK
+        // provider unchanged; there is no body knob it forwards.
+        let key = match item.kind.as_str() {
+            "header" => "headers",
+            "query" => "queryParams",
+            other => {
+                skipped.push((
+                    item.name.clone(),
+                    format!("opencode cannot carry a {other} value"),
+                ));
+                continue;
+            }
+        };
+        let map = options
+            .entry(key)
             .or_insert_with(|| Value::Object(serde_json::Map::new()));
-        let Some(headers) = headers.as_object_mut() else {
-            skipped.push((item.name.clone(), "options.headers is not an object".into()));
+        let Some(map) = map.as_object_mut() else {
+            skipped.push((item.name.clone(), format!("options.{key} is not an object")));
             continue;
         };
-        headers.insert(item.name.clone(), Value::String(item.value.clone()));
+        map.insert(item.name.clone(), Value::String(item.value.clone()));
     }
     Ok(skipped)
 }
@@ -253,13 +259,19 @@ fn codex_toml(
         }
     };
     for item in targets {
-        if item.kind != "header" {
-            skipped.push((
-                item.name.clone(),
-                format!("codex carries headers only, not a {} value", item.kind),
-            ));
-            continue;
-        }
+        // codex appends the endpoint path itself, so only these two tables can
+        // carry a value: `query_params` becomes `?name=value` on the request.
+        let key = match item.kind.as_str() {
+            "header" => "http_headers",
+            "query" => "query_params",
+            other => {
+                skipped.push((
+                    item.name.clone(),
+                    format!("codex cannot carry a {other} value"),
+                ));
+                continue;
+            }
+        };
         let Some(provider) = provider_table(doc, &provider) else {
             skipped.push((
                 item.name.clone(),
@@ -268,10 +280,10 @@ fn codex_toml(
             continue;
         };
         let table = provider
-            .entry("http_headers")
+            .entry(key)
             .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
         let Some(table) = table.as_table_like_mut() else {
-            skipped.push((item.name.clone(), "http_headers is not a table".into()));
+            skipped.push((item.name.clone(), format!("{key} is not a table")));
             continue;
         };
         table.insert(&item.name, toml_edit::value(item.value.clone()));
@@ -387,6 +399,52 @@ mod tests {
         };
         assert_eq!(
             doc["provider"]["acme"]["options"]["headers"]["X-AoE-Tags"],
+            "aoe"
+        );
+    }
+
+    #[test]
+    fn codex_query_params_become_a_query_parameter() {
+        let raw =
+            "model_provider = \"acme\"\n\n[model_providers.acme]\nbase_url = \"http://h/v1\"\n";
+        let mut doc = Doc::parse("toml", Some(raw)).expect("parses");
+        let skipped = apply(
+            "codex_toml",
+            &mut doc,
+            &[target("query", "tags", "aoe")],
+            std::path::Path::new("/nonexistent"),
+        )
+        .expect("writer runs");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let text = doc.render().unwrap();
+        assert!(text.contains("query_params"), "{text}");
+        assert!(text.contains("tags = \"aoe\""), "{text}");
+        assert!(!text.contains("http_headers"), "{text}");
+    }
+
+    #[test]
+    fn opencode_query_params_are_written_next_to_the_headers() {
+        let mut doc = json_doc(json!({"provider": {"acme": {"options": {}}}}));
+        let skipped = apply(
+            "opencode_json",
+            &mut doc,
+            &[
+                target("header", "X-AoE-Tags", "aoe"),
+                target("query", "tags", "aoe"),
+            ],
+            std::path::Path::new("/nonexistent"),
+        )
+        .expect("writer runs");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let Doc::Json(doc) = &doc else {
+            panic!("json doc")
+        };
+        assert_eq!(
+            doc["provider"]["acme"]["options"]["headers"]["X-AoE-Tags"],
+            "aoe"
+        );
+        assert_eq!(
+            doc["provider"]["acme"]["options"]["queryParams"]["tags"],
             "aoe"
         );
     }

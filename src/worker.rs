@@ -446,10 +446,14 @@ mod tests {
         .expect("a response");
         assert_eq!(response["id"], 1);
         assert_eq!(response["result"]["ok"], true);
-        assert_eq!(
-            response["result"]["headers"][resolver::DEFAULT_HEADER],
-            "aoe,feature:,session:S-abcd"
-        );
+        // The default target sends one JSON object, so a consumer reads a field.
+        let raw = response["result"]["headers"][resolver::DEFAULT_HEADER]
+            .as_str()
+            .expect("a header value");
+        let payload: Value = serde_json::from_str(raw).expect("the value is JSON");
+        assert_eq!(payload["session"], "S-abcd");
+        assert_eq!(payload["session_id"], "abcd1234");
+        assert_eq!(payload["tool"], "unknown");
     }
 
     #[test]

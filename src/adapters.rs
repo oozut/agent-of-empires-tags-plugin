@@ -50,6 +50,11 @@ pub struct Adapter {
     pub native_env: String,
     /// How one target renders into that variable (`{header}`, `{param}`, `{value}`).
     pub native_format: String,
+    /// aoe installs its own hooks into this agent's config file, which pins that
+    /// file's path for the launch: aoe refuses any `before_session` hook that
+    /// moves it, so this harness can only be served through a reference the
+    /// user's own config already carries.
+    pub aoe_hooks: bool,
     pub status: String,
     pub notes: String,
 }
@@ -89,10 +94,36 @@ fn rows_from(table: toml::Table, path: &Path) -> (Vec<Adapter>, Vec<String>) {
             )],
         );
     };
-    (
-        rows.iter().filter_map(parse_row).collect::<Vec<_>>(),
-        Vec::new(),
-    )
+    let mut warnings = Vec::new();
+    let mut adapters: Vec<Adapter> = rows.iter().filter_map(parse_row).collect();
+    // aoe installs hooks into some agents' own config files and refuses a launch
+    // where `before_session` moves that path. Those rows cannot use a per-session
+    // copy at all: fall back to the reference channel and say so.
+    for adapter in &mut adapters {
+        let Some(reason) = overlay_refused(adapter) else {
+            continue;
+        };
+        warnings.push(reason);
+        adapter.write_mode = MODE_NONE.to_string();
+        adapter.supports.retain(|kind| kind == "header");
+    }
+    (adapters, warnings)
+}
+
+/// Why a per-session copy cannot be used for this agent, if aoe owns its hooks.
+pub fn overlay_refused(adapter: &Adapter) -> Option<String> {
+    // `env_only` moves nothing: it exports values and the harness's own config
+    // reads them, which aoe's hook-path check never sees.
+    let moves_config = matches!(adapter.write_mode.as_str(), "overlay_file" | "overlay_dir");
+    if !adapter.aoe_hooks || !moves_config {
+        return None;
+    }
+    Some(format!(
+        "adapters: {} declares {}, but aoe installs its hooks and refuses a launch whose \
+         hook path moves, so this agent is served through the reference its config already \
+         carries (header targets only)",
+        adapter.agent, adapter.write_mode
+    ))
 }
 
 fn parse(raw: &str) -> Result<toml::Table, toml::de::Error> {
@@ -111,6 +142,7 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
             .unwrap_or_default()
             .to_string()
     };
+    let flag = |key: &str| row.get(key).and_then(toml::Value::as_bool).unwrap_or(false);
     let list = |key: &str| -> Vec<String> {
         row.get(key)
             .and_then(toml::Value::as_array)
@@ -153,6 +185,7 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         writer: text("writer"),
         native_env: text("native_env"),
         native_format: text("native_format"),
+        aoe_hooks: flag("aoe_hooks"),
         supports: {
             let listed = list("supports");
             if listed.is_empty() {
@@ -293,6 +326,8 @@ pub fn config_path(adapter: &Adapter, env: &Env) -> (Option<PathBuf>, Vec<String
 }
 
 /// Can this harness carry a value of `kind` at all?
+pub const MODE_NONE: &str = "none";
+
 pub fn supports(adapter: &Adapter, kind: &str) -> bool {
     adapter.supports.iter().any(|listed| listed == kind)
 }
@@ -517,6 +552,31 @@ mod tests {
         let (rows, warnings) = load(Some(&dir));
         assert!(rows.is_empty());
         assert!(warnings[0].contains("could not be read"), "{warnings:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_overlay_row_for_an_agent_aoe_writes_hooks_for_falls_back_to_a_reference() {
+        let dir = std::env::temp_dir().join(format!("llm-tags-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(ADAPTERS_FILENAME),
+            r#"
+[[adapter]]
+agent = "codex"
+aoe_hooks = true
+write_mode = "overlay_dir"
+overlay_env = "CODEX_HOME"
+overlay_file = "config.toml"
+writer = "codex_toml"
+supports = ["header", "query"]
+"#,
+        )
+        .unwrap();
+        let (rows, warnings) = load(Some(&dir));
+        assert_eq!(rows[0].write_mode, MODE_NONE);
+        assert_eq!(rows[0].supports, vec!["header"]);
+        assert!(warnings[0].contains("hook path moves"), "{warnings:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

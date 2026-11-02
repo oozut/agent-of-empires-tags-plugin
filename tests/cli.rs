@@ -7,9 +7,10 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
+use common::{settings_config, Run, Sandbox, CLI, DEFAULT_PAYLOAD, PLUGIN_ID, SESSION_JSON};
 
-const DEFAULT_VALUE: &str = "aoe,feature:,session:S-cf11";
+/// The default target carries one JSON object, not a flat string.
+const DEFAULT_VALUE: &str = DEFAULT_PAYLOAD;
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -54,7 +55,10 @@ fn a_broken_aoe_is_a_warning_and_exit_zero() {
     let run = sandbox.run_with(&["hook"], &[("AOE_BIN", "/nonexistent/aoe")]);
     run.assert_ok();
     assert!(run.stderr.contains("falling back"), "{}", run.stderr);
-    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={DEFAULT_VALUE}")]);
+    assert_eq!(
+        run.lines(),
+        vec![format!("AOE_LLM_TAGS={}", common::DEFAULT_PAYLOAD_NO_AOE)]
+    );
 }
 
 #[test]

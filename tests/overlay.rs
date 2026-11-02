@@ -133,10 +133,11 @@ fn an_adapter_that_rides_the_environment_writes_no_file() {
     sandbox.session("cf11af87da7e4bf0", "claude");
     let run = sandbox.run(&["hook"]);
     run.assert_ok();
-    assert_eq!(
-        emitted(&run.lines(), "AOE_LLM_TAGS"),
-        Some("aoe,feature:,session:S-cf11")
-    );
+    let lines = run.lines();
+    let raw = emitted(&lines, "AOE_LLM_TAGS").expect("the header");
+    let payload: serde_json::Value = serde_json::from_str(raw).expect("JSON");
+    assert_eq!(payload["session"], "S-cf11");
+    assert_eq!(payload["tool"], "claude");
     assert!(
         run.lines().iter().all(|line| !line.contains("CONFIG_DIR")),
         "{:?}",
@@ -159,10 +160,15 @@ fn opencode_gets_one_generated_file_pointed_at_by_its_own_variable() {
     assert!(file.is_file(), "{}", file.display());
     let generated: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    assert_eq!(
-        generated["provider"]["acme"]["options"]["headers"]["X-AoE-Tags"],
-        "aoe,feature:,session:S-cf11"
-    );
+    // The value is one JSON object, so a consumer parses a field, not the string.
+    let header_value: serde_json::Value = serde_json::from_str(
+        generated["provider"]["acme"]["options"]["headers"]["X-AoE-Tags"]
+            .as_str()
+            .expect("a string header value"),
+    )
+    .expect("the header value is JSON");
+    assert_eq!(header_value["session"], "S-cf11");
+    assert_eq!(header_value["tool"], "opencode");
     // The user's file kept its single provider and gained nothing.
     let original: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(sandbox.path("home/.config/opencode/opencode.json")).unwrap(),

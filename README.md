@@ -6,12 +6,20 @@ path — a gateway, an egress proxy, a log pipeline, a session-control plane —
 route, or validate that request.
 
 Status: M0 and M1 done, M2 delivering per session. M0's proof (two independent headers reaching a
-request, including a sandboxed leg via podman) still holds; M2 changed *where* a value is written.
-`setup --apply` no longer edits any user config: it builds this session's own copy of the
-harness's config under the plugin's app dir and the hook exports the harness variable that points
-at it. Verified end to end on this host for `pi` (header **and** a `samplingParams` body field),
-`claude` (env-only header), `codex` (TOML) and `opencode` — evidence in
-`docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>`. 98 tests green.
+request, including a sandboxed leg via podman) still holds; M2 changed *what* travels and *where*.
+
+What travels is a **JSON object, not a string**: `tags` is a set of `key:value` (and `key:=json`)
+entries, merged with the session's own fields, so a consumer reads `tags["team"]` instead of
+splitting a comma list, and a new dimension never changes the shape it already parses.
+`format = "csv"` and `template` remain for a consumer that wants the flat list or one field.
+
+`setup --apply` no longer edits any user config: a value rides the launch environment, or the
+hook builds this session's own copy of the harness's config under the plugin's app dir and exports
+the variable that points the harness at it. Verified end to end on this host for `pi` (header
+**and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
+(env-only header) and `codex` (header through a reference in its own config) — evidence in
+`docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
+session per harness, `tools/probe-session.sh <agent>`. 106 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -35,7 +43,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 98 tests, no aoe, no network
+cargo test --locked                  # 106 tests, no aoe, no network
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

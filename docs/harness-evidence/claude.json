@@ -1,26 +1,42 @@
 {
   "agent": "claude",
   "binary": "/var/lib/aoe/.local/bin/claude",
-  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
-  "checked_at": "2026-11-02T22:27:52Z",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-02T23:38:42Z",
   "exit_code": 1,
   "session_override": {
-    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: aoe,feature:,session:S-prob"
+    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: {\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-h6BS1x/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-810313\",\"team\":\"core\",\"tool\":\"claude\"}"
   },
   "minted_values": [
-    "aoe,feature:,session:S-prob"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-h6BS1x/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-810313\",\"team\":\"core\",\"tool\":\"claude\"}"
   ],
   "requests": 2,
   "deliveries": [
     {
       "where": "header",
       "name": "X-AoE-Tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-claude-h6BS1x/project",
+        "session": "S-prob",
+        "session_id": "probe-claude-810313",
+        "team": "core",
+        "tool": "claude"
+      }
     },
     {
       "where": "header",
       "name": "X-AoE-Tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-claude-h6BS1x/project",
+        "session": "S-prob",
+        "session_id": "probe-claude-810313",
+        "team": "core",
+        "tool": "claude"
+      }
     }
   ],
   "delivered": true

@@ -1,0 +1,141 @@
+{
+  "agent": "opencode",
+  "binary": "/var/lib/aoe/.local/bin/opencode",
+  "cli": "target/debug/aoe-llm-tags",
+  "session_id": "d307cff15cec433f",
+  "overlay": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/sessions/d307cff15cec433f/opencode",
+  "overlay_entries": {
+    "opencode.json": "file"
+  },
+  "overlay_carries": {
+    "header": true,
+    "query": true,
+    "body": true
+  },
+  "requests": 2,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "x-aoe-flat",
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-d307"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "d307cff15cec433f",
+        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+        "session": "S-d307",
+        "session_id": "d307cff15cec433f",
+        "team": "core",
+        "tool": "opencode"
+      }
+    },
+    {
+      "where": "query",
+      "name": "aoe_tags",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "d307cff15cec433f",
+        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+        "session": "S-d307",
+        "session_id": "d307cff15cec433f",
+        "team": "core",
+        "tool": "opencode"
+      }
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-flat",
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-d307"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "d307cff15cec433f",
+        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+        "session": "S-d307",
+        "session_id": "d307cff15cec433f",
+        "team": "core",
+        "tool": "opencode"
+      }
+    },
+    {
+      "where": "query",
+      "name": "aoe_tags",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "d307cff15cec433f",
+        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+        "session": "S-d307",
+        "session_id": "d307cff15cec433f",
+        "team": "core",
+        "tool": "opencode"
+      }
+    }
+  ],
+  "delivered": [
+    "header",
+    "query"
+  ],
+  "env_payloads": {
+    "AOE_BODY_METADATA": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "d307cff15cec433f",
+      "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+      "session": "S-d307",
+      "session_id": "d307cff15cec433f",
+      "team": "core",
+      "tool": "opencode"
+    },
+    "AOE_HDR_X_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "d307cff15cec433f",
+      "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+      "session": "S-d307",
+      "session_id": "d307cff15cec433f",
+      "team": "core",
+      "tool": "opencode"
+    },
+    "AOE_QRY_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "d307cff15cec433f",
+      "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+      "session": "S-d307",
+      "session_id": "d307cff15cec433f",
+      "team": "core",
+      "tool": "opencode"
+    }
+  },
+  "outcome": "delivered",
+  "aoe_message": "> build \u00b7 probe-model",
+  "payload_fields": {
+    "cost": 1.5,
+    "feature": "billing",
+    "profile": "main",
+    "project": "d307cff15cec433f",
+    "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
+    "session": "S-d307",
+    "session_id": "d307cff15cec433f",
+    "team": "core",
+    "tool": "opencode"
+  },
+  "run_dir": "/tmp/aoe-session-opencode-keAwYE"
+}

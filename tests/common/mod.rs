@@ -19,6 +19,16 @@ pub const CLI: &str = env!("CARGO_BIN_EXE_aoe-llm-tags");
 
 pub const SESSION_JSON: &str = r#"{"id":"cf11af87da7e4bf0","title":"Lithuanians","path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","group":"","tool":"pi-proxy","profile":"main"}"#;
 
+/// The default target sends the whole tag set as one JSON object. Keys are
+/// sorted (serde_json's default map), so this is the exact header value for the
+/// fixture session — a change in the payload shape fails here first.
+pub const DEFAULT_PAYLOAD: &str = r#"{"profile":"main","project":"lithuanians","project_path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","session":"S-cf11","session_id":"cf11af87da7e4bf0","tool":"pi-proxy"}"#;
+
+/// The same payload when `aoe` cannot be reached: no project row, so only the
+/// fields the hook environment carries are present.
+pub const DEFAULT_PAYLOAD_NO_AOE: &str =
+    r#"{"profile":"main","session":"S-cf11","session_id":"cf11af87da7e4bf0","tool":"pi-proxy"}"#;
+
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Sandbox {

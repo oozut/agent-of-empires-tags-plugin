@@ -21,10 +21,12 @@ of it.
 | Plugin id | `dev.oozut.llm-tags` | Namespaces config (`[plugins."<id>".settings]`), commands (`plugin.<id>.<command>`), worker logs. Changing it later orphans user settings, so pick before the first install. |
 | Install path | `<app_dir>/plugins/dev.oozut.llm-tags/` (here: `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`) | The hook line hardcodes it. The path survives upgrades; the contents are replaced. |
 | CLI entrypoint | `bin/aoe-llm-tags` (mode 0755, static Rust binary) | Must be runnable by path from a hook, with no interpreter, venv or `PATH` in the hook shell. |
-| Wire unit | A **header set**: `{header, template, env_var, enabled}` list in settings. Shipped default: `X-AoE-Tags` with template `aoe,feature:{feature},session:{session}`, `env_var = "AOE_LLM_TAGS"` | One header is enough for cost attribution; discrete and signed headers exist for consumers that validate or route. The set is data, so adding one costs a settings row, not a code change. |
+| Wire unit | One **JSON payload** per target: `{kind, name, format, template, env_var, enabled}` list in settings. Tags are `key:value` / `key:=json` / bare `key`; the payload merges them with the session fields. Shipped default: `X-AoE-Tags`, `format = "json"`, `env_var = "AOE_LLM_TAGS"` | A consumer reads `tags["team"]` instead of splitting a string, and a new dimension never changes the shape it parses. `format = "csv"` and `template` stay for a consumer that wants the flat list or one field. The set is data, so adding a channel costs a settings row, not a code change. |
 | Env var naming | Default `AOE_HDR_` + upper snake of the header name (`X-AoE-Session` → `AOE_HDR_X_AOE_SESSION`); the shipped default header pins `AOE_LLM_TAGS` | The hook prints one line per enabled header, so the name must be derivable by both the CLI and `setup`. Pinning keeps the common case short. |
-| Tag model | Accumulate **all** matching rules, cap 5 values, grammar `[a-z0-9._:-]`, `session_tagging = short_id` → `S-<first 4 chars of the session id>`, never the title | Recorded decision. `S-cf11` is derivable from `sessions.list` by anyone auditing a request log. |
+| Tag model | Accumulate **all** matching rules; a tag is a key and a typed value (`team:core`, `cost:=1.5`, `platform` = true), keys start with a letter or digit and stop at 96 characters; `session_tagging = short_id` → `S-<first 4 chars of the session id>`, never the title | Recorded decision. `S-cf11` is derivable from `sessions.list` by anyone auditing a request log. A tag that names a session field cannot shadow it: the session wins and the tag is dropped with a warning. |
 | Resolution | Session row from the session manager first, hook environment as fallback | Superset of the hook env, and the only source of `group`/`title` for structured host sessions. |
+| Where a target writes | `header`, `query` or `body`, decided per target; a kind the harness cannot carry is refused by `setup --apply` and failed by `doctor` | "Supported" is a per-harness fact (pi has no query channel, codex and opencode have no body knob), so the plugin must never write a value the harness will silently drop. |
+| Session scope | The user's config is never edited: the hook exports an env value, or points the harness at a generated copy inside `<app dir>/sessions/<session id>/<agent>/`, pruned with the session | Concurrent sessions must not overwrite each other's tags, and a per-session value has no place in a file everyone shares. A harness whose config aoe itself writes hooks into cannot be redirected at all (`aoe_hooks`). |
 | Timing | Per launch (host) / per container start (sandbox). No live mode | Harnesses cache command-valued headers for the process lifetime, so a command buys nothing. |
 | Downstream system | None assumed, none required | The header is the deliverable. A deployment picks the consumer; see `header-contract.md` for the consumer classes and `reference-deployment.md` for this host's. |
 
@@ -231,15 +233,21 @@ session_tagging = "short_id"
 session_signature = "none"          # "hmac" appends .<16 hex> to {session_id}; needs a key
 signing_key = ""                    # operator-supplied; the same value at the consumer
 
-# default row, spelled out; omitting the whole [[headers]] block uses the code default
-[[plugins."dev.oozut.llm-tags".settings.headers]]
-header = "X-AoE-Tags"
-env_var = "AOE_LLM_TAGS"
-enabled = true
-template = "aoe,feature:{feature},session:{session}"
+# the tag set, added once; each tag is `key:value`, `key:=json`, or a bare marker
+tags = ["team:core", "feature:billing", "cost:=1.5"]
 
-[[plugins."dev.oozut.llm-tags".settings.headers]]
-header = "X-AoE-Session"   # opt-in: for consumers that validate sessions, not ones that bill
+# default rows, spelled out; omitting the whole [[targets]] block uses the code default
+# (one JSON-payload header X-AoE-Tags on AOE_LLM_TAGS). The older `[[headers]]` key with
+# `header = …` still parses, so an existing settings block keeps working.
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"            # header | query | body
+name = "X-AoE-Tags"
+# format = "json"          # default: the whole payload object; "csv" sends team:core,…
+# template = "{tags}"      # overrides the format: {tags}, {tags_json}, {payload_json}, {feature}…
+
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-AoE-Session"     # opt-in: for consumers that validate sessions, not ones that bill
 enabled = false
 template = "{session_id}"
 
@@ -356,7 +364,7 @@ JSON
 # inside an aoe session (terminal view), with the proxy env vars unset:
 env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
   PI_CODING_AGENT_DIR=/tmp/sink-agent pi --print --model sink/sink "ping"
-grep -o '"X-AoE-Tags": "[^"]*"' /tmp/tag-sink.jsonl                     # aoe,feature:...,session:S-xxxx
+grep -o '"X-AoE-Tags": "[^"]*"' /tmp/tag-sink.jsonl                     # {"session":"S-xxxx","team":"core",...}
 ```
 
 2. **Consumer leg** (the real path): the same harness through whatever wrapper/launch path the

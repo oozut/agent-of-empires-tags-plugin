@@ -61,10 +61,14 @@ supports = ["header"]
 write_mode = "env_only"
 native_env = "ANTHROPIC_CUSTOM_HEADERS"
 native_format = "{header}: {value}"
+aoe_hooks = true
 status = "verified"
 notes = """
-No static config file: the variable carries whole header lines. The shipped mapping is the
-"no static file" form, so `doctor` checks the variable rather than a file.
+No static config file: the variable carries whole header lines, so the value rides the launch
+environment and nothing is written anywhere. aoe installs claude's own hooks into
+~/.claude/settings.json and refuses a launch whose hook path moves, which rules out a
+per-session config directory for this agent. The shipped mapping is the "no static file" form,
+so `doctor` checks the variable rather than a file.
 """
 
 [[adapter]]
@@ -78,15 +82,15 @@ config_format = "toml"
 mapping_format = '{file} → [model_providers.{provider}.env_http_headers] "{header}" = "{env_var}"'
 interpolates = ["header"]
 supports = ["header"]
-write_mode = "overlay_dir"
-overlay_env = "CODEX_HOME"
-overlay_file = "config.toml"
-writer = "codex_toml"
+write_mode = "none"
 status = "verified"
 notes = """
-aoe owns ~/.codex/hooks.json, but this row never writes there: the session copy is built from
-config.toml, which is also where CODEX_HOME points at launch. Verified with
-tools/probe-harness.sh codex (docs/harness-evidence/codex.json).
+codex can carry a query parameter too (`query_params`), and `src/writer.rs` has a `codex_toml`
+writer that places both — proven with `tools/probe-harness.sh codex` outside aoe. Under aoe the
+harness is header-only: aoe installs ~/.codex/hooks.json and refuses a launch whose hook path
+moves, which is exactly what a per-session CODEX_HOME does. So the header rides the reference
+this row already declares: `[model_providers.<id>.env_http_headers] X-AoE-Tags = "AOE_LLM_TAGS"`
+in the user's own config, installed once with `setup --print`.
 """
 
 [[adapter]]
@@ -98,8 +102,8 @@ config_env = "XDG_CONFIG_HOME"
 config_paths = ["~/.config/opencode/opencode.json", "$XDG_CONFIG_HOME/opencode/opencode.json"]
 config_format = "json"
 mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{{env:{env_var}}}"'
-interpolates = ["header", "query", "body"]
-supports = ["header", "query", "body"]
+interpolates = ["header", "query"]
+supports = ["header", "query"]
 write_mode = "overlay_file"
 overlay_env = "OPENCODE_CONFIG"
 overlay_file = "opencode.json"

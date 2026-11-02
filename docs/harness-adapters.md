@@ -11,8 +11,11 @@ three mapping lines, all fed by the same hook. The default target is listed in e
 
 A target is a place the tag set is delivered to: a request header (`kind = "header"`), a query
 parameter on the provider URL (`kind = "query"`), or a JSON field in the request body
-(`kind = "body"`). Tags are resolved once; the target only chooses where they go and which slice
-of the set it carries (`{tags}` for all of them, `{feature}`/`{session}`/… for one field).
+(`kind = "body"`). Tags are resolved once into one JSON payload — `tags` is a set of `key:value`
+(and `key:=json`) entries, plus the session fields — and each target chooses where it goes and
+what of it travels: `format = "json"` (default) sends the whole object, `format = "csv"` the flat
+`team:core,feature:billing` list, and `template` overrides both for one target
+(`{tags}`, `{tags_json}`, `{payload_json}`, `{feature}`, `{session}`…).
 
 `interpolates` lists the delivery points where that harness expands an env reference; `supports`
 lists the kinds it can carry at all. pi, claude and codex expand `$NAME` only in headers, so a
@@ -36,6 +39,7 @@ label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
 interpolates = ["header"]           # delivery points that expand `$NAME`
 supports = ["header", "body"]       # delivery kinds this harness can carry
+aoe_hooks = false                   # true when aoe installs its own hooks into this config
 config_env = "PI_CODING_AGENT_DIR"  # directory override the harness itself honours
 # Where the mapping is *written* can differ from where the launched process reads it, when a
 # launcher regenerates the directory. The first entry is the file a harness reads from; a
@@ -61,6 +65,20 @@ native_format = "{header}: {value}"
 | `overlay_file` | one file this plugin generates, named by `overlay_env` | copied as the starting point, then untouched |
 | `overlay_dir` | a directory holding our file plus links to the user's other entries, named by `overlay_env` | linked, never edited |
 | `none` | nothing: only the printed mapping is available, `doctor` says `unsupported` | untouched |
+
+`aoe_hooks = true` marks a harness whose config file aoe itself writes hooks into (`claude`'s
+`settings.json`, `codex`'s `hooks.json`, and the other agents `aoe hooks status` lists). aoe pins
+that file's path for the launch and refuses a launch where `before_session` moves it:
+
+```
+Error: before_session changed the agent hook path from …/home/.claude/settings.json to
+…/sessions/<id>/claude/settings.json; declare the override in the profile environment before
+approving
+```
+
+So a per-session copy is not merely expensive for those agents, it is refused. A row that marks
+`aoe_hooks` and still asks for `overlay_file`/`overlay_dir` is downgraded at load time to `none`
+with a warning, and keeps only the `header` kind — the reference channel is what it actually has.
 
 | `mechanism` | Meaning | Delivery |
 |---|---|---|
@@ -106,8 +124,17 @@ Writers (`src/writer.rs`) are per config format, not per vendor:
 | `writer` | Into | Delivery |
 |---|---|---|
 | `pi_models` | `providers.<id>.headers`, `models[].samplingParams` | header, body (query refused) |
-| `opencode_json` | `provider.<id>.options.headers` | header |
-| `codex_toml` | `[model_providers.<id>] http_headers` | header |
+| `opencode_json` | `provider.<id>.options.headers`, `.queryParams` | header, query |
+| `codex_toml` | `[model_providers.<id>] http_headers`, `.query_params` | header, query |
+
+Both writers receive the payload, not a string: a `json` target is set as a JSON object where the
+harness takes one (pi's `samplingParams`, opencode's `headers` value stays a string), and a `csv`
+target as the flat list.
+
+`codex_toml` and `opencode_json` both carry a query parameter because the harnesses do; codex's
+row still declares only `header` under aoe, because `aoe_hooks` rules out the copy that would
+carry it (see above). The writer stays: it is what a launcher that does not install aoe's hooks
+uses, and `tools/probe-harness.sh codex` proves it.
 
 A new harness is a row plus, at most, one small writer. `tests/overlay.rs` refuses a row that
 claims `overlay_*` without an `overlay_env` and an implemented writer, so the table cannot drift
@@ -131,10 +158,33 @@ Verified on this host (2026-11, evidence in `docs/harness-evidence/`):
 
 | Agent | Session scope | Delivered |
 |---|---|---|
-| `pi` | `PI_CODING_AGENT_DIR` → overlay dir | header, and `samplingParams` body field |
+| `pi` | `PI_CODING_AGENT_DIR` → overlay dir | header, and the `samplingParams` body field |
 | `claude` | `ANTHROPIC_CUSTOM_HEADERS` from the hook | header |
-| `codex` | `CODEX_HOME` → overlay dir (TOML writer) | header |
-| `opencode` | `OPENCODE_CONFIG` → overlay file | header |
+| `codex` | reference in the user's `config.toml` → `env_http_headers` | header (query only outside aoe) |
+| `opencode` | `OPENCODE_CONFIG` → overlay file | header and query parameter |
+
+Every value above is the JSON payload object, not a comma list — `docs/header-contract.md`.
+
+The probe covers the harness in isolation. The second, stronger check is a **real aoe session per
+harness**:
+
+```
+tools/probe-session.sh <agent> --cli target/debug/aoe-llm-tags --bin "$(command -v <agent>)" --sink 8950
+```
+
+It creates a throwaway `HOME`, writes the plugin settings and the hook config into a throwaway
+`XDG_CONFIG_HOME`, runs `aoe hooks approve` there, adds a scratch session whose command is this
+harness, starts it, waits for the sink, captures the pane, and stops it. The evidence
+(`docs/harness-evidence/session-<agent>.json`) records `requests`, which channels the sink saw
+(`delivered`), which variables in the launched pane carried the payload (`env_payloads`), and an
+`outcome`:
+
+| `outcome` | Meaning |
+|---|---|
+| `delivered` | a request from the launched harness reached the sink carrying the payload |
+| `no-request` | the pane got the payload in its environment, but the harness sent nothing (no credential or endpoint it can read) |
+| `refused-by-aoe` | aoe refused the launch because the hook path moved — a `write_mode` aoe cannot allow |
+| `request-without-the-tag` | a request arrived without the payload: a real defect |
 
 ## Harness table
 
@@ -142,12 +192,12 @@ Seventeen agents exist in aoe; this table covers the rows that have been researc
 below are verified end to end on this host through the per-session model above — a user-prefix
 install (`~/.local/bin`) is enough, the binaries need not be visible to `aoe agents`.
 
-| Agent | Mechanism | Session scope | Discovery | Status |
+| Agent | Mechanism | Session scope | Channels under aoe | Discovery |
 |---|---|---|---|---|
-| `pi` | `config_headers` and `command_headers` | `overlay_dir` via `PI_CODING_AGENT_DIR` | `~/.pi/agent/models.json`, `$PI_CODING_AGENT_DIR` | verified (header + body) |
-| `claude` | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` | verified (header) |
-| `codex` | `headers_from_env` / static `http_headers` | `overlay_dir` via `CODEX_HOME` | `$CODEX_HOME`, `~/.codex/config.toml` | verified (header) |
-| `opencode` | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` | `$XDG_CONFIG_HOME/opencode/opencode.json` | verified (header) |
+| `pi` | `config_headers` and `command_headers` | `overlay_dir` via `PI_CODING_AGENT_DIR` | header + body | `~/.pi/agent/models.json`, `$PI_CODING_AGENT_DIR` |
+| `opencode` | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` | header + query | `$XDG_CONFIG_HOME/opencode/opencode.json` |
+| `claude` | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` (`aoe_hooks`) | header | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` |
+| `codex` | `headers_from_env` / static `http_headers` | reference in the user's own config (`aoe_hooks`) | header (query outside aoe) | `$CODEX_HOME`, `~/.codex/config.toml` |
 | `hermes` | provider plugin `extra_headers` | TBD | provider plugins | needs research |
 | `gemini` | TBD | TBD | `~/.gemini/settings.json` | needs research |
 | `vibe` | TBD | TBD | `~/.config/vibe` | needs research |
@@ -198,13 +248,16 @@ The plugin must work on a host with no wrapper at all.
 ```
 
 ```jsonc
-// opencode, opencode.json
-{ "provider": { "gw": { "options": { "headers": { "X-AoE-Tags": "{env:AOE_LLM_TAGS}" } } } } }
+// opencode, opencode.json — the same payload can ride a query parameter, which is the only
+// channel this harness offers besides headers (options.body and options.extraBody are ignored)
+{ "provider": { "gw": { "options": {
+    "headers": { "X-AoE-Tags": "{env:AOE_LLM_TAGS}" },
+    "queryParams": { "aoe_tags": "{env:AOE_QRY_AOE_TAGS}" } } } } }
 ```
 
 ```sh
 # claude: no static config, the variable carries whole header lines
-ANTHROPIC_CUSTOM_HEADERS="X-AoE-Tags: aoe,feature:review,session:S-9f3a"
+ANTHROPIC_CUSTOM_HEADERS="X-AoE-Tags: {\"session\":\"S-9f3a\",\"feature\":\"review\",\"team\":\"core\"}"
 ```
 
 ## What the agent process actually receives

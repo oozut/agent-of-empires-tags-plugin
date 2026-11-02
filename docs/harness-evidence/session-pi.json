@@ -1,0 +1,108 @@
+{
+  "agent": "pi",
+  "binary": "/usr/bin/pi",
+  "cli": "target/debug/aoe-llm-tags",
+  "session_id": "0958d2b512ce4386",
+  "overlay": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/sessions/0958d2b512ce4386/pi",
+  "overlay_entries": {
+    "auth.json": "file",
+    "models-store.json": "file",
+    "models.json": "file",
+    "sessions": "file"
+  },
+  "overlay_carries": {
+    "header": true,
+    "query": false,
+    "body": true
+  },
+  "requests": 1,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "x-aoe-flat",
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-0958"
+    },
+    {
+      "where": "header",
+      "name": "x-aoe-tags",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "0958d2b512ce4386",
+        "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
+        "session": "S-0958",
+        "session_id": "0958d2b512ce4386",
+        "team": "core",
+        "tool": "pi"
+      }
+    },
+    {
+      "where": "body",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "0958d2b512ce4386",
+        "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
+        "session": "S-0958",
+        "session_id": "0958d2b512ce4386",
+        "team": "core",
+        "tool": "pi"
+      }
+    }
+  ],
+  "delivered": [
+    "body",
+    "header"
+  ],
+  "env_payloads": {
+    "AOE_BODY_METADATA": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "0958d2b512ce4386",
+      "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
+      "session": "S-0958",
+      "session_id": "0958d2b512ce4386",
+      "team": "core",
+      "tool": "pi"
+    },
+    "AOE_HDR_X_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "0958d2b512ce4386",
+      "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
+      "session": "S-0958",
+      "session_id": "0958d2b512ce4386",
+      "team": "core",
+      "tool": "pi"
+    },
+    "AOE_QRY_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "0958d2b512ce4386",
+      "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
+      "session": "S-0958",
+      "session_id": "0958d2b512ce4386",
+      "team": "core",
+      "tool": "pi"
+    }
+  },
+  "outcome": "delivered",
+  "aoe_message": "ok",
+  "payload_fields": {
+    "cost": 1.5,
+    "feature": "billing",
+    "profile": "main",
+    "project": "0958d2b512ce4386",
+    "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
+    "session": "S-0958",
+    "session_id": "0958d2b512ce4386",
+    "team": "core",
+    "tool": "pi"
+  },
+  "run_dir": "/tmp/aoe-session-pi-MMN3TC"
+}

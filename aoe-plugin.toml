@@ -26,8 +26,16 @@ type = "string_list"
 help = """
 Tags every session carries, before any rule matches. Rules add to this set.
 
-Each tag is a lowercase word (letters, digits, `_ . : -`), at most 48 characters, e.g.
-`team:core`, `feature:`, `session:`. The full set is what `{tags}` renders.
+A tag is a key and a value, and it is delivered as a JSON object, so a consumer reads
+`tags["team"]` instead of splitting a string:
+
+* `team:core` — the string value `core`
+* `cost:=1.5` — any JSON value (`true`, `2`, `["a","b"]`, `{"k":1}`)
+* `platform` — just `true`, for a marker that carries no value
+
+Keys start with a letter or digit and are at most 96 characters. The payload always
+carries the session fields too: `session`, `session_id`, `tool`, `profile`, `group`,
+`project`, `project_path`, `branch` and `feature` when they have a value.
 """
 
 [[settings]]
@@ -39,8 +47,13 @@ One row per place the tag set is delivered. Resolve the tags once, then choose w
 a request header, a query parameter on the provider URL, or a JSON field in the request body.
 
 `kind` is `header`, `query` or `body`; `name` is the header or parameter name.
-`template` picks what that target carries: `{tags}` for the whole comma-joined set, or a
-single field such as `{feature}`, `{session}`, `{session_id}`, `{group}`, `{project}`, `{tool}`.
+`format` decides what the target carries: `json` (the default) sends the whole tag set as
+one object, `csv` sends the flat `team:core,feature:billing` list an older consumer expects.
+
+`template` overrides the format for one target and picks the slice itself: `{tags}` for the
+comma-joined list, `{tags_json}` for the tags alone as JSON, `{payload_json}` for the full
+object, or a single field such as `{feature}`, `{session}`, `{session_id}`, `{group}`,
+`{project}`, `{tool}`.
 
 Some harnesses only expand `$NAME` in headers (pi, claude, codex): a `query`/`body` target
 there needs `literal` — the value written as-is — instead of an environment reference.
@@ -59,10 +72,16 @@ label = "Header or parameter name"
 type = "string"
 
 [[settings.fields]]
+key = "format"
+label = "Format"
+type = "select"
+options = ["json", "csv"]
+default = "json"
+
+[[settings.fields]]
 key = "template"
-label = "Value template"
+label = "Value template (overrides the format)"
 type = "string"
-default = "{tags}"
 
 [[settings.fields]]
 key = "env_var"

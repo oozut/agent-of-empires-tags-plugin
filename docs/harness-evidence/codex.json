@@ -1,46 +1,92 @@
 {
   "agent": "codex",
   "binary": "/var/lib/aoe/.local/bin/codex",
-  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
-  "checked_at": "2026-11-02T22:27:53Z",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-02T23:41:49Z",
   "exit_code": 1,
-  "session_override": {
-    "CODEX_HOME": "/tmp/aoe-probe-codex-6b6uCJ/home/.config/agent-of-empires/sessions/probe-codex-593397/codex"
-  },
+  "session_override": {},
   "minted_values": [
-    "aoe,feature:,session:S-prob"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-codex-YgOxQy/project\",\"session\":\"S-prob\",\"session_id\":\"probe-codex-817886\",\"team\":\"core\",\"tool\":\"codex\"}"
   ],
   "requests": 6,
   "deliveries": [
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-817886",
+        "team": "core",
+        "tool": "codex"
+      }
     },
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-817886",
+        "team": "core",
+        "tool": "codex"
+      }
     },
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-817886",
+        "team": "core",
+        "tool": "codex"
+      }
     },
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-817886",
+        "team": "core",
+        "tool": "codex"
+      }
     },
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-817886",
+        "team": "core",
+        "tool": "codex"
+      }
     },
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-817886",
+        "team": "core",
+        "tool": "codex"
+      }
     }
   ],
   "delivered": true

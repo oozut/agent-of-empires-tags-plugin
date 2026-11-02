@@ -134,7 +134,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 |---|---|---|
 | M0 | **done** — P0 complete (T01–T03, T05–T08 incl. sink + sandbox legs, T10, T11, T13); P1 T04/T12 done; T09 (consumer leg) deferred to `roadmap.md` (decision #4) | `release-binary` verifiable only from a GitHub source, not a local checkout |
 | M1 | done — manifest, settings, resolver match kinds + priority, worker protocol, bidirectional host RPC, row-badge + pane publishing, per-project feature_tag; lifecycle cache via re-publish | M0 |
-| M2 | in progress — verdicts, per-session overlay for `pi`/`codex`/`opencode`, `env_only` for `claude`, `undo`; four harnesses verified (`docs/harness-evidence/`); pane actions and `verify` open | M1 |
+| M2 | in progress — verdicts, per-session overlay for `pi`/`opencode`, reference channel for `claude`/`codex` (`aoe_hooks`), `undo`; four harnesses verified by portable probe *and* a real aoe session (`docs/harness-evidence/`); pane actions and `verify` open | M1 |
 | M3 | not started — roadmap-gated (`roadmap.md` §1) | M2 + a named consumer with a read path |
 | M4 | not started | M0 (P0 rows and publish path can start earlier) |
 

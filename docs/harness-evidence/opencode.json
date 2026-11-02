@@ -1,26 +1,42 @@
 {
   "agent": "opencode",
   "binary": "/var/lib/aoe/.local/bin/opencode",
-  "cli": "/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags",
-  "checked_at": "2026-11-02T22:28:00Z",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-02T23:38:50Z",
   "exit_code": 0,
   "session_override": {
-    "OPENCODE_CONFIG": "/tmp/aoe-probe-opencode-FDufbX/home/.config/agent-of-empires/sessions/probe-opencode-593882/opencode/opencode.json"
+    "OPENCODE_CONFIG": "/tmp/aoe-probe-opencode-WBbhs9/home/.config/agent-of-empires/sessions/probe-opencode-810972/opencode/opencode.json"
   },
   "minted_values": [
-    "aoe,feature:,session:S-prob"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-opencode-WBbhs9/project\",\"session\":\"S-prob\",\"session_id\":\"probe-opencode-810972\",\"team\":\"core\",\"tool\":\"opencode\"}"
   ],
   "requests": 2,
   "deliveries": [
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-opencode-WBbhs9/project",
+        "session": "S-prob",
+        "session_id": "probe-opencode-810972",
+        "team": "core",
+        "tool": "opencode"
+      }
     },
     {
       "where": "header",
       "name": "x-aoe-tags",
-      "value": "aoe,feature:,session:S-prob"
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-opencode-WBbhs9/project",
+        "session": "S-prob",
+        "session_id": "probe-opencode-810972",
+        "team": "core",
+        "tool": "opencode"
+      }
     }
   ],
   "delivered": true
