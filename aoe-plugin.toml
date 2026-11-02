@@ -20,27 +20,63 @@ slot = "pane"
 id = "llm_tags_pane"
 
 [[settings]]
-key = "headers"
-label = "Headers"
+key = "tags"
+label = "Tags for every session"
+type = "string_list"
+help = """
+Tags every session carries, before any rule matches. Rules add to this set.
+
+Each tag is a lowercase word (letters, digits, `_ . : -`), at most 48 characters, e.g.
+`team:core`, `feature:`, `session:`. The full set is what `{tags}` renders.
+"""
+
+[[settings]]
+key = "targets"
+label = "Where the tags are delivered"
 type = "object_list"
-min_items = 1
-max_items = 8
+help = """
+One row per place the tag set is delivered. Resolve the tags once, then choose where they go:
+a request header, a query parameter on the provider URL, or a JSON field in the request body.
+
+`kind` is `header`, `query` or `body`; `name` is the header or parameter name.
+`template` picks what that target carries: `{tags}` for the whole comma-joined set, or a
+single field such as `{feature}`, `{session}`, `{session_id}`, `{group}`, `{project}`, `{tool}`.
+
+Some harnesses only expand `$NAME` in headers (pi, claude, codex): a `query`/`body` target
+there needs `literal` — the value written as-is — instead of an environment reference.
+"""
 
 [[settings.fields]]
-key = "header"
-label = "Header name"
+key = "kind"
+label = "Kind"
+type = "select"
+options = ["header", "query", "body"]
+default = "header"
+
+[[settings.fields]]
+key = "name"
+label = "Header or parameter name"
 type = "string"
-required = true
 
 [[settings.fields]]
 key = "template"
-label = "Template"
+label = "Value template"
 type = "string"
-required = true
+default = "{tags}"
 
 [[settings.fields]]
 key = "env_var"
 label = "Environment variable"
+type = "string"
+
+[[settings.fields]]
+key = "param"
+label = "Parameter name override"
+type = "string"
+
+[[settings.fields]]
+key = "literal"
+label = "Literal value (when this harness does not expand $VAR there)"
 type = "string"
 
 [[settings.fields]]

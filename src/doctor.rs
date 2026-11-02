@@ -130,8 +130,15 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
     checks.push(check_session(&snap, flags));
 
     let harness = adapter.and_then(|adapter| adapters::config_path(adapter, env).0);
-    for item in &snap.resolved {
-        checks.push(check_mapping(adapter, item, env));
+    for (item, target) in snap
+        .resolved
+        .iter()
+        .zip(snap.settings.targets.iter().filter(|row| row.enabled))
+    {
+        checks.push(check_delivery(adapter, target, env));
+        if target.kind == crate::resolver::DEFAULT_KIND {
+            checks.push(check_mapping(adapter, item, env));
+        }
     }
     checks.push(check_values(&snap));
 
@@ -440,6 +447,75 @@ fn check_session(snap: &Snapshot, flags: &Flags) -> Check {
             facts.tool
         ),
     }
+}
+
+/// Where the value goes: a header (checked by `check_mapping`) or a query/body
+/// parameter, which a harness that does not expand `$VAR` there cannot carry live.
+fn check_delivery(adapter: Option<&Adapter>, target: &crate::resolver::Target, env: &Env) -> Check {
+    let name = format!("delivery {}", target.name);
+    if target.kind == crate::resolver::DEFAULT_KIND {
+        return Check {
+            name,
+            status: SKIP.to_string(),
+            detail: "header delivery, checked by the mapping line".to_string(),
+        };
+    }
+    let Some(adapter) = adapter else {
+        return Check {
+            name,
+            status: SKIP.to_string(),
+            detail: "no adapter row; nothing to check".to_string(),
+        };
+    };
+    if adapters::interpolates(adapter, &target.kind) {
+        return Check {
+            name,
+            status: OK.to_string(),
+            detail: format!(
+                "{} {param} carries {} via {}",
+                target.kind,
+                target.name,
+                adapter.env_ref.replace("{env_var}", &target.env_var),
+                param = target.param_name()
+            ),
+        };
+    }
+    if target.literal.is_empty() {
+        return Check {
+            name,
+            status: FAIL.to_string(),
+            detail: format!(
+                "adapter {} does not expand $VAR in a {} delivery; set `literal` on {} or use \
+                 `delivery = \"header\"` (checked {})",
+                adapter.agent,
+                target.kind,
+                target.name,
+                config_or_none(adapter, env)
+            ),
+        };
+    }
+    Check {
+        name,
+        status: OK.to_string(),
+        detail: format!(
+            "{} {param} = {:?} (literal; {app})",
+            target.kind,
+            target.literal,
+            param = target.param_name(),
+            app = app_dir_label(env)
+        ),
+    }
+}
+
+fn config_or_none(adapter: &Adapter, env: &Env) -> String {
+    adapters::config_path(adapter, env)
+        .0
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "(no config path)".to_string())
+}
+
+fn app_dir_label(env: &Env) -> String {
+    settings::app_dir(env).display().to_string()
 }
 
 fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) -> Check {

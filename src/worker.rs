@@ -405,7 +405,7 @@ pub fn status(env: &Env) -> Value {
     };
     json!({
         "ok": true,
-        "message": format!("{} header(s) for session {session}", headers.len()),
+        "message": format!("{} target(s) for session {session}", headers.len()),
         "session": session,
         "headers": headers,
         "warnings": snap.warnings,

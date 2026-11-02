@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::env::Env;
-use crate::resolver::plugin_root;
+use crate::resolver::{plugin_root, Target};
 
 pub const ADAPTERS_FILENAME: &str = "adapters.toml";
 
@@ -30,6 +30,11 @@ pub struct Adapter {
     pub config_paths: Vec<String>,
     pub config_format: String,
     pub mapping_format: String,
+    /// Delivery points where this harness expands an env reference (`$VAR`).
+    /// Anything not listed needs a literal value on that entry.
+    pub interpolates: Vec<String>,
+    /// How this harness spells an env reference: `{env_var}` is substituted.
+    pub env_ref: String,
     pub status: String,
     pub notes: String,
 }
@@ -125,6 +130,8 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         config_paths: list("config_paths"),
         config_format: or_default(text("config_format"), "none"),
         mapping_format: text("mapping_format"),
+        interpolates: list("interpolates"),
+        env_ref: or_default(text("env_ref"), "${env_var}"),
         status: or_default(text("status"), "needs_research"),
         notes: text("notes"),
     })
@@ -256,8 +263,25 @@ pub fn config_path(adapter: &Adapter, env: &Env) -> (Option<PathBuf>, Vec<String
     )
 }
 
+/// Does this harness expand `$VAR` at `delivery` (`header`, `query`, `body`)?
+pub fn interpolates(adapter: &Adapter, delivery: &str) -> bool {
+    adapter.interpolates.iter().any(|point| point == delivery)
+}
+
+/// The value the mapping line and the writer put at `delivery`:
+/// an env reference where the harness expands it, else the literal.
+pub fn delivery_value(adapter: &Adapter, target: &Target, kind: &str) -> Option<String> {
+    if interpolates(adapter, kind) {
+        return Some(adapter.env_ref.replace("{env_var}", &target.env_var));
+    }
+    if target.literal.is_empty() {
+        return None;
+    }
+    Some(target.literal.clone())
+}
+
 /// One printable mapping line for one header (`None` when the row has no format).
-pub fn mapping_line(adapter: &Adapter, header: &str, env_var: &str, env: &Env) -> Option<String> {
+pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<String> {
     let (path, _) = config_path(adapter, env);
     let path = path?;
     if adapter.mapping_format.is_empty() {
@@ -269,12 +293,19 @@ pub fn mapping_line(adapter: &Adapter, header: &str, env_var: &str, env: &Env) -
     } else {
         provider
     };
+    let value = delivery_value(adapter, target, &target.kind)?;
+    let template = match target.kind.as_str() {
+        "query" => "{file} → {provider} baseUrl query \"{param}\" = \"{value}\"",
+        "body" => "{file} → {provider} samplingParams.\"{param}\" = \"{value}\"",
+        _ => adapter.mapping_format.as_str(),
+    };
     Some(
-        adapter
-            .mapping_format
+        template
             .replace("{file}", &path.to_string_lossy())
-            .replace("{header}", header)
-            .replace("{env_var}", env_var)
+            .replace("{header}", &target.name)
+            .replace("{env_var}", &target.env_var)
+            .replace("{param}", target.param_name())
+            .replace("{value}", &value)
             .replace("{provider}", &provider),
     )
 }

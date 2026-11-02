@@ -28,6 +28,8 @@ pub const VALUE_MAX_BYTES: usize = 800;
 pub const SHORT_ID_PREFIX: &str = "S-";
 pub const SHORT_ID_CHARS: usize = 4;
 pub const ENV_PREFIX: &str = "AOE_HDR_";
+pub const ENV_PREFIX_QUERY: &str = "AOE_QRY_";
+pub const ENV_PREFIX_BODY: &str = "AOE_BODY_";
 pub const DEFAULT_HEADER: &str = "X-AoE-Tags";
 pub const DEFAULT_SESSION_TAGGING: &str = "short_id";
 pub const DEFAULT_TOOL: &str = "unknown";
@@ -80,27 +82,72 @@ pub enum AoeError {
     },
 }
 
+/// Where the harness should put the value: a request header (default), a query
+/// parameter on the provider URL, or a JSON field in the request body.
+///
+/// Only a header can carry a per-session value on every harness: pi interpolates
+/// `$VAR` in `headers` values, not in `baseUrl` or `samplingParams`. A `query` or
+/// `body` entry therefore needs a `literal` on such a harness, and the CLI says so
+/// instead of writing a `$VAR` that would arrive verbatim.
+pub const KINDS: [&str; 3] = ["header", "query", "body"];
+pub const DEFAULT_KIND: &str = "header";
+
+/// One place the tag set is delivered to: a request header, a query parameter on
+/// the provider URL, or a JSON field in the request body.
+///
+/// The tag set is resolved once (`tags`); a target only chooses `where` and
+/// `which slice of it` — `{tags}` for the whole set, `{feature}`/`{session}`/…
+/// for one field.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Header {
+pub struct Target {
     pub name: String,
     pub template: String,
     pub env_var: String,
     pub enabled: bool,
+    /// `header`, `query` or `body`.
+    pub kind: String,
+    /// Query-parameter or body-field name; empty means "use `name`".
+    pub param: String,
+    /// Value written verbatim when the target cannot interpolate `$VAR`.
+    pub literal: String,
 }
 
-impl Header {
+impl Target {
     pub fn new(name: &str, template: &str, env_var: &str) -> Self {
         Self {
             name: name.to_string(),
             template: template.to_string(),
             env_var: env_var.to_string(),
             enabled: true,
+            kind: DEFAULT_KIND.to_string(),
+            param: String::new(),
+            literal: String::new(),
         }
     }
 
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self
+    }
+
+    pub fn with_kind(mut self, kind: &str, param: &str) -> Self {
+        self.kind = kind.to_string();
+        self.param = param.to_string();
+        self
+    }
+
+    pub fn with_literal(mut self, literal: &str) -> Self {
+        self.literal = literal.to_string();
+        self
+    }
+
+    /// The query-parameter or body-field name this target writes.
+    pub fn param_name(&self) -> &str {
+        if self.param.is_empty() {
+            &self.name
+        } else {
+            &self.param
+        }
     }
 }
 
@@ -128,21 +175,24 @@ impl Rule {
     }
 }
 
-pub fn default_headers() -> Vec<Header> {
+pub fn default_targets() -> Vec<Target> {
     vec![
-        Header::new(
+        Target::new(
             DEFAULT_HEADER,
             "aoe,feature:{feature},session:{session}",
             "AOE_LLM_TAGS",
         ),
-        Header::new("X-AoE-Session", "{session_id}", "AOE_HDR_X_AOE_SESSION").disabled(),
+        Target::new("X-AoE-Session", "{session_id}", "AOE_HDR_X_AOE_SESSION").disabled(),
     ]
 }
 
 /// Validated settings. Malformed rows are dropped with a warning, never fatal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    pub headers: Vec<Header>,
+    /// Tags every session carries, before any rule matches.
+    pub tags: Vec<String>,
+    /// Where the tag set is delivered.
+    pub targets: Vec<Target>,
     pub rules: Vec<Rule>,
     pub session_tagging: String,
     pub feature_tag: String,
@@ -152,7 +202,8 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            headers: default_headers(),
+            tags: Vec::new(),
+            targets: default_targets(),
             rules: Vec::new(),
             session_tagging: DEFAULT_SESSION_TAGGING.to_string(),
             feature_tag: String::new(),
@@ -164,7 +215,8 @@ impl Default for Settings {
 impl Settings {
     pub fn from_table(table: &toml::Table, warnings: Vec<String>) -> Self {
         let mut warns = warnings;
-        let headers = parse_headers(table.get("headers"), &mut warns);
+        let tags = parse_tags(table.get("tags"), &mut warns);
+        let targets = parse_targets(table, &mut warns);
         let rules = parse_rules(table.get("rules"), &mut warns);
 
         let mut tagging = table
@@ -199,7 +251,8 @@ impl Settings {
         }
 
         Self {
-            headers,
+            tags,
+            targets,
             rules,
             session_tagging: tagging,
             feature_tag,
@@ -612,9 +665,18 @@ pub fn project_slug(path: &str) -> String {
 
 /// `X-AoE-Session` → `AOE_HDR_X_AOE_SESSION` (parameters §3).
 pub fn derive_env_var(header: &str) -> String {
-    let mut out = String::from(ENV_PREFIX);
+    derive_env_var_for(DEFAULT_KIND, header)
+}
+
+/// The minted variable name for one target; `AOE_HDR_`, `AOE_QRY_`, `AOE_BODY_`.
+pub fn derive_env_var_for(kind: &str, name: &str) -> String {
+    let mut out = String::from(match kind {
+        "query" => ENV_PREFIX_QUERY,
+        "body" => ENV_PREFIX_BODY,
+        _ => ENV_PREFIX,
+    });
     let mut pending = false;
-    for ch in header.chars() {
+    for ch in name.chars() {
         if ch.is_ascii_alphanumeric() {
             if pending && !out.ends_with('_') {
                 out.push('_');
@@ -689,7 +751,10 @@ pub fn matched_tags(settings: &Settings, facts: &SessionFacts) -> Vec<String> {
     // Stable sort by priority (descending); equal priorities keep list order.
     let mut ordered: Vec<&Rule> = settings.rules.iter().collect();
     ordered.sort_by_key(|a| std::cmp::Reverse(a.priority));
-    let mut tags: Vec<String> = Vec::new();
+    // Settings `tags` come first: the operator lists what every session carries,
+    // and rules add to that set. A rule never displaces a static tag.
+    let mut tags: Vec<String> = settings.tags.clone();
+    tags.truncate(TAG_CAP);
     for rule in ordered {
         if tags.contains(&rule.tag) {
             continue;
@@ -754,10 +819,16 @@ pub fn build_fields(
     branch: &str,
 ) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
-    let feature = tags
-        .first()
-        .cloned()
-        .unwrap_or_else(|| settings.feature_tag.clone());
+    // `{feature}` is the operator's feature, not merely the first tag: the setting
+    // wins, else the first `feature:<name>` rule, else nothing.
+    let feature = if !settings.feature_tag.is_empty() {
+        settings.feature_tag.clone()
+    } else {
+        tags.iter()
+            .find_map(|tag| tag.strip_prefix("feature:").filter(|name| !name.is_empty()))
+            .unwrap_or_default()
+            .to_string()
+    };
     fields.insert(
         "session".to_string(),
         short_id(&facts.id, &settings.session_tagging),
@@ -845,9 +916,9 @@ pub fn clamp_bytes(value: &str, limit: usize) -> (String, bool) {
 }
 
 /// The headers this launch will emit or map: enabled, in settings order.
-pub fn enabled_headers(settings: &Settings) -> Vec<&Header> {
+pub fn enabled_targets(settings: &Settings) -> Vec<&Target> {
     settings
-        .headers
+        .targets
         .iter()
         .filter(|header| header.enabled)
         .collect()
@@ -909,7 +980,7 @@ pub fn render_headers(
     timeout: Duration,
 ) -> (Vec<ResolvedHeader>, Vec<String>) {
     let mut warnings = Vec::new();
-    let enabled = enabled_headers(settings);
+    let enabled = enabled_targets(settings);
 
     let mut branch = String::new();
     let needs_branch =
@@ -932,10 +1003,20 @@ pub fn render_headers(
 
     let mut resolved = Vec::new();
     for header in enabled {
-        if !valid_header_name(&header.name) {
+        // A header target is checked as a header name; a query/body target as a
+        // parameter name (its own `name` when `param` is empty).
+        let is_header = header.kind == DEFAULT_KIND;
+        if is_header && !valid_header_name(&header.name) {
             warnings.push(format!(
                 "settings: {:?} is not a valid HTTP header name; skipping it",
                 header.name
+            ));
+            continue;
+        }
+        if !is_header && !valid_param_name(header.param_name()) {
+            warnings.push(format!(
+                "settings: {:?} is not a valid query/body parameter name; skipping it",
+                header.param_name()
             ));
             continue;
         }
@@ -964,7 +1045,7 @@ pub fn render_headers(
             ));
         }
         let env_var = if header.env_var.is_empty() {
-            derive_env_var(&header.name)
+            derive_env_var_for(&header.kind, &header.name)
         } else {
             header.env_var.clone()
         };
@@ -994,44 +1075,74 @@ pub fn hook_lines(resolved: &[ResolvedHeader]) -> Vec<String> {
 
 // --- settings normalisation -------------------------------------------------
 
-fn parse_headers(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Header> {
+fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target> {
+    // `targets` is the M1 shape; `headers` is the M0 name, read as a header target.
+    let legacy = table.get("targets").is_none();
+    let rows = if legacy {
+        table.get("headers")
+    } else {
+        table.get("targets")
+    };
     let Some(value) = rows else {
-        return default_headers();
+        return default_targets();
     };
     let Some(rows) = value.as_array() else {
-        warnings.push(
-            "settings: headers is not an array of tables; using the built-in header set"
-                .to_string(),
-        );
-        return default_headers();
+        warnings.push(format!(
+            "settings: {key} is not an array of tables; using the built-in target set",
+            key = if legacy { "headers" } else { "targets" }
+        ));
+        return default_targets();
     };
-    let mut headers = Vec::new();
+    let label = if legacy { "headers" } else { "targets" };
+    let mut targets = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         let index = index + 1;
         let Some(row) = row.as_table() else {
             warnings.push(format!(
-                "settings: headers[{index}] is not a table; skipping it"
+                "settings: {label}[{index}] is not a table; skipping it"
             ));
             continue;
         };
-        let Some(name) = row.get("header").and_then(toml::Value::as_str) else {
+        let Some(name) = row
+            .get("name")
+            .or_else(|| row.get("header"))
+            .and_then(toml::Value::as_str)
+            .filter(|name| !name.is_empty())
+        else {
             warnings.push(format!(
-                "settings: headers[{index}] has no header name; skipping it"
+                "settings: {label}[{index}] has no name; skipping it"
             ));
             continue;
         };
-        if name.is_empty() {
-            warnings.push(format!(
-                "settings: headers[{index}] has no header name; skipping it"
-            ));
-            continue;
-        }
+        let kind_row = row.get("kind").or_else(|| row.get("delivery"));
+        let kind = match kind_row {
+            None => {
+                // An M0 row named `X-AoE-*` is a header; anything else with no
+                // kind keeps the header default too, and says so if it looks odd.
+                DEFAULT_KIND.to_string()
+            }
+            Some(toml::Value::String(text)) if KINDS.contains(&text.as_str()) => text.clone(),
+            Some(toml::Value::String(text)) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) kind {text:?} is not one of {}; \
+                     using {DEFAULT_KIND}",
+                    KINDS.join(", ")
+                ));
+                DEFAULT_KIND.to_string()
+            }
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) kind is not a string; using {DEFAULT_KIND}"
+                ));
+                DEFAULT_KIND.to_string()
+            }
+        };
         let template = match row.get("template") {
             None => String::new(),
             Some(toml::Value::String(text)) => text.clone(),
             Some(_) => {
                 warnings.push(format!(
-                    "settings: headers[{index}] ({name}) template is not a string; skipping it"
+                    "settings: {label}[{index}] ({name}) template is not a string; skipping it"
                 ));
                 continue;
             }
@@ -1041,29 +1152,106 @@ fn parse_headers(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<
             Some(toml::Value::Boolean(flag)) => *flag,
             Some(_) => {
                 warnings.push(format!(
-                    "settings: headers[{index}] ({name}) enabled is not a boolean; treating it as true"
+                    "settings: {label}[{index}] ({name}) enabled is not a boolean; \
+                     treating it as true"
                 ));
                 true
             }
         };
         let env_var = match row.get("env_var") {
-            None => derive_env_var(name),
+            None => derive_env_var_for(&kind, name),
             Some(toml::Value::String(text)) => text.clone(),
             Some(_) => {
                 warnings.push(format!(
-                    "settings: headers[{index}] ({name}) env_var is not a string; skipping it"
+                    "settings: {label}[{index}] ({name}) env_var is not a string; skipping it"
                 ));
                 continue;
             }
         };
-        headers.push(Header {
+        let param = match row.get("param") {
+            None => String::new(),
+            Some(toml::Value::String(text)) => text.clone(),
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) param is not a string; using {name:?}"
+                ));
+                String::new()
+            }
+        };
+        if kind != DEFAULT_KIND && !valid_param_name(&param_name(name, &param)) {
+            warnings.push(format!(
+                "settings: {label}[{index}] ({name}) param {:?} is not a valid query/body \
+                 parameter name; skipping it",
+                param_name(name, &param)
+            ));
+            continue;
+        }
+        let literal = match row.get("literal") {
+            None => String::new(),
+            Some(toml::Value::String(text)) => text.clone(),
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) literal is not a string; ignoring it"
+                ));
+                String::new()
+            }
+        };
+        targets.push(Target {
             name: name.to_string(),
             template,
             env_var,
             enabled,
+            kind,
+            param,
+            literal,
         });
     }
-    headers
+    targets
+}
+
+/// Static tags every session carries, merged in front of the rule matches.
+fn parse_tags(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let Some(rows) = value.as_array() else {
+        warnings.push("settings: tags is not an array of strings; ignoring it".to_string());
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let Some(tag) = row.as_str().filter(|tag| valid_tag(tag)) else {
+            warnings.push(format!(
+                "settings: tags[{}]={} is not a valid tag \
+                 ([a-z0-9][a-z0-9._:-]*, ≤{TAG_MAX_CHARS} chars); skipping it",
+                index + 1,
+                render_toml_scalar(row)
+            ));
+            continue;
+        };
+        if !tags.iter().any(|existing| existing == tag) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
+}
+
+/// The effective query/body parameter name for a settings row.
+pub fn param_name(name: &str, param: &str) -> String {
+    if param.is_empty() {
+        name.to_string()
+    } else {
+        param.to_string()
+    }
+}
+
+/// Query/body parameter names: netstring-ish, no `&`, `=`, `#` or spaces.
+pub fn valid_param_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= 64
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '[' | ']'))
 }
 
 fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Rule> {

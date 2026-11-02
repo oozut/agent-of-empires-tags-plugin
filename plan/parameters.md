@@ -40,11 +40,15 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 
 | Key | Type | Default | Allowed | Milestone | Status |
 |---|---|---|---|---|---|
-| `headers` | `object_list`, item key `header` | 2 rows below | 1–8 rows | M0 (hand-written), M1 (manifest) | proposed |
-| `headers[].header` | string | `X-AoE-Tags` | HTTP field-name grammar, ≤64 bytes | M0 | decided |
-| `headers[].template` | string | `aoe,feature:{feature},session:{session}` | template fields below | M0 | decided |
-| `headers[].env_var` | string | derived: `AOE_HDR_` + upper snake of header | valid env name | M0 | proposed |
-| `headers[].enabled` | boolean | `true` (second row: `false`) | — | M0 | proposed |
+| `tags` | `string_list` | `[]` | lowercase tags, ≤48 chars, deduped, cap 8 | M2 | proposed |
+| `targets` | `object_list`, item key `name` | 2 rows below | 0–8 rows | M2 (manifest); `headers` still read | proposed |
+| `targets[].kind` | `select` | `header` | `header`, `query`, `body` | M2 | proposed |
+| `targets[].name` | string | `X-AoE-Tags` | HTTP field-name grammar, or a param name | M0 as `header` | decided |
+| `targets[].template` | string | `aoe,feature:{feature},session:{session}` | template fields below, `{tags}` for the whole set | M0 | decided |
+| `targets[].env_var` | string | derived: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + upper snake of name | valid env name | M0 | proposed |
+| `targets[].param` | string | `""` → use `name` | `[A-Za-z0-9_.\-\[\]]`, ≤64 | M2 | proposed |
+| `targets[].literal` | string | `""` | any string | M2 | proposed |
+| `targets[].enabled` | boolean | `true` (second row: `false`) | — | M0 | proposed |
 | `rules` | `object_list`, item key `match_value` | `[]` | — | M0 | proposed |
 | `rules[].tag` | string | — | tag grammar, ≤32 chars | M0 | decided |
 | `rules[].match_kind` | string | `project` | `project`, `group`, `tool`, `title_regex`, `manual` | M0: `project`, `manual`; M1: all | decided |
@@ -124,7 +128,8 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Control characters | stripped from the rendered value (a newline would corrupt the `KEY=VALUE` stdout contract); outer whitespace trimmed | decided |
 | Invalid header / env name | that header is skipped with a warning; `doctor` reports it | decided |
 | Invalid / over-cap rule tags | invalid tags dropped with a warning; valid tags deduped, then capped at 5 | decided |
-| Absent `headers` key | built-in header set (default rows above); an explicit `headers = []` means no headers | decided |
+| Absent `targets`/`headers` key | built-in target set (default rows above); an explicit `targets = []` means the tags are resolved but delivered nowhere | decided |
+| A target whose `kind` the harness cannot interpolate | `literal` is written verbatim; without one, `setup --apply` refuses the whole plan | decided |
 | Malformed config TOML | warn on stderr, ignore that file (profile falls back to global, global to defaults), exit 0 | decided |
 
 ## 6. CLI surface
@@ -160,7 +165,8 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `agent` | `pi`, `claude`, `codex`, `opencode`, `gemini`, `vibe`, `kiro`, `cline`, `openclaw`, `hermes` | aoe tool id |
 | `label` | display string | |
 | `mechanism` | `config_headers`, `command_headers`, `custom_headers_env`, `headers_from_env`, `url_param`, `none` | |
-| `headers[]` | `{ header, env_var, optional }` | one entry per enabled header |
+| `interpolates` | `header`, `query`, `body` — where this harness expands `$NAME` | a `query`/`body` target elsewhere needs `literal` |
+| `env_ref` | template for an env reference, default `${env_var}` | opencode uses `{{env:{env_var}}}` |
 | `config_env` | env var name or absent | directory override |
 | `config_paths[]` | ordered paths, first hit wins | must not include a regenerated dir |
 | `config_format` | `json`, `toml`, `yaml`, `none` | |

@@ -112,7 +112,8 @@ Settings read: `[plugins."dev.oozut.llm-tags".settings]` from the effective conf
 global `<app_dir>/config.toml` with the profile's sparse override file
 (`<app_dir>/profiles/<profile>/config.toml`, top level = the override tree) merged onto it the way
 aoe merges: object keys recurse, **arrays replace** (`merge_configs_generic`). A missing section
-means no rules, which is not an error; an explicit `headers = []` means no headers at all.
+means no rules, which is not an error; an explicit `targets = []` means the tags are resolved but
+delivered nowhere. `headers` is still accepted as the M0 name for a header target.
 `src/settings.rs` reproduces that merge, so the hook and the settings UI agree about a
 value; a file that cannot be parsed is a warning and is ignored (profile → global → defaults).
 

@@ -5,9 +5,18 @@ plugin release. The plugin only needs to know how to turn the resolved values in
 harness expects, and where that harness's config lives. Which system eventually reads those
 values is not part of an adapter row — see `docs/header-contract.md`.
 
-An adapter row is per **header**, not per harness: a harness that can send three headers needs
-three mapping lines, all fed by the same hook. The default header is listed in each row's
-`setup` column; additional enabled headers follow the same shape with their own variable.
+An adapter row is per **target**, not per harness: a harness that can send three headers needs
+three mapping lines, all fed by the same hook. The default target is listed in each row's
+`setup` column; additional enabled targets follow the same shape with their own variable.
+
+A target is a place the tag set is delivered to: a request header (`kind = "header"`), a query
+parameter on the provider URL (`kind = "query"`), or a JSON field in the request body
+(`kind = "body"`). Tags are resolved once; the target only chooses where they go and which slice
+of the set it carries (`{tags}` for all of them, `{feature}`/`{session}`/… for one field).
+
+`interpolates` lists the delivery points where that harness expands an env reference. pi, claude
+and codex expand `$NAME` only in headers, so a `query`/`body` target there needs `literal` — the
+value written as-is — and `setup --apply` refuses rather than writing an unexpanded `$VAR`.
 
 ## Adapter data format
 
@@ -16,10 +25,7 @@ three mapping lines, all fed by the same hook. The default header is listed in e
 agent = "pi"
 label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
-headers = [                          # one entry per enabled header
-  { header = "X-AoE-Tags",    env_var = "AOE_LLM_TAGS" },
-  { header = "X-AoE-Session", env_var = "AOE_HDR_X_AOE_SESSION", optional = true },
-]
+interpolates = ["header"]           # delivery points that expand `$NAME`
 config_env = "PI_CODING_AGENT_DIR"  # optional: directory override variable
 # Where the mapping is *written* can differ from where the launched process reads it, when a
 # launcher regenerates the directory. The first entry is the file a harness reads from; a

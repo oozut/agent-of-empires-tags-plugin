@@ -45,6 +45,12 @@ pub struct Mapping {
     pub env_var: String,
     pub file: String,
     pub line: String,
+    /// `header`, `query` or `body` — where the value is written.
+    pub delivery: String,
+    /// Query-parameter or body-field name for a non-header delivery.
+    pub param: String,
+    /// The value written: an env reference, or the entry's literal.
+    pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +60,8 @@ pub struct Plan {
     pub aoe: String,
     pub hooks: Vec<(&'static str, String)>,
     pub mapping: Vec<Mapping>,
+    /// Entries this plan could not map; `--apply` refuses rather than half-writing.
+    pub unmappable: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -154,22 +162,39 @@ pub fn build(
     }
 
     let mut mapping = Vec::new();
-    for item in &snap.resolved {
-        let Some(line) = adapters::mapping_line(adapter, &item.header, &item.env_var, env) else {
+    let mut unmappable = Vec::new();
+    for item in snap.settings.targets.iter().filter(|row| row.enabled) {
+        if !adapters::interpolates(adapter, &item.kind) && item.literal.is_empty() {
+            unmappable.push(item.name.clone());
             warnings.push(format!(
-                "adapter {}: no config path resolves; cannot map {}",
-                adapter.agent, item.header
+                "adapter {} does not expand $VAR in a {} delivery; {} needs `literal` there \
+                 or `delivery = \"header\"`",
+                adapter.agent, item.kind, item.name
+            ));
+        }
+        let Some(line) = adapters::mapping_line(adapter, item, env) else {
+            if !unmappable.contains(&item.name) {
+                unmappable.push(item.name.clone());
+            }
+            warnings.push(format!(
+                "adapter {}: no config path resolves, or {} has no value for a {} delivery; \
+                 cannot map it",
+                adapter.agent, item.name, item.kind
             ));
             continue;
         };
         let (path, _) = adapters::config_path(adapter, env);
+        let value = adapters::delivery_value(adapter, item, &item.kind).unwrap_or_default();
         mapping.push(Mapping {
-            header: item.header.clone(),
+            header: item.name.clone(),
             env_var: item.env_var.clone(),
             file: path
                 .map(|path| path.to_string_lossy().into_owned())
                 .unwrap_or_default(),
             line,
+            delivery: item.kind.clone(),
+            param: item.param_name().to_string(),
+            value,
         });
     }
 
@@ -183,6 +208,7 @@ pub fn build(
             .map(|key| (*key, command.clone()))
             .collect(),
         mapping,
+        unmappable,
         warnings,
     })
 }
@@ -209,7 +235,11 @@ pub fn as_dict(plan: &Plan) -> serde_json::Value {
             "env_var": item.env_var,
             "file": item.file,
             "line": item.line,
+            "delivery": item.delivery,
+            "param": item.param,
+            "value": item.value,
         })).collect::<Vec<_>>(),
+        "unmappable": plan.unmappable,
         "warnings": plan.warnings,
     })
 }
@@ -230,6 +260,19 @@ pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
             return crate::cli::EXIT_FAIL;
         }
     };
+    if !plan.unmappable.is_empty() {
+        crate::cli::warn(&format!(
+            "refusing to write: {} entr{} cannot be delivered by this adapter ({})",
+            plan.unmappable.len(),
+            if plan.unmappable.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            },
+            plan.unmappable.join(", ")
+        ));
+        return crate::cli::EXIT_FAIL;
+    }
     let Some(adapter) = plan.adapter.clone() else {
         crate::cli::warn("no adapter resolved");
         return crate::cli::EXIT_FAIL;
@@ -300,24 +343,74 @@ pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
         }
     };
 
-    let headers = providers
-        .get_mut(&target)
-        .and_then(|v| v.as_object_mut())
-        .and_then(|obj| {
-            if !obj.contains_key("headers") {
-                obj.insert("headers".to_string(), serde_json::json!({}));
-            }
-            obj.get_mut("headers").and_then(|v| v.as_object_mut())
-        });
-    let Some(headers) = headers else {
-        crate::cli::warn("provider headers is not an object");
-        return crate::cli::EXIT_FAIL;
+    // Every entry needs a value this harness will actually deliver.
+    for item in &plan.mapping {
+        if item.value.is_empty() {
+            crate::cli::warn(&format!(
+                "{} uses a {} delivery, but adapter {agent} does not expand $VAR there; \
+                 add `literal` to that entry or use `delivery = \"header\"`",
+                item.header,
+                item.delivery,
+                agent = adapter.agent
+            ));
+            return crate::cli::EXIT_FAIL;
+        }
+    }
+
+    let provider = match providers.get_mut(&target).and_then(|v| v.as_object_mut()) {
+        Some(provider) => provider,
+        None => {
+            crate::cli::warn("the provider entry is not an object");
+            return crate::cli::EXIT_FAIL;
+        }
     };
     for item in &plan.mapping {
-        headers.insert(
-            item.header.clone(),
-            serde_json::Value::String(format!("${}", item.env_var)),
-        );
+        let value = serde_json::Value::String(item.value.clone());
+        match item.delivery.as_str() {
+            "header" => {
+                if !provider.contains_key("headers") {
+                    provider.insert("headers".to_string(), serde_json::json!({}));
+                }
+                let Some(headers) = provider.get_mut("headers").and_then(|v| v.as_object_mut())
+                else {
+                    crate::cli::warn("provider headers is not an object");
+                    return crate::cli::EXIT_FAIL;
+                };
+                headers.insert(item.header.clone(), value);
+            }
+            "query" => {
+                let Some(base) = provider
+                    .get("baseUrl")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+                else {
+                    crate::cli::warn(&format!(
+                        "provider {target} has no baseUrl; cannot add the {} query parameter",
+                        item.param
+                    ));
+                    return crate::cli::EXIT_FAIL;
+                };
+                let updated = set_query_param(&base, &item.param, &item.value);
+                provider.insert("baseUrl".to_string(), serde_json::Value::String(updated));
+            }
+            "body" => {
+                if !provider.contains_key("samplingParams") {
+                    provider.insert("samplingParams".to_string(), serde_json::json!({}));
+                }
+                let Some(params) = provider
+                    .get_mut("samplingParams")
+                    .and_then(|v| v.as_object_mut())
+                else {
+                    crate::cli::warn("provider samplingParams is not an object");
+                    return crate::cli::EXIT_FAIL;
+                };
+                params.insert(item.param.clone(), value);
+            }
+            other => {
+                crate::cli::warn(&format!("unknown delivery {other:?}"));
+                return crate::cli::EXIT_FAIL;
+            }
+        }
     }
 
     let new = match serde_json::to_string_pretty(&data) {
@@ -352,7 +445,7 @@ pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
     }
 
     println!(
-        "applied {} header(s) to {}",
+        "applied {} target(s) to {}",
         plan.mapping.len(),
         path.display()
     );
@@ -410,6 +503,38 @@ pub fn undo_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
     crate::cli::EXIT_OK
 }
 
+/// Set (or replace) one query parameter, keeping the rest of the URL intact.
+pub fn set_query_param(base: &str, name: &str, value: &str) -> String {
+    let (stem, rest) = match base.split_once('?') {
+        Some((stem, rest)) => (stem, rest),
+        None => (base, ""),
+    };
+    let (query, fragment) = match rest.split_once('#') {
+        Some((query, fragment)) => (query, Some(fragment)),
+        None => (rest, None),
+    };
+    let mut pairs: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let key = pair.split_once('=').map(|(key, _)| key).unwrap_or(pair);
+        if key == name {
+            pairs.push(format!("{name}={value}"));
+            replaced = true;
+        } else {
+            pairs.push(pair.to_string());
+        }
+    }
+    if !replaced {
+        pairs.push(format!("{name}={value}"));
+    }
+    let mut out = format!("{stem}?{}", pairs.join("&"));
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
+}
+
 fn backup_path(path: &std::path::Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(".aoe-llm-tags.bak");
@@ -433,6 +558,22 @@ fn guard_regular_file(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_query_param_replaces_and_appends() {
+        assert_eq!(
+            set_query_param("http://h/v1", "tags", "aoe"),
+            "http://h/v1?tags=aoe"
+        );
+        assert_eq!(
+            set_query_param("http://h/v1?x=1&tags=old", "tags", "aoe"),
+            "http://h/v1?x=1&tags=aoe"
+        );
+        assert_eq!(
+            set_query_param("http://h/v1?x=1#frag", "tags", "aoe"),
+            "http://h/v1?x=1&tags=aoe#frag"
+        );
+    }
 
     #[test]
     fn hook_command_pins_aoe_and_passes_every_variable() {

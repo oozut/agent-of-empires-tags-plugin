@@ -331,3 +331,61 @@ fn hook_cli_is_the_installed_binary() {
     assert!(Path::new(&argv[1]).is_file(), "{argv:?}");
     let _ = (SESSION_JSON, CLI);
 }
+
+#[test]
+fn static_tags_come_first_and_rules_add_to_them() {
+    // The tag set is listed once; rules only extend it.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\", \"env:prod\"]\nrules = [{ tag = \"feature:build\", match_kind = \"manual\" }]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nname = \"X-AoE-Tags\"\ntemplate = \"{tags}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(
+        run.lines(),
+        vec!["AOE_HDR_X_AOE_TAGS=team:core,env:prod,feature:build"]
+    );
+}
+
+#[test]
+fn a_query_target_carries_the_tag_set_as_a_parameter() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\"]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"query\"\nname = \"tags\"\ntemplate = \"{tags}\"\nliteral = \"aoe,team:core\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    // A query target still mints one variable, under a query-specific prefix.
+    assert_eq!(run.lines(), vec!["AOE_QRY_TAGS=team:core"]);
+}
+
+#[test]
+fn a_query_target_without_a_literal_is_refused_by_apply() {
+    // pi sends `baseUrl` verbatim, so an unexpanded `$VAR` there would be a lie.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"query\"\nname = \"tags\"\ntemplate = \"{tags}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["setup", "--adapter", "pi", "--apply", "--yes"]);
+    run.assert_code(1);
+    assert!(run.stderr.contains("refusing to write"), "{}", run.stderr);
+    assert!(
+        !sandbox.root.join("home/.pi/agent/models.json").exists(),
+        "nothing was written"
+    );
+}
+
+#[test]
+fn the_m0_headers_key_is_still_read_as_header_targets() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "headers = [{ header = \"X-AoE-Tags\", template = \"a\", env_var = \"AOE_LLM_TAGS\" }]",
+        "",
+    ));
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(run.lines(), vec!["AOE_LLM_TAGS=a"]);
+}

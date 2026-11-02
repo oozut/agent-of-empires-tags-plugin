@@ -1,8 +1,9 @@
 # Agent of Empires LLM Tags
 
-An Agent of Empires plugin that makes each agent session attach identifying headers to every LLM
-request it sends, so any system on the request path — a gateway, an egress proxy, a log pipeline,
-a session-control plane — can attribute, route, or validate that request.
+An Agent of Empires plugin that makes each agent session attach identifying headers — or query
+parameters, or request-body fields — to every LLM request it sends, so any system on the request
+path — a gateway, an egress proxy, a log pipeline, a session-control plane — can attribute,
+route, or validate that request.
 
 Status: M0 done — Rust port landed (M0-T13, CI green), the package installs, `aoe plugin update`
 builds and installs both binaries, `hook|value` resolves a session to one `NAME=value` per enabled
@@ -101,7 +102,7 @@ Plan (what ships when, and with which values):
 
 | Path | Contents |
 |---|---|
-| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 17` (`aoe_version = ">=1.20.0, <2.0.0"`), `capabilities = ["runtime.worker"]`, one `status` command, `[runtime]` + source-install build step |
+| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read", "net"]`, one `status` command, `[runtime]` + source-install build step |
 | `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
 | `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `verify` (stub) |
 | `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`) |
