@@ -130,6 +130,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Invalid / over-cap rule tags | invalid tags dropped with a warning; valid tags deduped, then capped at 5 | decided |
 | Absent `targets`/`headers` key | built-in target set (default rows above); an explicit `targets = []` means the tags are resolved but delivered nowhere | decided |
 | A target whose `kind` the harness cannot interpolate | `literal` is written verbatim; without one, `setup --apply` refuses the whole plan | decided |
+| A target whose `kind` the harness does not support | `setup --apply` refuses the whole plan; `doctor` fails that target | decided |
 | Malformed config TOML | warn on stderr, ignore that file (profile falls back to global, global to defaults), exit 0 | decided |
 
 ## 6. CLI surface
@@ -165,7 +166,8 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `agent` | `pi`, `claude`, `codex`, `opencode`, `gemini`, `vibe`, `kiro`, `cline`, `openclaw`, `hermes` | aoe tool id |
 | `label` | display string | |
 | `mechanism` | `config_headers`, `command_headers`, `custom_headers_env`, `headers_from_env`, `url_param`, `none` | |
-| `interpolates` | `header`, `query`, `body` — where this harness expands `$NAME` | a `query`/`body` target elsewhere needs `literal` |
+| `interpolates` | `header`, `query`, `body` — where this harness expands `$NAME` | a `body` target elsewhere needs `literal` |
+| `supports` | kinds the harness can carry at all; default `["header"]` | pi: `["header","body"]` (verified); no query channel |
 | `env_ref` | template for an env reference, default `${env_var}` | opencode uses `{{env:{env_var}}}` |
 | `config_env` | env var name or absent | directory override |
 | `config_paths[]` | ordered paths, first hit wins | must not include a regenerated dir |

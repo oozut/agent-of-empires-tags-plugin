@@ -362,20 +362,51 @@ fn a_query_target_carries_the_tag_set_as_a_parameter() {
 }
 
 #[test]
-fn a_query_target_without_a_literal_is_refused_by_apply() {
-    // pi sends `baseUrl` verbatim, so an unexpanded `$VAR` there would be a lie.
+fn a_query_target_is_refused_for_a_harness_without_one() {
+    // pi appends the endpoint path to `baseUrl`, so `?tags=x` would land inside
+    // the path. The plan is refused rather than written.
     let sandbox = Sandbox::new();
     sandbox.write_config(&settings_config(
-        "[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"query\"\nname = \"tags\"\ntemplate = \"{tags}\"\n",
+        "[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"query\"\nname = \"tags\"\ntemplate = \"{tags}\"\nliteral = \"aoe\"\n",
         "",
     ));
     let run = sandbox.run(&["setup", "--adapter", "pi", "--apply", "--yes"]);
     run.assert_code(1);
+    assert!(
+        run.stderr.contains("cannot deliver a query value"),
+        "{}",
+        run.stderr
+    );
     assert!(run.stderr.contains("refusing to write"), "{}", run.stderr);
     assert!(
         !sandbox.root.join("home/.pi/agent/models.json").exists(),
         "nothing was written"
     );
+}
+
+#[test]
+fn a_body_target_goes_into_each_model_sampling_params() {
+    // pi reads samplingParams per model; a provider-level one is dropped.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"body\"\nname = \"metadata\"\ntemplate = \"{tags}\"\nliteral = \"aoe,team:core\"\n",
+        "",
+    ));
+    sandbox.write_pi_models(
+        r#"{"providers":{"litellm":{"baseUrl":"http://h/v1","models":[{"id":"m1"},{"id":"m2"}]}}}"#,
+    );
+    let run = sandbox.run(&["setup", "--adapter", "pi", "--apply", "--yes"]);
+    run.assert_ok();
+    let written = sandbox.read_pi_models();
+    for model in written["providers"]["litellm"]["models"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(model["samplingParams"]["metadata"], "aoe,team:core");
+    }
+    assert!(written["providers"]["litellm"]
+        .get("samplingParams")
+        .is_none());
 }
 
 #[test]

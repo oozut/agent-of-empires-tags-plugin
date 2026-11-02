@@ -85,6 +85,21 @@ impl Sandbox {
         fs::write(path, body).expect("config");
     }
 
+    /// `$HOME/.pi/agent/models.json` — where the pi adapter writes.
+    pub fn pi_models_path(&self) -> PathBuf {
+        self.path("home/.pi/agent/models.json")
+    }
+
+    pub fn write_pi_models(&self, body: &str) {
+        let path = self.pi_models_path();
+        self.write_file(&path, body);
+    }
+
+    pub fn read_pi_models(&self) -> serde_json::Value {
+        let body = fs::read_to_string(self.pi_models_path()).expect("models.json");
+        serde_json::from_str(&body).expect("valid JSON")
+    }
+
     pub fn write_file(&self, path: &Path, body: &str) {
         fs::create_dir_all(path.parent().unwrap()).expect("parent");
         fs::write(path, body).expect("file");

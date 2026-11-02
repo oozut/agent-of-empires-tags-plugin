@@ -172,6 +172,17 @@ pub fn build(
                 adapter.agent, item.kind, item.name
             ));
         }
+        if !adapters::supports(adapter, &item.kind) {
+            unmappable.push(item.name.clone());
+            warnings.push(format!(
+                "adapter {} cannot deliver a {} value (it supports {}); {} is not mapped",
+                adapter.agent,
+                item.kind,
+                adapter.supports.join(", "),
+                item.name
+            ));
+            continue;
+        }
         let Some(line) = adapters::mapping_line(adapter, item, env) else {
             if !unmappable.contains(&item.name) {
                 unmappable.push(item.name.clone());
@@ -261,6 +272,8 @@ pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
         }
     };
     if !plan.unmappable.is_empty() {
+        // Name the reason per entry before the summary.
+        crate::cli::warn_all(&plan.warnings);
         crate::cli::warn(&format!(
             "refusing to write: {} entr{} cannot be delivered by this adapter ({})",
             plan.unmappable.len(),
@@ -394,17 +407,38 @@ pub fn apply_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
                 provider.insert("baseUrl".to_string(), serde_json::Value::String(updated));
             }
             "body" => {
-                if !provider.contains_key("samplingParams") {
-                    provider.insert("samplingParams".to_string(), serde_json::json!({}));
-                }
-                let Some(params) = provider
-                    .get_mut("samplingParams")
-                    .and_then(|v| v.as_object_mut())
+                // pi reads `samplingParams` per model, not per provider: a
+                // provider-level field is dropped by its schema.
+                let Some(models) = provider
+                    .get_mut("models")
+                    .and_then(|v| v.as_array_mut())
+                    .filter(|models| !models.is_empty())
                 else {
-                    crate::cli::warn("provider samplingParams is not an object");
+                    crate::cli::warn(&format!(
+                        "provider {target} has no `models` list; a body target needs a model \
+                         entry to carry {} (add one, or use a header target)",
+                        item.param
+                    ));
                     return crate::cli::EXIT_FAIL;
                 };
-                params.insert(item.param.clone(), value);
+                let value = json_value(&item.value);
+                for model in models {
+                    let Some(model) = model.as_object_mut() else {
+                        crate::cli::warn("a models[] entry is not an object");
+                        return crate::cli::EXIT_FAIL;
+                    };
+                    if !model.contains_key("samplingParams") {
+                        model.insert("samplingParams".to_string(), serde_json::json!({}));
+                    }
+                    let Some(params) = model
+                        .get_mut("samplingParams")
+                        .and_then(|v| v.as_object_mut())
+                    else {
+                        crate::cli::warn("a model samplingParams is not an object");
+                        return crate::cli::EXIT_FAIL;
+                    };
+                    params.insert(item.param.clone(), value.clone());
+                }
             }
             other => {
                 crate::cli::warn(&format!("unknown delivery {other:?}"));
@@ -503,6 +537,17 @@ pub fn undo_cmd(flags: &crate::resolver::Flags, env: &crate::env::Env) -> i32 {
     crate::cli::EXIT_OK
 }
 
+/// A body value: JSON when the literal is JSON (`{"tags": ["aoe"]}`), else a string.
+pub fn json_value(literal: &str) -> serde_json::Value {
+    let trimmed = literal.trim();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
+            return value;
+        }
+    }
+    serde_json::Value::String(literal.to_string())
+}
+
 /// Set (or replace) one query parameter, keeping the rest of the URL intact.
 pub fn set_query_param(base: &str, name: &str, value: &str) -> String {
     let (stem, rest) = match base.split_once('?') {
@@ -558,6 +603,16 @@ fn guard_regular_file(path: &std::path::Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_json_literal_becomes_a_json_body_value() {
+        assert_eq!(
+            json_value("{\"tags\": [\"aoe\"]}"),
+            serde_json::json!({"tags": ["aoe"]})
+        );
+        assert_eq!(json_value("aoe,tags"), serde_json::json!("aoe,tags"));
+        assert_eq!(json_value("{not json"), serde_json::json!("{not json"));
+    }
 
     #[test]
     fn set_query_param_replaces_and_appends() {

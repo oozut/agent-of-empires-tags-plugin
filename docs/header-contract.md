@@ -37,13 +37,17 @@ charged against, or ignored.
 
 ## What is in the headers
 
-A header set, not a single tag. Each entry is a name plus a value template:
+A set of targets, not a single tag. The tag set is resolved once (`tags` plus the rule matches);
+each target then chooses **where** it travels — a request header, a query parameter, or a
+request-body field — and **which slice** of the set it carries:
 
 | Field | Meaning |
 |---|---|
-| `header` | Wire name, e.g. `X-AoE-Tags`, `X-AoE-Session`, `x-tenant`. Must be a valid HTTP field name; no plugin-owned prefix is required. |
-| `template` | Value template with fields from the session, e.g. `aoe,feature:{feature},session:{session}`. |
-| `env_var` | Variable that carries the rendered value at launch. Default: `AOE_HDR_` + the header name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for compatibility. |
+| `kind` | `header` (default), `query` or `body`. A harness that cannot carry a kind is refused rather than written (pi appends the endpoint path to `baseUrl`, so it has no query channel). |
+| `name` | Wire name, e.g. `X-AoE-Tags`, `X-AoE-Session`, `x-tenant`, or a parameter name. A header name must be a valid HTTP field name; no plugin-owned prefix is required. |
+| `template` | Value template with fields from the session, e.g. `aoe,feature:{feature},session:{session}`, or `{tags}` for the whole set. |
+| `literal` | Value written as-is, for a kind the harness does not env-interpolate (pi's `samplingParams`, for instance). A literal that is JSON object/array is written as JSON. |
+| `env_var` | Variable that carries the rendered value at launch. Default: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for compatibility. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
 
 Available template fields, all resolved from the session manager first and the hook environment
@@ -60,8 +64,8 @@ Rules that keep the contract honest:
   A path can contain a username; a title can contain anything at all.
 - **Fixed per launch.** The value cannot change while the process lives — that is a property of
   the delivery mechanism, not a limitation to be worked around.
-- **Bounded.** At most 5 tag values per header, and the grammar is the consumer's; the plugin
-  emits lowercase `[a-z0-9._:-]` tokens, one list per header, comma-separated by default.
+- **Bounded.** At most 5 tag values per target, and the grammar is the consumer's; the plugin
+  emits lowercase `[a-z0-9._:-]` tokens, one list per target, comma-separated by default.
 
 ## Who reads it
 

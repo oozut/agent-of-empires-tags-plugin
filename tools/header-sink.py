@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8787
 LOG = sys.argv[2] if len(sys.argv) > 2 else "/tmp/tag-sink.jsonl"
+BODY_LOG_BYTES = 2048
 
 if "--reset" in sys.argv[3:]:
     open(LOG, "w").close()
@@ -47,6 +48,14 @@ def wants_stream(raw: bytes) -> bool:
     return bool(body.get("stream"))
 
 
+def parsed_body(raw: bytes):
+    """The request body as JSON when it is JSON, else a bounded string."""
+    try:
+        return json.loads(raw or b"{}")
+    except ValueError:
+        return raw[:BODY_LOG_BYTES].decode("utf-8", "replace")
+
+
 class Sink(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -59,6 +68,8 @@ class Sink(BaseHTTPRequestHandler):
                     {
                         "path": self.path,
                         "headers": dict(self.headers.items()),
+                        # Body delivery is a first-class target: keep what arrived.
+                        "body": parsed_body(raw),
                     }
                 )
                 + "\n"

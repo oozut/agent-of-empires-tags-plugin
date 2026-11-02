@@ -467,6 +467,19 @@ fn check_delivery(adapter: Option<&Adapter>, target: &crate::resolver::Target, e
             detail: "no adapter row; nothing to check".to_string(),
         };
     };
+    if !adapters::supports(adapter, &target.kind) {
+        return Check {
+            name,
+            status: FAIL.to_string(),
+            detail: format!(
+                "adapter {} cannot deliver a {} value (it supports {}); use a supported kind or \
+                 a different harness",
+                adapter.agent,
+                target.kind,
+                adapter.supports.join(", ")
+            ),
+        };
+    }
     if adapters::interpolates(adapter, &target.kind) {
         return Check {
             name,

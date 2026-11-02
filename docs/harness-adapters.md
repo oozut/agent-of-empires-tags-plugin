@@ -14,9 +14,15 @@ parameter on the provider URL (`kind = "query"`), or a JSON field in the request
 (`kind = "body"`). Tags are resolved once; the target only chooses where they go and which slice
 of the set it carries (`{tags}` for all of them, `{feature}`/`{session}`/… for one field).
 
-`interpolates` lists the delivery points where that harness expands an env reference. pi, claude
-and codex expand `$NAME` only in headers, so a `query`/`body` target there needs `literal` — the
-value written as-is — and `setup --apply` refuses rather than writing an unexpanded `$VAR`.
+`interpolates` lists the delivery points where that harness expands an env reference; `supports`
+lists the kinds it can carry at all. pi, claude and codex expand `$NAME` only in headers, so a
+`body` target there needs `literal` — the value written as-is — and `setup --apply` refuses rather
+than writing an unexpanded `$VAR`.
+
+pi's `supports` is `["header", "body"]`, verified on the host (2026-11): a header arrives, a
+`body` target lands in the request body through `models[].samplingParams`, and a query parameter
+in `baseUrl` does **not** work — pi appends the endpoint path, so `http://h/v1?tags=x` becomes
+`/v1?tags=x/chat/completions`. A `query` target for pi is refused, not written.
 
 ## Adapter data format
 
@@ -26,6 +32,7 @@ agent = "pi"
 label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
 interpolates = ["header"]           # delivery points that expand `$NAME`
+supports = ["header", "body"]       # delivery kinds this harness can carry
 config_env = "PI_CODING_AGENT_DIR"  # optional: directory override variable
 # Where the mapping is *written* can differ from where the launched process reads it, when a
 # launcher regenerates the directory. The first entry is the file a harness reads from; a

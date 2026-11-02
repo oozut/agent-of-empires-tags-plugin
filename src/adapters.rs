@@ -35,6 +35,8 @@ pub struct Adapter {
     pub interpolates: Vec<String>,
     /// How this harness spells an env reference: `{env_var}` is substituted.
     pub env_ref: String,
+    /// Delivery kinds this harness can actually carry (`header`, `query`, `body`).
+    pub supports: Vec<String>,
     pub status: String,
     pub notes: String,
 }
@@ -132,6 +134,14 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         mapping_format: text("mapping_format"),
         interpolates: list("interpolates"),
         env_ref: or_default(text("env_ref"), "${env_var}"),
+        supports: {
+            let listed = list("supports");
+            if listed.is_empty() {
+                vec!["header".to_string()]
+            } else {
+                listed
+            }
+        },
         status: or_default(text("status"), "needs_research"),
         notes: text("notes"),
     })
@@ -263,6 +273,11 @@ pub fn config_path(adapter: &Adapter, env: &Env) -> (Option<PathBuf>, Vec<String
     )
 }
 
+/// Can this harness carry a value of `kind` at all?
+pub fn supports(adapter: &Adapter, kind: &str) -> bool {
+    adapter.supports.iter().any(|listed| listed == kind)
+}
+
 /// Does this harness expand `$VAR` at `delivery` (`header`, `query`, `body`)?
 pub fn interpolates(adapter: &Adapter, delivery: &str) -> bool {
     adapter.interpolates.iter().any(|point| point == delivery)
@@ -293,10 +308,13 @@ pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<Str
     } else {
         provider
     };
+    if !supports(adapter, &target.kind) {
+        return None;
+    }
     let value = delivery_value(adapter, target, &target.kind)?;
     let template = match target.kind.as_str() {
         "query" => "{file} → {provider} baseUrl query \"{param}\" = \"{value}\"",
-        "body" => "{file} → {provider} samplingParams.\"{param}\" = \"{value}\"",
+        "body" => "{file} → {provider} models[].samplingParams.\"{param}\" = {value}",
         _ => adapter.mapping_format.as_str(),
     };
     Some(

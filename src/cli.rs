@@ -310,7 +310,7 @@ pub fn warn(message: &str) {
     eprintln!("{PROG}: {message}");
 }
 
-fn warn_all(messages: &[String]) {
+pub(crate) fn warn_all(messages: &[String]) {
     let mut seen: Vec<&str> = Vec::new();
     for message in messages {
         if seen.contains(&message.as_str()) {
