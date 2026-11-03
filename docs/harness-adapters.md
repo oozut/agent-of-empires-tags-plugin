@@ -61,6 +61,15 @@ native_sep = "\n"                     # "," for a harness whose parser only spli
 splits_on_commas = false              # true when the harness reads the value as `a,b,…`
 ```
 
+`mapping_format` spells the reference itself when it needs a particular form. Three placeholders
+matter: `{env_var}` is the bare variable *name* (codex's `env_http_headers` already means "read a
+variable"), `{env_ref}` is the harness's own spelling from `env_ref`, and `{value}` is a literal when
+the row does not interpolate. `env_ref` defaults to `${env_var}`, which now really renders
+`${AOE_LLM_TAGS}` — the braced form hermes, qwen, droid and openclaw expand — while a row that wants
+`$NAME` writes `"$"` before it and codex writes `env_ref = "{env_var}"`. A reference that silently
+lost its braces (`$NAME` in a JSON value) is a mapping the harness reads as a literal string, so the
+spelling is part of the row, not a rendering detail.
+
 `splits_on_commas` is a *refusal*, not a hint: gemini's `parseCustomHeaders` splits its variable on
 `,(?=\s*[^,:]+:)`, so a JSON payload `{"a":1,"b":2}` becomes two headers and the request is dropped
 with `TypeError: Headers.append: invalid header name`. Such a row declares the shape, and

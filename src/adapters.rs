@@ -401,12 +401,27 @@ pub fn comma_refusal(adapter: &Adapter, name: &str, value: &str) -> Option<Strin
 /// an env reference where the harness expands it, else the literal.
 pub fn delivery_value(adapter: &Adapter, target: &Target, kind: &str) -> Option<String> {
     if interpolates(adapter, kind) {
-        return Some(adapter.env_ref.replace("{env_var}", &target.env_var));
+        return Some(env_reference(adapter, &target.env_var));
     }
     if target.literal.is_empty() {
         return None;
     }
     Some(target.literal.clone())
+}
+
+/// How a row spells "read this variable", from its `env_ref`.
+///
+/// The default is `${env_var}`, and the whole `${env_var}` token is replaced
+/// before the bare `{env_var}` one — otherwise `${env_var}` would render as
+/// `$NAME`, which is a different thing in a JSON or YAML value: `${NAME}` is the
+/// spelling hermes, qwen, droid and openclaw expand, `$NAME` the one pi and
+/// gemini take, and codex wants the bare name because `env_http_headers` already
+/// means "read a variable".
+pub fn env_reference(adapter: &Adapter, env_var: &str) -> String {
+    adapter
+        .env_ref
+        .replace("${env_var}", &format!("${{{env_var}}}"))
+        .replace("{env_var}", env_var)
 }
 
 /// One printable mapping line for one header (`None` when the row has no format).
@@ -435,6 +450,7 @@ pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<Str
         template
             .replace("{file}", &path.to_string_lossy())
             .replace("{header}", &target.name)
+            .replace("{env_ref}", &env_reference(adapter, &target.env_var))
             .replace("{env_var}", &target.env_var)
             .replace("{param}", target.param_name())
             .replace("{value}", &value)
@@ -651,6 +667,21 @@ supports = ["header", "query"]
         assert!(!comma_splits("a, b, c"));
         assert!(!comma_splits(r#"{"tags_b64":"eyJhIjoxfQ"}"#));
         assert!(!comma_splits(""));
+    }
+
+    #[test]
+    fn a_reference_keeps_the_braces_the_row_asked_for() {
+        // The default `${env_var}` must render `${NAME}`, not `$NAME`: a JSON or
+        // YAML value expands only the braced spelling, and a bare name is not a
+        // reference at all. codex wants the bare name, so its row says so.
+        let (rows, warnings) = load(None);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let row = |agent: &str| rows.iter().find(|row| row.agent == agent).expect("row");
+        let openclaw = row("openclaw");
+        assert_eq!(openclaw.env_ref, "${env_var}");
+        assert_eq!(env_reference(openclaw, "AOE_LLM_TAGS"), "${AOE_LLM_TAGS}");
+        let codex = row("codex");
+        assert_eq!(env_reference(codex, "AOE_LLM_TAGS"), "AOE_LLM_TAGS");
     }
 
     #[test]

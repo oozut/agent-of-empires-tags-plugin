@@ -80,6 +80,7 @@ config_env = "CODEX_HOME"
 config_paths = ["~/.codex/config.toml", "$CODEX_HOME/config.toml"]
 config_format = "toml"
 mapping_format = '{file} → [model_providers.{provider}.env_http_headers] "{header}" = "{env_var}"'
+env_ref = "{env_var}"
 interpolates = ["header"]
 supports = ["header"]
 write_mode = "none"
@@ -101,7 +102,7 @@ mechanism = "config_headers"
 config_env = "XDG_CONFIG_HOME"
 config_paths = ["~/.config/opencode/opencode.json", "$XDG_CONFIG_HOME/opencode/opencode.json"]
 config_format = "json"
-mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{{env:{env_var}}}"'
+mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{env:{env_var}}"'
 interpolates = ["header", "query"]
 supports = ["header", "query"]
 write_mode = "overlay_file"
@@ -302,7 +303,7 @@ label = "openclaw"
 mechanism = "config_headers"
 config_paths = ["~/.openclaw/openclaw.json", "$OPENCLAW_CONFIG_PATH"]
 config_format = "json"
-mapping_format = 'models.providers."<id>".headers["{header}"] = "{env_var}"'
+mapping_format = 'models.providers."<id>".headers["{header}"] = "{env_ref}"'
 interpolates = ["header"]
 supports = ["header"]
 env_ref = "${env_var}"
