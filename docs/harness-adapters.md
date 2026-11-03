@@ -22,6 +22,10 @@ lists the kinds it can carry at all. pi, claude and codex expand `$NAME` only in
 `body` target there needs `literal` — the value written as-is — and `setup --apply` refuses rather
 than writing an unexpanded `$VAR`.
 
+`supports` is absent-means-`["header"]` (the common case) but `supports = []` is taken literally
+and means **no channel at all** — that is how `kiro` says so, and a loader that filled the default
+in for an explicit empty list would hand it a header delivery it cannot make.
+
 pi's `supports` is `["header", "body"]`, verified on the host (2026-11): a header arrives, a
 `body` target lands in the request body through `models[].samplingParams`, and a query parameter
 in `baseUrl` does **not** work — pi appends the endpoint path, so `http://h/v1?tags=x` becomes
@@ -38,7 +42,7 @@ agent = "pi"
 label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
 interpolates = ["header"]           # delivery points that expand `$NAME`
-supports = ["header", "body"]       # delivery kinds this harness can carry
+supports = ["header", "body"]       # delivery kinds it can carry; `[]` = none (not "default")
 aoe_hooks = false                   # true when aoe installs its own hooks into this config
 config_env = "PI_CODING_AGENT_DIR"  # directory override the harness itself honours
 # Where the mapping is *written* can differ from where the launched process reads it, when a
@@ -259,20 +263,52 @@ channel at all (its transport is the AWS SDK, so `supports = []`). A `documented
 failure: it says exactly where the evidence stops, which is why `setup --apply` refuses a target
 for `kiro` instead of writing a mapping nothing reads.
 
-| Agent | Mechanism | Session scope | Channels under aoe | Discovery |
-|---|---|---|---|---|
-| `pi` | `config_headers` and `command_headers` | `overlay_dir` via `PI_CODING_AGENT_DIR` | header + body | `~/.pi/agent/models.json`, `$PI_CODING_AGENT_DIR` |
-| `opencode` | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` | header + query | `$XDG_CONFIG_HOME/opencode/opencode.json` |
-| `claude` | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` (`aoe_hooks`) | header | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` |
-| `codex` | `headers_from_env` / static `http_headers` | reference in the user's own config (`aoe_hooks`) | header (query outside aoe) | `$CODEX_HOME`, `~/.codex/config.toml` |
-| `hermes` | `config_headers` | reference in the user's own YAML (`extra_headers`, `aoe_hooks`) | header | `~/.hermes/config.yaml` |
-| `gemini` | `custom_headers_env` | `env_only`: `GEMINI_CLI_CUSTOM_HEADERS` (`aoe_hooks`) | header only, and only as `{tags_b64}` | `~/.gemini/settings.json` |
-| `qwen` | `config_headers` | reference in the user's own JSON (`generationConfig.customHeaders`, `aoe_hooks`) | header | `~/.qwen/settings.json` |
-| `droid` | `config_headers` | reference in the user's own JSON (`customModels[].extraHeaders`, `aoe_hooks`) | header | `~/.factory/settings.json` |
-| `vibe` | `config_headers` | `overlay_dir` via `VIBE_HOME`, `config.toml` (`writer = "vibe_toml"`) | header | `~/.vibe/config.toml`, `$VIBE_HOME` |
-| `openclaw` | `config_headers` | reference in the user's own JSON (`models.providers.*.headers`) | header | `~/.openclaw/openclaw.json`, `$OPENCLAW_CONFIG_PATH` |
-| `kiro` | `none` | nothing to scope: AWS-SDK signed transport, no header setting | none | `~/.local/share/kiro-cli` |
-| `cline` | `config_headers` | `documented`: SDK takes a provider `headers` map, but the CLI's config dir is a flag (`--config`), not env | header | `~/.cline` |
+### Support matrix
+
+What each row can actually carry, and how a session gets it. `✓` is a channel the plugin
+writes today; `—` is a kind `setup --apply` refuses for that row rather than writing a value the
+harness would drop.
+
+| Agent | Header | Query | Body | Mechanism | Session scope | Evidence |
+|---|---|---|---|---|---|---|
+| `pi` | ✓ | — | ✓ | `config_headers`, `command_headers` | `overlay_dir` via `PI_CODING_AGENT_DIR` (`pi_models`) | verified |
+| `opencode` | ✓ | ✓ | — | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` (`opencode_json`) | verified |
+| `claude` | ✓ | — | — | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` (`aoe_hooks`) | verified |
+| `codex` | ✓ | — | — | `headers_from_env` | reference in the user's `config.toml` → `env_http_headers` (`aoe_hooks`); query only outside aoe (`codex_toml`) | verified |
+| `hermes` | ✓ | — | — | `config_headers` | reference in the user's YAML (`extra_headers`, `aoe_hooks`) | verified |
+| `gemini` | ✓ | — | — | `custom_headers_env` | `env_only`: `GEMINI_CLI_CUSTOM_HEADERS` (`aoe_hooks`) | verified |
+| `qwen` | ✓ | — | — | `config_headers` | reference in the user's JSON (`generationConfig.customHeaders`, `aoe_hooks`) | verified |
+| `droid` | ✓ | — | — | `config_headers` | reference in the user's JSON (`customModels[].extraHeaders`, `aoe_hooks`) | documented |
+| `vibe` | ✓ | — | — | `config_headers` | `overlay_dir` via `VIBE_HOME`, `config.toml` (`vibe_toml`) | verified |
+| `openclaw` | ✓ | — | — | `config_headers` | reference in the user's JSON (`models.providers.*.headers`) | verified |
+| `cline` | ✓ | — | — | `config_headers` | none: the SDK takes a `headers` map, the CLI's config dir is a `--config` flag | documented |
+| `kiro` | — | — | — | `none` | nothing: AWS-SDK signed transport, no header setting | documented |
+
+Where the value comes from, per row, is one of three shapes:
+
+| Session scope | Rows | What the user has to do |
+|---|---|---|
+| `overlay_dir` / `overlay_file` | `pi`, `opencode`, `vibe` | nothing — the hook writes this session's copy and exports the override variable |
+| `env_only` | `claude`, `gemini` | nothing — the hook exports the harness's own variable |
+| reference in the user's own config | `codex`, `hermes`, `qwen`, `droid`, `openclaw` | paste the one line `setup --print` shows (it names a *variable*, never a value); aoe installs its hooks into `codex`/`hermes`/`qwen`/`droid`, so the file cannot be scoped per session |
+| none | `cline`, `kiro` | nothing until the harness grows a scoping channel; `setup --apply` refuses and `classify` says `unsupported` |
+
+Two rows carry a caveat that is a limit, not a defect:
+
+- **gemini** splits its variable on `,(?=\s*[^,:]+:)`, so a JSON payload would become two broken
+  headers and the request is dropped (`TypeError: Headers.append: invalid header name`). The row
+  declares `splits_on_commas`, and the escape hatch is `template = "{tags_b64}"` — the same
+  payload, base64url, so it cannot contain a splittable comma.
+- **droid** can be *mapped* (its config expands `${VAR}`), but the binary refuses to send
+  anything without a Factory account, so the probe records `blocked-by-auth`. The row is
+  `documented`: the mapping is real, the request never was.
+
+Discovery paths, per row, are what `doctor`/`classify` read: `~/.pi/agent/models.json` and
+`$PI_CODING_AGENT_DIR`, `$XDG_CONFIG_HOME/opencode/opencode.json`, `$CLAUDE_CONFIG_DIR` and
+`~/.claude/settings.json`, `$CODEX_HOME` and `~/.codex/config.toml`, `~/.hermes/config.yaml`,
+`~/.gemini/settings.json`, `~/.qwen/settings.json`, `~/.factory/settings.json`,
+`~/.vibe/config.toml` and `$VIBE_HOME`, `~/.openclaw/openclaw.json` and
+`$OPENCLAW_CONFIG_PATH`, `~/.cline`, `~/.local/share/kiro-cli`.
 
 Snippets for the documented rows. They describe the *shape* of the session copy; nothing here is
 pasted into a user config by hand any more (default header shown):

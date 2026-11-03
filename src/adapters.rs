@@ -197,11 +197,16 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         aoe_hooks: flag("aoe_hooks"),
         splits_on_commas: flag("splits_on_commas"),
         supports: {
-            let listed = list("supports");
-            if listed.is_empty() {
-                vec!["header".to_string()]
-            } else {
-                listed
+            // `supports` absent means the default (a header); `supports = []` means
+            // "no channel at all" and must stay empty, or a row that deliberately
+            // declares nothing would claim a header delivery it cannot make.
+            match row.get("supports").and_then(toml::Value::as_array) {
+                Some(values) => values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                None => vec!["header".to_string()],
             }
         },
         status: or_default(text("status"), "needs_research"),
@@ -667,6 +672,29 @@ supports = ["header", "query"]
         assert!(!comma_splits("a, b, c"));
         assert!(!comma_splits(r#"{"tags_b64":"eyJhIjoxfQ"}"#));
         assert!(!comma_splits(""));
+    }
+
+    #[test]
+    fn an_empty_supports_list_is_taken_literally() {
+        // `supports = []` is how a row says "no channel"; defaulting it to a
+        // header would let `setup` write a delivery the harness drops.
+        let sandbox = std::env::temp_dir().join(format!("adapters-{}", std::process::id()));
+        let plugin = sandbox.join("plugin");
+        std::fs::create_dir_all(plugin.join("bin")).expect("dirs");
+        std::fs::write(
+            plugin.join("adapters.toml"),
+            "[[adapter]]\nagent = \"mute\"\nmechanism = \"none\"\nsupports = []\nstatus = \"documented\"\n\n             [[adapter]]\nagent = \"plain\"\nmechanism = \"config_headers\"\n",
+        )
+        .expect("table");
+        let (rows, _) = load(Some(&plugin));
+        let row = |agent: &str| rows.iter().find(|row| row.agent == agent).expect("row");
+        assert!(
+            row("mute").supports.is_empty(),
+            "{:?}",
+            row("mute").supports
+        );
+        assert_eq!(row("plain").supports, vec!["header".to_string()]);
+        let _ = std::fs::remove_dir_all(&sandbox);
     }
 
     #[test]
