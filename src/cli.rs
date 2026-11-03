@@ -93,6 +93,37 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+    /// edit this session's tags or token, without touching the global config
+    #[command(
+        about = "Add, replace or drop a tag for one session, or write a literal token. \
+                 The edit lands in the session's own file (sessions/<id>/overrides.toml); \
+                 the global settings are never rewritten."
+    )]
+    Tag {
+        /// add or replace this tag (`team:core`, `epic:=42`, or a bare marker)
+        #[arg(long = "set", value_name = "KEY:VALUE")]
+        set: Option<String>,
+        /// drop this key for this session, whether the settings or this file set it
+        #[arg(long = "unset", value_name = "KEY")]
+        unset: Option<String>,
+        /// write a literal value standing in for what the targets render
+        #[arg(long = "token", value_name = "VALUE")]
+        token: Option<String>,
+        /// clear the literal token
+        #[arg(long = "clear-token")]
+        clear_token: bool,
+        /// forget every edit this session has
+        #[arg(long = "reset")]
+        reset: bool,
+        /// show this session's edits and what it would send now (the default)
+        #[arg(long = "show")]
+        show: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
     /// check the wiring; exit 1 if anything would silently send nothing
     #[command(about = "One line per check, with the absolute paths it looked at.")]
     Doctor {
@@ -180,6 +211,26 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             flags,
         } => setup_cmd(print, dry_run, apply, yes, undo, all, json, &flags, env),
         Command::Classify { json, flags } => classify_cmd(json, &flags, env),
+        Command::Tag {
+            set,
+            unset,
+            token,
+            clear_token,
+            reset,
+            show,
+            json,
+            flags,
+        } => tag_cmd(
+            set,
+            unset,
+            token,
+            clear_token,
+            reset,
+            show,
+            json,
+            &flags,
+            env,
+        ),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
@@ -220,6 +271,120 @@ fn hook(args: &FlagArgs, env: &Env) -> i32 {
     let mut stdout = std::io::stdout().lock();
     for line in lines {
         let _ = writeln!(stdout, "{line}");
+    }
+    let _ = stdout.flush();
+    EXIT_OK
+}
+
+/// One session's edits: `tag --set`, `--unset`, `--token`, `--reset`, or a read.
+///
+/// The write goes to `<app dir>/sessions/<id>/overrides.toml` and nowhere else.
+/// A session that is not named is a usage error rather than a guess: editing the
+/// wrong session's tags is exactly the mistake this verb exists to avoid.
+#[allow(clippy::too_many_arguments)]
+fn tag_cmd(
+    set: Option<String>,
+    unset: Option<String>,
+    token: Option<String>,
+    clear_token: bool,
+    reset: bool,
+    show: bool,
+    json: bool,
+    args: &FlagArgs,
+    env: &Env,
+) -> i32 {
+    let flags = args.flags(env);
+    let app_dir = crate::settings::app_dir(env);
+    let mut session = flags.session.clone();
+    let write = set.is_some() || unset.is_some() || token.is_some() || clear_token || reset;
+    if write && session.is_empty() {
+        // The session row is authoritative when there is one; a write into a
+        // guess would land in a file no launch reads.
+        let facts = resolver::resolve_session(&flags, None, env, std::time::Duration::ZERO);
+        session = facts.0.id;
+    } else if session.is_empty() && !write {
+        session = resolver::resolve_session(&flags, None, env, std::time::Duration::ZERO)
+            .0
+            .id;
+    }
+    if session.is_empty() {
+        warn("`tag` needs a session: pass --session <id> or run inside a session (AOE_SESSION_ID)");
+        return EXIT_USAGE;
+    }
+
+    // Each edit is a load-and-replace of the same file, so several flags in one
+    // call compose instead of overwriting each other.
+    let mut failure = None;
+    if reset {
+        failure = crate::session_tags::reset(&app_dir, &session).err();
+    }
+    if failure.is_none() {
+        if let Some(entry) = set.as_deref() {
+            failure = crate::session_tags::set_tag(&app_dir, &session, entry).err();
+        }
+    }
+    if failure.is_none() {
+        if let Some(key) = unset.as_deref() {
+            failure = crate::session_tags::unset_tag(&app_dir, &session, key).err();
+        }
+    }
+    if failure.is_none() && (token.is_some() || clear_token) {
+        let value = token.as_deref().unwrap_or_default();
+        failure = crate::session_tags::set_token(&app_dir, &session, value).err();
+    }
+    if let Some(err) = failure {
+        warn(&err);
+        return EXIT_FAIL;
+    }
+
+    let (edits, warnings) = crate::session_tags::load(&app_dir, &session);
+    warn_all(&warnings);
+    // Show the effect, not just the file: the same resolver the hook runs.
+    let snap = resolver::snapshot(&flags, env, None);
+    warn_all(&snap.warnings);
+    if json {
+        let targets: Vec<serde_json::Value> = snap
+            .resolved
+            .iter()
+            .map(|item| {
+                serde_json::json!({"name": item.header, "env_var": item.env_var, "value": item.value})
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "session": session,
+                "path": crate::session_tags::path(&app_dir, &session).display().to_string(),
+                "tags": edits.tags,
+                "unset": edits.unset,
+                "token": edits.token,
+                "targets": targets,
+            })
+        );
+        return EXIT_OK;
+    }
+
+    println!("session {session}");
+    println!(
+        "  overrides {}",
+        crate::session_tags::path(&app_dir, &session).display()
+    );
+    if edits.is_empty() {
+        println!("  (none: this session sends the settings as they are)");
+    }
+    for (key, value) in edits.entries() {
+        println!("  + {key}: {value}");
+    }
+    for key in &edits.unset {
+        println!("  - {key}");
+    }
+    if !edits.token.is_empty() {
+        println!("  token {}", edits.token);
+    }
+    let _ = show;
+    let mut stdout = std::io::stdout().lock();
+    for item in &snap.resolved {
+        let _ = writeln!(stdout, "  {} = {}", item.env_var, item.value);
     }
     let _ = stdout.flush();
     EXIT_OK

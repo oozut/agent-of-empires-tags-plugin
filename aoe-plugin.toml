@@ -19,6 +19,15 @@ id = "llm_tags_badge"
 slot = "pane"
 id = "llm_tags_pane"
 
+# The per-session editor: the only place a tag or the token is changed, and it
+# changes them for one session. Nothing here can write the global settings.
+[[ui]]
+slot = "page"
+id = "tags"
+title = "LLM Tags"
+icon = "tags"
+entry = "ui/tags.html"
+
 [[settings]]
 key = "tags"
 label = "Tags for every session"

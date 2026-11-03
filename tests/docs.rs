@@ -67,3 +67,95 @@ fn the_support_matrix_matches_the_adapter_table() {
         );
     }
 }
+
+/// The editor page is declared in the manifest, its entry must exist in the
+/// tree, and the page must speak the same bridge methods the worker pushes to.
+/// A page whose script drifted from the worker would render an empty editor and
+/// never say why, which is worse than no page.
+#[test]
+fn the_editor_page_exists_and_speaks_the_bridge_it_is_given() {
+    let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("aoe-plugin.toml");
+    let mut entries: Vec<(String, String)> = Vec::new();
+    let mut slot = String::new();
+    for line in manifest.lines() {
+        let line = line.trim();
+        if line == "[[ui]]" {
+            slot.clear();
+            continue;
+        }
+        if let Some(value) = line.strip_prefix("slot = ") {
+            slot = value.trim_matches('"').to_string();
+        }
+        if slot == "page" {
+            if let Some(id) = line.strip_prefix("id = ") {
+                entries.push((id.trim_matches('"').to_string(), String::new()));
+            }
+            if let Some(entry) = line.strip_prefix("entry = ") {
+                if let Some(last) = entries.last_mut() {
+                    last.1 = entry.trim_matches('"').to_string();
+                }
+            }
+        }
+    }
+    assert!(!entries.is_empty(), "the manifest declares no page");
+    for (id, entry) in entries {
+        assert!(!entry.is_empty(), "page {id} has no entry file");
+        let body = std::fs::read_to_string(&entry)
+            .unwrap_or_else(|err| panic!("page {id} entry {entry:?}: {err}"));
+        // The dashboard opens a page at /plugins/<id>/<page id>, so the link the
+        // worker pushes and the route the host serves must agree.
+        let route = format!("/plugins/dev.oozut.llm-tags/{id}");
+        assert!(
+            std::fs::read_to_string("src/worker.rs")
+                .expect("worker source")
+                .contains(&route),
+            "the worker never links to {route}"
+        );
+        for method in ["plugins.uiState", "action", "ready"] {
+            assert!(
+                body.contains(method),
+                "page {id} never calls the {method} bridge method"
+            );
+        }
+        // One self-contained file: the host serves only this document.
+        for forbidden in ["<script src=", "<link ", "fetch(", "XMLHttpRequest"] {
+            assert!(
+                !body.contains(forbidden),
+                "page {id} leans on {forbidden:?}, which the sandbox blocks"
+            );
+        }
+    }
+}
+
+/// The host forwards a pane or page `method` to the worker **verbatim**, so the
+/// strings in the page and the ones the worker dispatches on have to be the same
+/// strings. A page that prefixed them with the plugin id — a natural mistake,
+/// since a host command is `plugin.<id>.<command>` — would send edits that the
+/// worker silently ignores.
+#[test]
+fn the_page_fires_the_methods_the_worker_dispatches_on() {
+    let page = std::fs::read_to_string("ui/tags.html").expect("ui/tags.html");
+    let mut fired: Vec<String> = Vec::new();
+    let mut rest = page.as_str();
+    while let Some(start) = rest.find("edit(\"") {
+        let after = &rest[start + "edit(\"".len()..];
+        let end = after.find('"').expect("a closing quote");
+        fired.push(after[..end].to_string());
+        rest = &after[end..];
+    }
+    assert!(!fired.is_empty(), "the page fires no worker method");
+    for method in &fired {
+        assert!(
+            llm_tags::worker::EDITS.contains(&method.as_str()),
+            "the page fires {method:?}, which the worker does not dispatch on {:?}",
+            llm_tags::worker::EDITS
+        );
+    }
+    // And the reverse: every edit the worker knows is reachable from the page.
+    for method in llm_tags::worker::EDITS {
+        assert!(
+            fired.contains(&method.to_string()),
+            "the worker dispatches {method:?} but the page never fires it"
+        );
+    }
+}

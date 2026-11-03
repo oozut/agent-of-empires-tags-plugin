@@ -142,6 +142,63 @@ Three paths, all fed by the same resolved payload:
 Neither path can update mid-session. A consumer that needs liveness has to query the control
 plane instead of trusting the header; the header identifies, it does not assert current state.
 
+## Changing a tag for one session
+
+A tag belongs to a session, so changing one is a per-session act. The plugin has no path that
+rewrites the settings: `setup --apply` writes a backup and a session copy, the worker has no
+config-write RPC, and the editor below writes only inside the session's own directory. Two
+sessions can therefore carry different tags at the same time without a rule, a profile or a
+config edit between them.
+
+Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`:
+
+| Surface | What it does |
+|---|---|
+| Session pane (`llm_tags_pane`) | Lists each tag with its origin, and the values this session would send. Clicking a tag drops it for this session; the action button opens the editor page. |
+| **LLM Tags** page (`ui/tags.html`) | Pick a session, then add/replace a tag, drop one, write or clear a literal token, or reset every edit. Shows the resulting wire values. |
+| `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard. |
+
+The file holds the same tag grammar the settings use, in three keys:
+
+```toml
+tags  = ["team:platform", "epic:=42"]  # add, or replace the same key
+unset = ["cost"]                       # drop a tag the settings carry
+token = '{"hand":true}'                # a literal standing in for the rendered payload
+```
+
+Resolution order, in one place (`session_tags::apply`, inside `snapshot`), so the hook, `status`,
+`doctor`, `classify` and the UI cannot disagree: the settings are read first, the session's `unset`
+keys are dropped, its own entries replace a same-key entry (then append), and finally a `token`
+replaces what a target with **no** `template` would have rendered. A target that names its own
+field (`{session_id}`) keeps it: a session-wide literal does not override a target that says what
+it wants.
+
+Two honest limits:
+
+- An edit applies to the **next** launch. The value a running process sends came from the
+  environment it was started with, and the plugin does not reach into a live process; the pane
+  shows what the next launch mints, not what the current one holds.
+- Dropping a tag the settings carry is still per-session: it records the key in `unset` rather than
+  editing the settings, so the same tag stays on every other session.
+
+Both clickable surfaces reach the worker the same way: the host forwards a block's `method`
+**verbatim**, so `tag.set`, `tag.remove`, `token.set`, `token.clear` and `tags.reset` are whole
+names, not `plugin.<id>.<command>` — which is how a host *request* is addressed. `worker::EDITS`
+lists them, `tests/docs.rs` holds the page and the worker to the same list, and the host adds the
+session id it trusts (a `session_id` in the page's params is overwritten, never believed).
+
+Checked against the running daemon, not only in tests: `POST /api/plugins/dev.oozut.llm-tags/action`
+with `{"method":"tag.set","params":{"key":"team","value":"platform"}}` answered `202`, wrote
+`sessions/cf11af87da7e4bf0/overrides.toml`, moved that session's UI revision (so the clicked
+control's spinner clears), and the next `/api/plugins/ui-state` read carried the tag with
+`origin: "session"` in both the pane row and the page payload; `tags.reset` removed the file
+again. `tools/drive-worker.py` reproduces the same conversation without a browser, which is what
+makes the payload shape checkable on a machine with no dashboard open.
+
+The store is deleted with the session. `overlay::prune` runs on every host event and removes any
+session directory the host no longer lists — which takes `overrides.toml` with it — and it treats
+an empty live list as a failed query rather than as evidence that every session is gone.
+
 ## What the plugin does not decide
 
 Deliberately open, because they are consumer-side and differ per deployment:

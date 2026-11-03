@@ -89,6 +89,8 @@ link the library directly.
 | `value [header]` | same | one header's value alone (default: the shipped tag header) | harnesses that take a command as the header value (`!aoe-llm-tags value X-AoE-Session`) |
 | `doctor` | both hook keys, plugin path, every enabled header's mapping, `aoe` binary | human report, exit 1 on any failure | the user, after installing |
 | `setup --print` | adapter row + install path + enabled headers | the exact hook lines + one mapping line per header | the user, before pasting |
+| `classify` | every substrate: the harness config, the user's config, this session's copy, leftovers | one verdict per substrate (`wired`, `detected-not-wired`, `sandbox-stale`, `unknown`, `unsupported`) | the user and the pane, before trusting a mapping |
+| `tag` | the settings, plus this session's `overrides.toml` | that session's `overrides.toml` only (`--set` / `--unset` / `--token` / `--reset`) | the **LLM Tags** page and a shell; the settings are never rewritten |
 | `verify` | the configured consumer's request/usage records | pass/fail | roadmap — consumer read-back is deferred (`plan/roadmap.md` §1) |
 
 Flags for `hook`/`value` (all optional; every one is a *fallback*, the row wins):

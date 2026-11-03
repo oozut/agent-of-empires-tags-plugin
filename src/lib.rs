@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod env;
 pub mod overlay;
 pub mod resolver;
+pub mod session_tags;
 pub mod settings;
 pub mod setup;
 pub mod sha256;

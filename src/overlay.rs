@@ -319,6 +319,11 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 /// Run from the hook and from `doctor`: an abandoned session cannot leave a
 /// config behind for long.
 pub fn prune(app_dir: &Path, live: &[String]) -> usize {
+    // An empty list is a failed query, not a host with no sessions: pruning on
+    // it would delete every session's copy — and its overrides — on one bad read.
+    if live.is_empty() {
+        return 0;
+    }
     let entries = match std::fs::read_dir(app_dir.join("sessions")) {
         Ok(entries) => entries,
         Err(_) => return 0,

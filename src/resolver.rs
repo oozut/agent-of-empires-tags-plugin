@@ -219,6 +219,9 @@ pub struct Settings {
     pub session_tagging: String,
     /// The operator's feature: one standard tag entry, not a second taxonomy.
     pub feature_tag: Option<Tag>,
+    /// Per-session only: a literal standing in for what a template-less target
+    /// would render. Never read from a settings file — see [`crate::session_tags`].
+    pub token: String,
     pub warnings: Vec<String>,
 }
 
@@ -230,6 +233,7 @@ impl Default for Settings {
             rules: Vec::new(),
             session_tagging: DEFAULT_SESSION_TAGGING.to_string(),
             feature_tag: None,
+            token: String::new(),
             warnings: Vec::new(),
         }
     }
@@ -265,6 +269,7 @@ impl Settings {
             rules,
             session_tagging: tagging,
             feature_tag,
+            token: String::new(),
             warnings: warns,
         }
     }
@@ -1311,7 +1316,14 @@ pub fn snapshot_with_table(
     };
     let mut warnings = session_warnings;
     warnings.extend(raw_warnings.iter().cloned());
-    let configured = Settings::from_table(&raw_table, warnings);
+    let mut configured = Settings::from_table(&raw_table, warnings);
+    // A session's own edits (the UI page and the `tag` command write them) are
+    // applied here, once, so the hook, `status`, `doctor` and the worker all see
+    // the same tags. They live in the session's directory, never the config.
+    if !facts.id.is_empty() {
+        let app_dir = settings::app_dir(env);
+        crate::session_tags::apply(&mut configured, &app_dir, &facts.id);
+    }
 
     let remaining = DEFAULT_TIMEOUT.saturating_sub(elapsed);
     let (resolved, render_warnings) =
@@ -1362,6 +1374,7 @@ pub fn render_headers(
     let (payload, payload_warnings) = payload(settings, facts, &tags, &branch);
     warnings.extend(payload_warnings);
     let fields = build_fields(settings, facts, &tags, &payload, &branch);
+    let configured_token = settings.token.clone();
 
     let mut resolved = Vec::new();
     for header in enabled {
@@ -1382,7 +1395,13 @@ pub fn render_headers(
             ));
             continue;
         }
-        let (value, missing) = target_value(header, &payload, &fields);
+        let (mut value, missing) = target_value(header, &payload, &fields);
+        // A literal token is the session's hand-written value: it replaces the
+        // payload a template-less target would render, and leaves a target that
+        // names its own field (`{session_id}`) alone.
+        if !configured_token.is_empty() && header.template.trim().is_empty() {
+            value = configured_token.clone();
+        }
         if !missing.is_empty() {
             let mut unique: Vec<String> = Vec::new();
             for name in &missing {
@@ -1761,6 +1780,7 @@ mod tests {
             rules: Vec::new(),
             session_tagging: "short".to_string(),
             feature_tag: None,
+            token: String::new(),
             warnings: Vec::new(),
         }
     }
@@ -1803,6 +1823,7 @@ mod tests {
             rules: Vec::new(),
             session_tagging: "short".to_string(),
             feature_tag: tag,
+            token: String::new(),
             warnings: Vec::new(),
         }
     }
