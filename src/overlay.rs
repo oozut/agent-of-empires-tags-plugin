@@ -277,7 +277,7 @@ fn native_env(adapter: &Adapter, targets: &[Resolved]) -> Vec<(String, String)> 
                 .replace("{value}", &item.value)
         })
         .collect();
-    vec![(adapter.native_env.clone(), lines.join("\n"))]
+    vec![(adapter.native_env.clone(), lines.join(&adapter.native_sep))]
 }
 
 /// Link every entry of the user's config dir into the session dir, except the
@@ -387,13 +387,15 @@ pub fn verdict(adapter: &Adapter) -> &'static str {
 
 /// The enabled targets a harness cannot carry, named with the reason, known
 /// before anything is written.
-pub fn unsupported(adapter: &Adapter, targets: &[Target]) -> Vec<(String, String)> {
-    targets
-        .iter()
-        .filter(|target| target.enabled)
-        .filter(|target| !crate::adapters::supports(adapter, &target.kind))
-        .map(|target| {
-            (
+pub fn unsupported(
+    adapter: &Adapter,
+    targets: &[Target],
+    resolved: &[crate::resolver::ResolvedHeader],
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for target in targets.iter().filter(|target| target.enabled) {
+        if !crate::adapters::supports(adapter, &target.kind) {
+            out.push((
                 target.name.clone(),
                 format!(
                     "adapter {} cannot deliver a {} value (it supports {})",
@@ -401,7 +403,20 @@ pub fn unsupported(adapter: &Adapter, targets: &[Target]) -> Vec<(String, String
                     target.kind,
                     adapter.supports.join(", ")
                 ),
-            )
-        })
-        .collect()
+            ));
+            continue;
+        }
+        // The value this launch would send, not a guess: a harness that splits
+        // its header list on `,(name:)` cannot carry it, and writing the mapping
+        // anyway would be a lie the far side fails to parse.
+        let value = resolved
+            .iter()
+            .find(|row| row.header == target.name)
+            .map(|row| row.value.as_str())
+            .unwrap_or_default();
+        if let Some(reason) = crate::adapters::comma_refusal(adapter, &target.name, value) {
+            out.push((target.name.clone(), reason));
+        }
+    }
+    out
 }

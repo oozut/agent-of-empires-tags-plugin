@@ -9,6 +9,7 @@
 #
 # Usage: tools/probe-session.sh <agent> [--aoe PATH] [--cli PATH] [--bin PATH]
 #                                [--sink PORT] [--timeout SECONDS] [--keep]
+#        tools/probe-session.sh --all          # every installed agent with a recipe
 #        tools/probe-session.sh --list
 #
 # Evidence lands in docs/harness-evidence/session-<agent>.json: the session aoe
@@ -16,7 +17,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENTS=(pi claude codex opencode)
+AGENTS=(pi claude codex opencode hermes gemini qwen droid)
 
 die() { printf 'session-probe: %s\n' "$*" >&2; exit 2; }
 note() { printf 'session-probe: %s\n' "$*" >&2; }
@@ -33,9 +34,11 @@ bin=""
 sink_port="${AOE_PROBE_PORT:-8899}"
 wait_seconds=120
 keep=""
+all=0
 while (($#)); do
     case "$1" in
         --list) printf '%s\n' "${AGENTS[@]}"; exit 0 ;;
+        --all) all=1; shift ;;
         --aoe) aoe="$2"; shift 2 ;;
         --cli) cli="$2"; shift 2 ;;
         --bin) bin="$2"; shift 2 ;;
@@ -47,6 +50,30 @@ while (($#)); do
         *) agent="$1"; shift ;;
     esac
 done
+# One real session per installed harness, one sink port each: the whole matrix
+# is rebuilt by a single command after a harness upgrade.
+if ((all)); then
+    status=0
+    port="${sink_port}"
+    for candidate in "${AGENTS[@]}"; do
+        bin_path=""
+        for dir in "$HOME/.local/bin" /usr/local/bin /usr/bin; do
+            [[ -x "$dir/$candidate" ]] && bin_path="$dir/$candidate" && break
+        done
+        bin_path="${bin_path:-$(command -v "$candidate" 2>/dev/null || true)}"
+        if [[ -z "$bin_path" ]]; then
+            note "$candidate: not installed here, skipped"
+            continue
+        fi
+        args=("$candidate" --bin "$bin_path" --sink "$port" --timeout "$wait_seconds")
+        [[ -n "$aoe" ]] && args+=(--aoe "$aoe")
+        [[ -n "$cli" ]] && args+=(--cli "$cli")
+        [[ -n "$keep" ]] && args+=(--keep)
+        "$0" "${args[@]}" || status=1
+        port=$((port + 1))
+    done
+    exit $status
+fi
 [[ -n "$agent" ]] || usage 2
 
 aoe="${aoe:-$(command -v aoe || true)}"
@@ -106,6 +133,27 @@ base="http://127.0.0.1:$sink_port"
 # real endpoint. This is the *source* the hook copies from, never edited by us.
 # One-shot invocation per harness: a real session, but a prompt it can answer
 # without a terminal, so the request actually leaves the process.
+# One target per kind, all on the default format: each carries the tag set as one
+# JSON object, so the sink can prove a field arrived, not a string. A recipe may
+# replace this set with the shape its harness can actually carry.
+targets_block='[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-AoE-Tags"
+
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "query"
+name = "aoe_tags"
+
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "body"
+name = "metadata"
+
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-AoE-Flat"
+format = "csv"
+template = "aoe,{tags},session:{session}"'
+
 case "$agent" in
 pi)
     cmd="$bin -p hi"
@@ -149,6 +197,62 @@ opencode)
 {"provider":{"probe":{"npm":"@ai-sdk/openai-compatible","name":"probe","options":{"baseURL":"$base/v1","apiKey":"probe"},"models":{"probe-model":{"name":"probe-model"}}}}}
 EOF
     ;;
+hermes)
+    cmd="$bin -z hi"
+    # A reference row: the provider block names the hook's variable and hermes
+    # expands it, so nothing is generated for this session.
+    mkdir -p "$HOME/.hermes"
+    cat >"$HOME/.hermes/config.yaml" <<EOF
+providers:
+  probe:
+    base_url: "$base/v1"
+    api_key: "probe"
+    extra_headers:
+      X-AoE-Tags: "\${AOE_LLM_TAGS}"
+model: probe-model
+provider: probe
+EOF
+    ;;
+gemini)
+    cmd="$bin -p hi"
+    mkdir -p "$HOME/.gemini"
+    cat >"$HOME/.gemini/settings.json" <<EOF
+{"security":{"auth":{"selectedType":"gemini-api-key"}}}
+EOF
+    # gemini reads its header list as `Name: value,Name: value`, so the generic
+    # JSON header would be split in two and the request dropped. The tag set is
+    # addressed base64url-encoded instead — the escape hatch `setup` names.
+    targets_block='[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-Aoe-B64"
+template = "{tags_b64}"
+
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-Aoe-Session"
+template = "{session_id}"'
+    ;;
+qwen)
+    cmd="$bin -m probe-model -p hi"
+    mkdir -p "$HOME/.qwen"
+    cat >"$HOME/.qwen/settings.json" <<EOF
+{"modelProviders":{"openai":[{"id":"probe-model","name":"probe-model","baseUrl":"$base/v1",
+  "envKey":"OPENAI_API_KEY","generationConfig":{"customHeaders":{
+    "X-Aoe-Tags":"\${AOE_LLM_TAGS}"}}}]},
+ "security":{"auth":{"selectedType":"openai"}}}
+EOF
+    ;;
+droid)
+    # droid validates a Factory account before it sends anything: this run
+    # records the launch environment it received and reports `no-request` or
+    # `blocked-by-auth` rather than pretending the channel worked.
+    cmd="$bin exec hi"
+    mkdir -p "$HOME/.factory"
+    cat >"$HOME/.factory/settings.json" <<EOF
+{"customModels":[{"model":"probe-model","provider":"openai","baseUrl":"$base/v1","apiKey":"probe",
+  "extraHeaders":{"X-Aoe-Tags":"\${AOE_LLM_TAGS}"}}]}
+EOF
+    ;;
 *) die "no session recipe for $agent (known: ${AGENTS[*]})" ;;
 esac
 
@@ -165,21 +269,15 @@ hooks="$(env AOE_BIN="$aoe" "$cli" setup --print --adapter "$agent" 2>/dev/null 
     # one JSON object, so the sink can prove a field arrived, not a string.
     printf '%s\n' '[plugins."dev.oozut.llm-tags".settings]' \
         'tags = ["team:core", "feature:billing", "cost:=1.5"]'
-    printf '%s\n' \
-        '' '[[plugins."dev.oozut.llm-tags".settings.targets]]' 'kind = "header"' \
-        'name = "X-AoE-Tags"' \
-        '' '[[plugins."dev.oozut.llm-tags".settings.targets]]' 'kind = "query"' \
-        'name = "aoe_tags"' \
-        '' '[[plugins."dev.oozut.llm-tags".settings.targets]]' 'kind = "body"' \
-        'name = "metadata"' \
-        '' '[[plugins."dev.oozut.llm-tags".settings.targets]]' 'kind = "header"' \
-        'name = "X-AoE-Flat"' 'format = "csv"' 'template = "aoe,{tags},session:{session}"'
+    printf '\n%s\n' "${targets_block:-}"
 } >"$XDG_CONFIG_HOME/agent-of-empires/config.toml"
 
 # Env the launched harness needs that is not part of the tag contract.
 case "$agent" in
 claude) : ;;
 codex) export PROBE_KEY=probe OPENAI_API_KEY=probe ;;
+gemini) export GEMINI_API_KEY=probe GOOGLE_GEMINI_BASE_URL="$base" GEMINI_CLI_TRUST_WORKSPACE=true ;;
+qwen) export OPENAI_API_KEY=probe QWEN_DIR="$HOME/.qwen" ;;
 esac
 
 # aoe refuses to launch a host session until it may write its own agent hooks;
@@ -229,8 +327,9 @@ overlay="$XDG_CONFIG_HOME/agent-of-empires/sessions/$session_id/$agent"
 
 evidence_dir="$ROOT/docs/harness-evidence"
 mkdir -p "$evidence_dir"
+status=0
 python3 - "$sink_log" "$evidence_dir/session-$agent.json" "$agent" "$bin" "$cli" \
-    "$session_id" "$overlay" "$base" "$work" <<'PY'
+    "$session_id" "$overlay" "$base" "$work" <<'PY' || status=$?
 import json, os, sys, pathlib, urllib.parse
 
 log, out, agent, binary, cli, session, overlay, base, work = sys.argv[1:10]
@@ -374,12 +473,29 @@ print(json.dumps({k: evidence[k] for k in
 if not deliveries:
     sys.exit(1)
 PY
-status=$?
 if [[ $status -ne 0 ]]; then
-    note "$agent: nothing delivered; hook config was:"
-    sed -n '1,40p' "$XDG_CONFIG_HOME/agent-of-empires/config.toml" >&2
-    note "harness output:"
-    tail -25 "$work/pane.out" >&2 || true
+    outcome="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["outcome"])' \
+        "$evidence_dir/session-$agent.json" 2>/dev/null || echo unknown)"
+    case "$outcome" in
+    no-request)
+        note "$agent: no-request — the payload reached the launched pane, but the harness sent" \
+            "nothing: its config lives in \$HOME, which aoe overwrites, so the probe cannot" \
+            "point it at the sink. Evidence: docs/harness-evidence/session-$agent.json"
+        ;;
+    refused-by-aoe)
+        note "$agent: refused-by-aoe — aoe will not let a hook move this agent's hook path," \
+            "so this row must use the reference channel (docs/harness-adapters.md §aoe_hooks)"
+        ;;
+    request-without-the-tag)
+        note "$agent: DEFECT — a request arrived without the payload"
+        ;;
+    *)
+        note "$agent: nothing delivered; hook config was:"
+        sed -n '1,40p' "$XDG_CONFIG_HOME/agent-of-empires/config.toml" >&2
+        note "harness output:"
+        tail -25 "$work/pane.out" >&2 || true
+        ;;
+    esac
     exit 1
 fi
 note "$agent: delivered (evidence docs/harness-evidence/session-$agent.json)"

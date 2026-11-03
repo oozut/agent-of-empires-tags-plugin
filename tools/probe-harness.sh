@@ -14,12 +14,13 @@
 #
 # Usage: tools/probe-harness.sh <agent> [--cli PATH] [--bin PATH] [--sink PORT]
 #                                  [--extra-settings FILE]
+#        tools/probe-harness.sh --all          # every installed agent with a recipe
 #        tools/probe-harness.sh --list
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EVIDENCE="$ROOT/docs/harness-evidence"
-HOST_AGENTS=(pi claude codex opencode)
+HOST_AGENTS=(pi claude codex opencode hermes gemini qwen droid)
 
 die() { printf 'probe: %s\n' "$*" >&2; exit 2; }
 note() { printf 'probe: %s\n' "$*" >&2; }
@@ -34,9 +35,11 @@ cli="${AOE_LLM_TAGS_CLI:-}"
 bin="${AOE_PROBE_BIN:-}"
 sink_port="${AOE_PROBE_PORT:-8899}"
 extra_settings=""
+all=0
 while (($#)); do
     case "$1" in
         --list) printf '%s\n' "${HOST_AGENTS[@]}"; exit 0 ;;
+        --all) all=1; shift ;;
         --cli) cli="$2"; shift 2 ;;
         --bin) bin="$2"; shift 2 ;;
         --sink) sink_port="$2"; shift 2 ;;
@@ -46,6 +49,29 @@ while (($#)); do
         *) agent="$1"; shift ;;
     esac
 done
+# One run per installed harness, each on its own sink port, so one command
+# rebuilds every evidence file: an upgrade is re-checked, not re-argued.
+if ((all)); then
+    status=0
+    port="${sink_port}"
+    for candidate in "${HOST_AGENTS[@]}"; do
+        bin_path=""
+        for dir in "$HOME/.local/bin" /usr/local/bin /usr/bin; do
+            [[ -x "$dir/$candidate" ]] && bin_path="$dir/$candidate" && break
+        done
+        bin_path="${bin_path:-$(command -v "$candidate" 2>/dev/null)}"
+        if [[ -z "$bin_path" ]]; then
+            note "$candidate: not installed here, skipped"
+            continue
+        fi
+        args=("$candidate" --bin "$bin_path" --sink "$port")
+        [[ -n "$cli" ]] && args+=(--cli "$cli")
+        [[ -n "$extra_settings" ]] && args+=(--extra-settings "$extra_settings")
+        "$0" "${args[@]}" || status=1
+        port=$((port + 1))
+    done
+    exit $status
+fi
 [[ -n "$agent" ]] || usage 2
 
 # The CLI that the host hooks run: the installed plugin binary, else the debug
@@ -89,14 +115,6 @@ case "\$1" in
 esac
 EOF
 chmod +x "$fake_aoe"
-
-# The probe's own plugin config: one static tag so a delivery is unambiguous, and
-# the caller can add targets (a body field, a query parameter) to test those.
-mkdir -p "$XDG_CONFIG_HOME/agent-of-empires"
-{
-    printf '%s\n' '[plugins."dev.oozut.llm-tags".settings]' 'tags = ["team:core"]'
-    if [[ -n "$extra_settings" ]]; then cat "$extra_settings"; fi
-} >"$XDG_CONFIG_HOME/agent-of-empires/config.toml"
 
 sink_log="$work/sink.jsonl"
 python3 "$ROOT/tools/header-sink.py" "$sink_port" "$sink_log" --reset >"$work/sink.out" 2>&1 &
@@ -161,8 +179,89 @@ EOF
     run=("$bin" run "hi" --model probe/probe-model)
     extra=()
     ;;
+hermes)
+    # A reference row: the config names the variable, hermes expands `${VAR}`
+    # itself, and aoe refuses to move this file (it owns the agent's hooks).
+    mkdir -p "$HOME/.hermes"
+    cat >"$HOME/.hermes/config.yaml" <<EOF
+providers:
+  probe:
+    base_url: "$base/v1"
+    api_key: "probe"
+    extra_headers:
+      X-AoE-Tags: "\${AOE_LLM_TAGS}"
+model: probe-model
+provider: probe
+EOF
+    run=("$bin" -z "hi")
+    extra=()
+    ;;
+qwen)
+    mkdir -p "$HOME/.qwen"
+    cat >"$HOME/.qwen/settings.json" <<EOF
+{"modelProviders":{"openai":[{"id":"probe-model","name":"probe-model","baseUrl":"$base/v1",
+  "envKey":"OPENAI_API_KEY","generationConfig":{"customHeaders":{
+    "X-Aoe-Tags":"\${AOE_LLM_TAGS}"}}}]},
+ "security":{"auth":{"selectedType":"openai"}}}
+EOF
+    run=("$bin" -m probe-model -p "hi")
+    extra=(OPENAI_API_KEY=probe)
+    ;;
+gemini)
+    mkdir -p "$HOME/.gemini"
+    # Only the auth choice is written: the endpoint and the header list both ride
+    # the launch environment (`GOOGLE_GEMINI_BASE_URL`, `GEMINI_CLI_CUSTOM_HEADERS`).
+    cat >"$HOME/.gemini/settings.json" <<EOF
+{"security":{"auth":{"selectedType":"gemini-api-key"}}}
+EOF
+    # gemini splits its header list on `,(name:)`, so a JSON payload is addressed
+    # as two headers and the request is dropped. The probe therefore asks for the
+    # same payload base64url-encoded — the escape hatch `setup` points at.
+    cat >>"$XDG_CONFIG_HOME/agent-of-empires/config.toml" <<'EOF'
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-Aoe-B64"
+template = "{tags_b64}"
+EOF
+    run=("$bin" -p "hi")
+    extra=(GEMINI_API_KEY=probe GOOGLE_GEMINI_BASE_URL="$base" GEMINI_CLI_TRUST_WORKSPACE=true)
+    # The generic target set includes the JSON header, whose commas gemini reads
+    # as two headers. These two are what gemini can actually carry.
+    targets_block='[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-Aoe-B64"
+template = "{tags_b64}"
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-Aoe-Session"
+template = "{session_id}"'
+    ;;
+droid)
+    # droid validates a Factory account before it sends anything, so this recipe
+    # records what the binary's own config does — `extraHeaders` with `${VAR}`
+    # expansion — and reports `blocked-by-auth` rather than pretending the
+    # channel failed.
+    mkdir -p "$HOME/.factory"
+    cat >"$HOME/.factory/settings.json" <<EOF
+{"customModels":[{"model":"probe-model","provider":"openai","baseUrl":"$base/v1","apiKey":"probe",
+  "extraHeaders":{"X-Aoe-Tags":"\${AOE_HDR_X_AOE_TAGS}"}}]}
+EOF
+    run=("$bin" exec "hi")
+    extra=()
+    ;;
 *) die "no probe recipe for $agent (known: ${HOST_AGENTS[*]})" ;;
 esac
+
+# The probe's own plugin config: one static tag so a delivery is unambiguous, and
+# the caller can add targets (a body field, a query parameter) to test those. A
+# recipe may replace the generic target set with the shape its harness can carry.
+mkdir -p "$XDG_CONFIG_HOME/agent-of-empires"
+{
+    printf '%s\n' '[plugins."dev.oozut.llm-tags".settings]' 'tags = ["team:core"]'
+    if [[ -n "$extra_settings" ]]; then cat "$extra_settings"; fi
+    if [[ -n "${targets_block:-}" ]]; then printf '\n%s\n' "$targets_block"; fi
+} >"$XDG_CONFIG_HOME/agent-of-empires/config.toml"
+
 
 # The hook is what a launch actually runs: its stdout is the environment aoe
 # injects, including the per-session config override.
@@ -195,10 +294,10 @@ PY
 fi
 
 mkdir -p "$EVIDENCE"
-python3 - "$sink_log" "$EVIDENCE/$agent.json" "$agent" "$bin" "$cli" "$started_at" "$run_code" "$hook_out" <<'PY'
+python3 - "$sink_log" "$EVIDENCE/$agent.json" "$agent" "$bin" "$cli" "$started_at" "$run_code" "$hook_out" "$work/run.out" <<'PY'
 import json, sys, pathlib
 
-log, out, agent, binary, cli, started_at, run_code, hook_path = sys.argv[1:9]
+log, out, agent, binary, cli, started_at, run_code, hook_path, run_log = sys.argv[1:10]
 rows = []
 if pathlib.Path(log).exists():
     rows = [json.loads(line) for line in open(log) if line.strip()]
@@ -240,6 +339,22 @@ for tag in tags:
         wanted.append(tag)
 
 
+def unbase64(text):
+    """`{tags_b64}`: the same JSON in a spelling a comma-splitting parser keeps."""
+    import base64, binascii
+
+    if not isinstance(text, str) or len(text) < 8:
+        return None
+    try:
+        raw = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    except (binascii.Error, ValueError):
+        return None
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
 def holds(candidate):
     """The minted tag set, read out of `candidate`, or None."""
     if not candidate:
@@ -249,7 +364,11 @@ def holds(candidate):
         try:
             parsed = json.loads(candidate)
         except ValueError:
-            parsed = None
+            decoded = unbase64(candidate)
+            try:
+                parsed = json.loads(decoded) if decoded else None
+            except ValueError:
+                parsed = None
     for want in wanted:
         if isinstance(want, dict) and isinstance(parsed, dict):
             if all(parsed.get(key) == value for key, value in want.items()):
@@ -276,30 +395,74 @@ def find(candidate):
     return None
 
 
+def record(where, found, name=None):
+    """One delivery, saying how far it had to be decoded to be read."""
+    encoding = None
+    if isinstance(found, str):
+        decoded = unbase64(found)
+        if decoded:
+            try:
+                parsed = json.loads(decoded)
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                found, encoding = parsed, "base64url"
+    entry = {"where": where, "value": found}
+    if name is not None:
+        entry["name"] = name
+    if encoding:
+        entry["encoding"] = encoding
+    evidence["deliveries"].append(entry)
+
+
 for row in rows:
     for name, value in (row.get("headers") or {}).items():
         found = holds(str(value))
         if found is not None:
-            evidence["deliveries"].append({"where": "header", "name": name, "value": found})
+            record("header", found, name)
     found = find(row.get("body") or {})
     if found is not None:
-        evidence["deliveries"].append({"where": "body", "value": found})
+        record("body", found)
     query = urllib.parse.parse_qs(urllib.parse.urlsplit(row.get("path", "")).query)
     for name, values in query.items():
         for value in values:
             found = holds(urllib.parse.unquote(value))
             if found is not None:
-                evidence["deliveries"].append({"where": "query", "name": name, "value": found})
+                record("query", found, name)
                 break
 evidence["delivered"] = bool(evidence["deliveries"])
+
+# Why nothing arrived matters as much as that it did not: a harness that refuses
+# to talk without an account is not evidence of a broken channel.
+said = ""
+try:
+    said = pathlib.Path(run_log).read_text(errors="replace").lower()
+except OSError:
+    pass
+if evidence["delivered"]:
+    evidence["outcome"] = "delivered"
+elif any(
+    phrase in said
+    for phrase in ("authentication failed", "please log in", "invalid api key")
+):
+    evidence["outcome"] = "blocked-by-auth"
+else:
+    evidence["outcome"] = "not-delivered"
 pathlib.Path(out).write_text(json.dumps(evidence, indent=2) + "\n")
 print(json.dumps(evidence, indent=2))
 sys.exit(0 if evidence["delivered"] else 1)
 PY
 status=$?
 
+outcome="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("outcome",""))' \
+    "$EVIDENCE/$agent.json" 2>/dev/null || true)"
+
 if [[ $status -eq 0 ]]; then
     note "$agent: delivered (evidence docs/harness-evidence/$agent.json)"
+elif [[ "$outcome" == "blocked-by-auth" ]]; then
+    note "$agent: blocked-by-auth — the channel is configured but this harness refuses"
+    note "to send anything without a logged-in account; recorded as evidence, not a pass."
+    exit 0
 else
     note "$agent: nothing delivered; hook said:"
     sed 's/^/  /' "$hook_out" >&2

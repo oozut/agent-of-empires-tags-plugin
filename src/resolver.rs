@@ -455,6 +455,35 @@ pub fn tags_json(tags: &[Tag]) -> String {
     Value::Object(map).to_string()
 }
 
+/// Base64url without padding: the same bytes as the input, spelled with a
+/// 64-symbol alphabet that cannot contain a comma.
+///
+/// A harness that splits one environment variable into several headers on
+/// `,(?=name:)` — `GEMINI_CLI_CUSTOM_HEADERS` does — cannot carry a JSON payload
+/// verbatim, because `{"a":1,"b":2}` looks like two headers. `{tags_b64}` is
+/// the whole payload in a spelling no parser can mistake for a second header,
+/// and a consumer decodes it with a two-line base64url call.
+pub fn base64url(input: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(triple >> 18) as usize & 0x3f] as char);
+        out.push(ALPHABET[(triple >> 12) as usize & 0x3f] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(triple >> 6) as usize & 0x3f] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[triple as usize & 0x3f] as char);
+        }
+    }
+    out
+}
+
 /// Build what a consumer receives: the session fields every target needs, then
 /// the tags. Tags with the same key as a field are reported and dropped rather
 /// than allowed to rewrite the session's identity.
@@ -1034,6 +1063,7 @@ pub fn build_fields(
     fields.insert("tags_csv".to_string(), csv.join(","));
     fields.insert("tags_json".to_string(), tags_json(tags));
     fields.insert("payload_json".to_string(), payload_json(payload));
+    fields.insert("tags_b64".to_string(), base64url(&payload_json(payload)));
     fields.insert(
         "tool".to_string(),
         if facts.tool.is_empty() {
@@ -1070,8 +1100,11 @@ pub fn render_template(template: &str, fields: &BTreeMap<String, String>) -> (St
             continue;
         };
         let name = &template[index + 1..index + close];
-        let is_field =
-            !name.is_empty() && name.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_');
+        // Field names are lower_snake: `tags_b64` has digits and is still a field.
+        let is_field = !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
         if !is_field {
             out.push('{');
             index += 1;
@@ -1698,5 +1731,23 @@ mod tests {
         // `{tags_json}` is the tag map alone, without the session fields.
         let only_tags: Value = serde_json::from_str(&fields["tags_json"]).unwrap();
         assert_eq!(only_tags, serde_json::json!({"team": "core", "weight": 2}));
+    }
+
+    #[test]
+    fn a_template_field_may_hold_digits_and_a_brace_that_is_not_a_field_stays() {
+        let mut fields = BTreeMap::new();
+        fields.insert("tags_b64".to_string(), "eyJhIjoxfQ".to_string());
+        let (out, missing) = render_template("x {tags_b64} y", &fields);
+        assert_eq!(out, "x eyJhIjoxfQ y");
+        assert!(missing.is_empty(), "{missing:?}");
+
+        let (out, missing) = render_template("{payload_json}", &fields);
+        assert_eq!(out, "");
+        assert_eq!(missing, vec!["payload_json".to_string()]);
+
+        // `{Name}` is a header line, not one of our fields: leave it alone.
+        let (out, missing) = render_template("{X-Aoe}", &fields);
+        assert_eq!(out, "{X-Aoe}");
+        assert!(missing.is_empty(), "{missing:?}");
     }
 }

@@ -2,29 +2,30 @@
   "agent": "pi",
   "binary": "/usr/bin/pi",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-02T23:38:40Z",
+  "checked_at": "2026-11-03T08:42:59Z",
   "exit_code": 0,
   "session_override": {
-    "PI_CODING_AGENT_DIR": "/tmp/aoe-probe-pi-c2YFTf/home/.config/agent-of-empires/sessions/probe-pi-810156/pi"
+    "PI_CODING_AGENT_DIR": "/tmp/aoe-probe-pi-42OnN6/home/.config/agent-of-empires/sessions/probe-pi-1837896/pi"
   },
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-pi-c2YFTf/project\",\"session\":\"S-prob\",\"session_id\":\"probe-pi-810156\",\"team\":\"core\",\"tool\":\"pi\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-pi-42OnN6/project\",\"session\":\"S-prob\",\"session_id\":\"probe-pi-1837896\",\"team\":\"core\",\"tool\":\"pi\"}"
   ],
   "requests": 1,
   "deliveries": [
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-pi-c2YFTf/project",
+        "project_path": "/tmp/aoe-probe-pi-42OnN6/project",
         "session": "S-prob",
-        "session_id": "probe-pi-810156",
+        "session_id": "probe-pi-1837896",
         "team": "core",
         "tool": "pi"
-      }
+      },
+      "name": "x-aoe-tags"
     }
   ],
-  "delivered": true
+  "delivered": true,
+  "outcome": "delivered"
 }

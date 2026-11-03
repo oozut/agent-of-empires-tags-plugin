@@ -2,92 +2,93 @@
   "agent": "codex",
   "binary": "/var/lib/aoe/.local/bin/codex",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-02T23:41:49Z",
+  "checked_at": "2026-11-03T08:43:02Z",
   "exit_code": 1,
   "session_override": {},
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-codex-YgOxQy/project\",\"session\":\"S-prob\",\"session_id\":\"probe-codex-817886\",\"team\":\"core\",\"tool\":\"codex\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-codex-2a4bNT/project\",\"session\":\"S-prob\",\"session_id\":\"probe-codex-1838096\",\"team\":\"core\",\"tool\":\"codex\"}"
   ],
   "requests": 6,
   "deliveries": [
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "project_path": "/tmp/aoe-probe-codex-2a4bNT/project",
         "session": "S-prob",
-        "session_id": "probe-codex-817886",
+        "session_id": "probe-codex-1838096",
         "team": "core",
         "tool": "codex"
-      }
+      },
+      "name": "x-aoe-tags"
     },
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "project_path": "/tmp/aoe-probe-codex-2a4bNT/project",
         "session": "S-prob",
-        "session_id": "probe-codex-817886",
+        "session_id": "probe-codex-1838096",
         "team": "core",
         "tool": "codex"
-      }
+      },
+      "name": "x-aoe-tags"
     },
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "project_path": "/tmp/aoe-probe-codex-2a4bNT/project",
         "session": "S-prob",
-        "session_id": "probe-codex-817886",
+        "session_id": "probe-codex-1838096",
         "team": "core",
         "tool": "codex"
-      }
+      },
+      "name": "x-aoe-tags"
     },
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "project_path": "/tmp/aoe-probe-codex-2a4bNT/project",
         "session": "S-prob",
-        "session_id": "probe-codex-817886",
+        "session_id": "probe-codex-1838096",
         "team": "core",
         "tool": "codex"
-      }
+      },
+      "name": "x-aoe-tags"
     },
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "project_path": "/tmp/aoe-probe-codex-2a4bNT/project",
         "session": "S-prob",
-        "session_id": "probe-codex-817886",
+        "session_id": "probe-codex-1838096",
         "team": "core",
         "tool": "codex"
-      }
+      },
+      "name": "x-aoe-tags"
     },
     {
       "where": "header",
-      "name": "x-aoe-tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-codex-YgOxQy/project",
+        "project_path": "/tmp/aoe-probe-codex-2a4bNT/project",
         "session": "S-prob",
-        "session_id": "probe-codex-817886",
+        "session_id": "probe-codex-1838096",
         "team": "core",
         "tool": "codex"
-      }
+      },
+      "name": "x-aoe-tags"
     }
   ],
-  "delivered": true
+  "delivered": true,
+  "outcome": "delivered"
 }

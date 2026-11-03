@@ -57,7 +57,16 @@ writer = "pi_models"                # src/writer.rs
 # --- only for write_mode = "env_only"
 native_env = "ANTHROPIC_CUSTOM_HEADERS"
 native_format = "{header}: {value}"
+native_sep = "\n"                     # "," for a harness whose parser only splits on commas
+splits_on_commas = false              # true when the harness reads the value as `a,b,…`
 ```
+
+`splits_on_commas` is a *refusal*, not a hint: gemini's `parseCustomHeaders` splits its variable on
+`,(?=\s*[^,:]+:)`, so a JSON payload `{"a":1,"b":2}` becomes two headers and the request is dropped
+with `TypeError: Headers.append: invalid header name`. Such a row declares the shape, and
+`setup --apply` refuses a target whose rendered value would be split (`comma_splits` checks the
+value, so a comma-free `a,b` still passes). The escape hatch is `template = "{tags_b64}"` — the same
+payload, base64url-encoded, so it cannot contain a splittable comma.
 
 | `write_mode` | What a session gets | The user's config |
 |---|---|---|
@@ -188,9 +197,12 @@ harness, starts it, waits for the sink, captures the pane, and stops it. The evi
 
 ## Harness table
 
-Seventeen agents exist in aoe; this table covers the rows that have been researched. The four
-below are verified end to end on this host through the per-session model above — a user-prefix
-install (`~/.local/bin`) is enough, the binaries need not be visible to `aoe agents`.
+Seventeen agents exist in aoe; this table covers the rows that have been researched. Eight are
+verified end to end on this host through the per-session model above — a user-prefix install
+(`~/.local/bin`) is enough, the binaries need not be visible to `aoe agents`. `droid` is
+`documented` rather than `verified`: its parser was read out of the binary and the mapping is
+written the same way, but it validates a Factory account before sending, so no request could be
+observed (`blocked-by-auth` in `docs/harness-evidence/droid.json`).
 
 | Agent | Mechanism | Session scope | Channels under aoe | Discovery |
 |---|---|---|---|---|
@@ -198,8 +210,10 @@ install (`~/.local/bin`) is enough, the binaries need not be visible to `aoe age
 | `opencode` | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` | header + query | `$XDG_CONFIG_HOME/opencode/opencode.json` |
 | `claude` | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` (`aoe_hooks`) | header | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` |
 | `codex` | `headers_from_env` / static `http_headers` | reference in the user's own config (`aoe_hooks`) | header (query outside aoe) | `$CODEX_HOME`, `~/.codex/config.toml` |
-| `hermes` | provider plugin `extra_headers` | TBD | provider plugins | needs research |
-| `gemini` | TBD | TBD | `~/.gemini/settings.json` | needs research |
+| `hermes` | `config_headers` | reference in the user's own YAML (`extra_headers`, `aoe_hooks`) | header | `~/.hermes/config.yaml` |
+| `gemini` | `custom_headers_env` | `env_only`: `GEMINI_CLI_CUSTOM_HEADERS` (`aoe_hooks`) | header only, and only as `{tags_b64}` | `~/.gemini/settings.json` |
+| `qwen` | `config_headers` | reference in the user's own JSON (`generationConfig.customHeaders`, `aoe_hooks`) | header | `~/.qwen/settings.json` |
+| `droid` | `config_headers` | reference in the user's own JSON (`customModels[].extraHeaders`, `aoe_hooks`) | header | `~/.factory/settings.json` |
 | `vibe` | TBD | TBD | `~/.config/vibe` | needs research |
 | `kiro` | TBD | TBD | agent config JSON | needs research |
 | `cline` | TBD | TBD | VS Code extension storage | needs research |
@@ -258,6 +272,26 @@ The plugin must work on a host with no wrapper at all.
 ```sh
 # claude: no static config, the variable carries whole header lines
 ANTHROPIC_CUSTOM_HEADERS="X-AoE-Tags: {\"session\":\"S-9f3a\",\"feature\":\"review\",\"team\":\"core\"}"
+```
+
+```sh
+# gemini: no static config either, but its variable is a comma-separated list, so the payload
+# must be spelled without a splittable comma. {tags_b64} is that spelling.
+GEMINI_CLI_CUSTOM_HEADERS="X-Aoe-B64: eyJzZXNzaW9uIjoiUy05ZjNhIiwidGVhbSI6ImNvcmUifQ"
+```
+
+```jsonc
+// qwen, ~/.qwen/settings.json — the entry is a model config; a provider-level customHeaders map
+// is merged into it by applyProviderCustomHeaders, so set it where it reaches the wire
+{ "modelProviders": { "openai": [{
+    "id": "<model-id>", "name": "<Model name>", "baseUrl": "<endpoint>", "envKey": "OPENAI_API_KEY",
+    "generationConfig": { "customHeaders": { "X-AoE-Tags": "${AOE_LLM_TAGS}" } } }] } }
+```
+
+```jsonc
+// droid, ~/.factory/settings.json — ${VAR} is expanded for user-level sources only
+{ "customModels": [{ "model": "<model-id>", "provider": "openai", "baseUrl": "<endpoint>",
+    "apiKey": "<key>", "extraHeaders": { "X-AoE-Tags": "${AOE_LLM_TAGS}" } }] }
 ```
 
 ## What the agent process actually receives

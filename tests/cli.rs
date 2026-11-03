@@ -258,9 +258,45 @@ fn an_unknown_adapter_names_the_known_ones() {
 #[test]
 fn an_unresearched_adapter_is_refused() {
     let sandbox = Sandbox::new();
-    let run = sandbox.run(&["setup", "--print", "--adapter", "gemini"]);
+    let run = sandbox.run(&["setup", "--print", "--adapter", "kiro"]);
     run.assert_code(1);
     assert!(run.stderr.contains("needs_research"), "{}", run.stderr);
+}
+
+#[test]
+fn a_comma_splitting_harness_refuses_a_json_payload() {
+    // gemini reads GEMINI_CLI_CUSTOM_HEADERS as a header list split on `,(name:)`,
+    // so {"a":1,"b":2} is addressed as two headers and the request is dropped.
+    // The plan is refused rather than written as a value gemini would mangle.
+    let mut sandbox = Sandbox::new();
+    sandbox.session("cf11af87da7e4bf0", "gemini");
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\", \"feature:billing\"]\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"header\"\nname = \"X-AoE-Tags\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["setup", "--adapter", "gemini", "--apply", "--yes"]);
+    run.assert_code(1);
+    assert!(run.stderr.contains("split on `,(name:)`"), "{}", run.stderr);
+    assert!(run.stderr.contains("tags_b64"), "{}", run.stderr);
+
+    // The escape hatch is accepted: the same payload, spelled without a comma.
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\", \"feature:billing\"]\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"{tags_b64}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["setup", "--adapter", "gemini", "--apply", "--yes"]);
+    run.assert_ok();
+    // The launch carries the same payload as one un-splittable token.
+    let hook = sandbox.run(&["hook"]);
+    hook.assert_ok();
+    let line = hook
+        .lines()
+        .into_iter()
+        .find(|line| line.starts_with("GEMINI_CLI_CUSTOM_HEADERS="))
+        .expect("gemini's own variable is exported");
+    let value = line.split_once(": ").expect("header: value").1;
+    assert!(!value.contains(','), "{value}");
+    assert!(!value.contains(':'), "{value}");
 }
 
 #[test]

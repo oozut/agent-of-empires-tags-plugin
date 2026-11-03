@@ -69,7 +69,7 @@ A target chooses **where** the payload travels and **what** of it travels there.
 | `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
 | `name` | Wire name: a header name, a query parameter, or the body field to set. |
 | `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. |
-| `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, or one field such as `{feature}`. |
+| `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, `{tags_b64}`, or one field such as `{feature}`. |
 | `literal` | Written as-is instead of the rendered template. |
 | `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
@@ -77,7 +77,7 @@ A target chooses **where** the payload travels and **what** of it travels there.
 Template fields, resolved from the session manager first and the hook environment second:
 
 `{session}` `{session_id}` `{feature}` `{tool}` `{profile}` `{group}` `{group_slug}` `{project}`
-`{project_slug}` `{branch}` `{tags}` `{tags_csv}` `{tags_json}` `{payload_json}`
+`{project_slug}` `{branch}` `{tags}` `{tags_csv}` `{tags_json}` `{payload_json}` `{tags_b64}`
 
 Rules that keep the contract honest:
 

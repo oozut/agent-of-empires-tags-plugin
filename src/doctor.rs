@@ -617,7 +617,7 @@ fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) ->
             },
         };
     }
-    match scan_file(adapter, &path, &item.header) {
+    match scan_file(adapter, &path, &item.header, &item.env_var) {
         Err(err) => Check {
             name,
             status: FAIL.to_string(),
@@ -753,7 +753,25 @@ fn scan_file(
     adapter: &Adapter,
     path: &Path,
     header: &str,
+    env_var: &str,
 ) -> Result<(bool, Vec<String>, Vec<String>), String> {
+    // A reference row (`config_format = "text"`) points at a file this plugin
+    // deliberately does not parse: the user pastes one line into a config we do
+    // not own, so the honest check is whether that line is there.
+    if adapter.config_format == "text" {
+        let raw = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+        let reference = adapter.env_ref.replace("{env_var}", env_var);
+        let found = raw.to_lowercase().contains(&header.to_lowercase()) && raw.contains(&reference);
+        return Ok((
+            found,
+            if found {
+                vec!["reference found".to_string()]
+            } else {
+                Vec::new()
+            },
+            Vec::new(),
+        ));
+    }
     let data = adapters::read_config(adapter, path)?;
     let wanted = header.to_lowercase();
     let (mut found, mut notes, mut known) = (false, Vec::new(), Vec::new());

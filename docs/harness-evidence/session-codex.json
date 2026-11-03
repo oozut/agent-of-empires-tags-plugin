@@ -2,8 +2,8 @@
   "agent": "codex",
   "binary": "/var/lib/aoe/.local/bin/codex",
   "cli": "target/debug/aoe-llm-tags",
-  "session_id": "f5eb107c9ba64468",
-  "overlay": "/tmp/aoe-session-codex-SqqSjN/home/.config/agent-of-empires/sessions/f5eb107c9ba64468/codex",
+  "session_id": "4b1275487b024512",
+  "overlay": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/sessions/4b1275487b024512/codex",
   "overlay_entries": {},
   "overlay_carries": {
     "header": false,
@@ -18,10 +18,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "f5eb107c9ba64468",
-      "project_path": "/tmp/aoe-session-codex-SqqSjN/home/.config/agent-of-empires/scratch/f5eb107c9ba64468",
-      "session": "S-f5eb",
-      "session_id": "f5eb107c9ba64468",
+      "project": "4b1275487b024512",
+      "project_path": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/scratch/4b1275487b024512",
+      "session": "S-4b12",
+      "session_id": "4b1275487b024512",
       "team": "core",
       "tool": "codex"
     },
@@ -29,10 +29,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "f5eb107c9ba64468",
-      "project_path": "/tmp/aoe-session-codex-SqqSjN/home/.config/agent-of-empires/scratch/f5eb107c9ba64468",
-      "session": "S-f5eb",
-      "session_id": "f5eb107c9ba64468",
+      "project": "4b1275487b024512",
+      "project_path": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/scratch/4b1275487b024512",
+      "session": "S-4b12",
+      "session_id": "4b1275487b024512",
       "team": "core",
       "tool": "codex"
     },
@@ -40,10 +40,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "f5eb107c9ba64468",
-      "project_path": "/tmp/aoe-session-codex-SqqSjN/home/.config/agent-of-empires/scratch/f5eb107c9ba64468",
-      "session": "S-f5eb",
-      "session_id": "f5eb107c9ba64468",
+      "project": "4b1275487b024512",
+      "project_path": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/scratch/4b1275487b024512",
+      "session": "S-4b12",
+      "session_id": "4b1275487b024512",
       "team": "core",
       "tool": "codex"
     }
@@ -51,5 +51,5 @@
   "outcome": "no-request",
   "aoe_message": "OpenAI Codex v0.166.0",
   "payload_fields": {},
-  "run_dir": "/tmp/aoe-session-codex-SqqSjN"
+  "run_dir": "/tmp/aoe-session-codex-8kUUCI"
 }

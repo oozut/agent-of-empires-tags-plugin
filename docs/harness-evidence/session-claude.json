@@ -2,8 +2,8 @@
   "agent": "claude",
   "binary": "/var/lib/aoe/.local/bin/claude",
   "cli": "target/debug/aoe-llm-tags",
-  "session_id": "2c41dcc4411f41e0",
-  "overlay": "/tmp/aoe-session-claude-ZRHTMj/home/.config/agent-of-empires/sessions/2c41dcc4411f41e0/claude",
+  "session_id": "a03dfd31bef442fc",
+  "overlay": "/tmp/aoe-session-claude-lBlMNc/home/.config/agent-of-empires/sessions/a03dfd31bef442fc/claude",
   "overlay_entries": {},
   "overlay_carries": {
     "header": false,
@@ -18,10 +18,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "2c41dcc4411f41e0",
-      "project_path": "/tmp/aoe-session-claude-ZRHTMj/home/.config/agent-of-empires/scratch/2c41dcc4411f41e0",
-      "session": "S-2c41",
-      "session_id": "2c41dcc4411f41e0",
+      "project": "a03dfd31bef442fc",
+      "project_path": "/tmp/aoe-session-claude-lBlMNc/home/.config/agent-of-empires/scratch/a03dfd31bef442fc",
+      "session": "S-a03d",
+      "session_id": "a03dfd31bef442fc",
       "team": "core",
       "tool": "claude"
     },
@@ -29,10 +29,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "2c41dcc4411f41e0",
-      "project_path": "/tmp/aoe-session-claude-ZRHTMj/home/.config/agent-of-empires/scratch/2c41dcc4411f41e0",
-      "session": "S-2c41",
-      "session_id": "2c41dcc4411f41e0",
+      "project": "a03dfd31bef442fc",
+      "project_path": "/tmp/aoe-session-claude-lBlMNc/home/.config/agent-of-empires/scratch/a03dfd31bef442fc",
+      "session": "S-a03d",
+      "session_id": "a03dfd31bef442fc",
       "team": "core",
       "tool": "claude"
     },
@@ -40,10 +40,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "2c41dcc4411f41e0",
-      "project_path": "/tmp/aoe-session-claude-ZRHTMj/home/.config/agent-of-empires/scratch/2c41dcc4411f41e0",
-      "session": "S-2c41",
-      "session_id": "2c41dcc4411f41e0",
+      "project": "a03dfd31bef442fc",
+      "project_path": "/tmp/aoe-session-claude-lBlMNc/home/.config/agent-of-empires/scratch/a03dfd31bef442fc",
+      "session": "S-a03d",
+      "session_id": "a03dfd31bef442fc",
       "team": "core",
       "tool": "claude"
     },
@@ -51,10 +51,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "2c41dcc4411f41e0",
-      "project_path": "/tmp/aoe-session-claude-ZRHTMj/home/.config/agent-of-empires/scratch/2c41dcc4411f41e0",
-      "session": "S-2c41",
-      "session_id": "2c41dcc4411f41e0",
+      "project": "a03dfd31bef442fc",
+      "project_path": "/tmp/aoe-session-claude-lBlMNc/home/.config/agent-of-empires/scratch/a03dfd31bef442fc",
+      "session": "S-a03d",
+      "session_id": "a03dfd31bef442fc",
       "team": "core",
       "tool": "claude"
     }
@@ -62,5 +62,5 @@
   "outcome": "no-request",
   "aoe_message": "Not logged in \u00b7 Please run /login",
   "payload_fields": {},
-  "run_dir": "/tmp/aoe-session-claude-ZRHTMj"
+  "run_dir": "/tmp/aoe-session-claude-lBlMNc"
 }

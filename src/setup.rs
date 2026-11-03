@@ -186,6 +186,18 @@ pub fn build(
             ));
             continue;
         };
+        // This launch's own value, not a guess: `snapshot` resolved it already.
+        let rendered = snap
+            .resolved
+            .iter()
+            .find(|row| row.header == item.name)
+            .map(|row| row.value.clone())
+            .unwrap_or_default();
+        if let Some(reason) = adapters::comma_refusal(adapter, &item.name, &rendered) {
+            unmappable.push(item.name.clone());
+            warnings.push(reason);
+            continue;
+        }
         let (path, _) = adapters::config_path(adapter, env);
         let value = adapters::delivery_value(adapter, item, &item.kind).unwrap_or_default();
         mapping.push(Mapping {
@@ -285,7 +297,7 @@ pub fn apply_cmd(flags: &Flags, env: &Env) -> i32 {
     };
 
     // Refuse the whole plan rather than write a config with a hole in it.
-    let unsupported = crate::overlay::unsupported(&adapter, &snap.settings.targets);
+    let unsupported = crate::overlay::unsupported(&adapter, &snap.settings.targets, &snap.resolved);
     if !unsupported.is_empty() {
         crate::cli::warn_all(&warnings);
         for (name, why) in &unsupported {

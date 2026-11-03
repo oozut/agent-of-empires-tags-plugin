@@ -2,8 +2,8 @@
   "agent": "pi",
   "binary": "/usr/bin/pi",
   "cli": "target/debug/aoe-llm-tags",
-  "session_id": "0958d2b512ce4386",
-  "overlay": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/sessions/0958d2b512ce4386/pi",
+  "session_id": "536c967caa9b48e6",
+  "overlay": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/sessions/536c967caa9b48e6/pi",
   "overlay_entries": {
     "auth.json": "file",
     "models-store.json": "file",
@@ -20,7 +20,7 @@
     {
       "where": "header",
       "name": "x-aoe-flat",
-      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-0958"
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-536c"
     },
     {
       "where": "header",
@@ -29,10 +29,10 @@
         "cost": 1.5,
         "feature": "billing",
         "profile": "main",
-        "project": "0958d2b512ce4386",
-        "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
-        "session": "S-0958",
-        "session_id": "0958d2b512ce4386",
+        "project": "536c967caa9b48e6",
+        "project_path": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/scratch/536c967caa9b48e6",
+        "session": "S-536c",
+        "session_id": "536c967caa9b48e6",
         "team": "core",
         "tool": "pi"
       }
@@ -43,10 +43,10 @@
         "cost": 1.5,
         "feature": "billing",
         "profile": "main",
-        "project": "0958d2b512ce4386",
-        "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
-        "session": "S-0958",
-        "session_id": "0958d2b512ce4386",
+        "project": "536c967caa9b48e6",
+        "project_path": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/scratch/536c967caa9b48e6",
+        "session": "S-536c",
+        "session_id": "536c967caa9b48e6",
         "team": "core",
         "tool": "pi"
       }
@@ -61,10 +61,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "0958d2b512ce4386",
-      "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
-      "session": "S-0958",
-      "session_id": "0958d2b512ce4386",
+      "project": "536c967caa9b48e6",
+      "project_path": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/scratch/536c967caa9b48e6",
+      "session": "S-536c",
+      "session_id": "536c967caa9b48e6",
       "team": "core",
       "tool": "pi"
     },
@@ -72,10 +72,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "0958d2b512ce4386",
-      "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
-      "session": "S-0958",
-      "session_id": "0958d2b512ce4386",
+      "project": "536c967caa9b48e6",
+      "project_path": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/scratch/536c967caa9b48e6",
+      "session": "S-536c",
+      "session_id": "536c967caa9b48e6",
       "team": "core",
       "tool": "pi"
     },
@@ -83,10 +83,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "0958d2b512ce4386",
-      "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
-      "session": "S-0958",
-      "session_id": "0958d2b512ce4386",
+      "project": "536c967caa9b48e6",
+      "project_path": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/scratch/536c967caa9b48e6",
+      "session": "S-536c",
+      "session_id": "536c967caa9b48e6",
       "team": "core",
       "tool": "pi"
     }
@@ -97,12 +97,12 @@
     "cost": 1.5,
     "feature": "billing",
     "profile": "main",
-    "project": "0958d2b512ce4386",
-    "project_path": "/tmp/aoe-session-pi-MMN3TC/home/.config/agent-of-empires/scratch/0958d2b512ce4386",
-    "session": "S-0958",
-    "session_id": "0958d2b512ce4386",
+    "project": "536c967caa9b48e6",
+    "project_path": "/tmp/aoe-session-pi-KeBxW6/home/.config/agent-of-empires/scratch/536c967caa9b48e6",
+    "session": "S-536c",
+    "session_id": "536c967caa9b48e6",
     "team": "core",
     "tool": "pi"
   },
-  "run_dir": "/tmp/aoe-session-pi-MMN3TC"
+  "run_dir": "/tmp/aoe-session-pi-KeBxW6"
 }

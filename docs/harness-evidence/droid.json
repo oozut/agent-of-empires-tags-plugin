@@ -1,0 +1,15 @@
+{
+  "agent": "droid",
+  "binary": "/var/lib/aoe/.local/bin/droid",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T08:45:06Z",
+  "exit_code": 1,
+  "session_override": {},
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-droid-cimDxL/project\",\"session\":\"S-prob\",\"session_id\":\"probe-droid-1842455\",\"team\":\"core\",\"tool\":\"droid\"}"
+  ],
+  "requests": 0,
+  "deliveries": [],
+  "delivered": false,
+  "outcome": "blocked-by-auth"
+}

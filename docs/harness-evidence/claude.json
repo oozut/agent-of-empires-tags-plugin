@@ -2,42 +2,43 @@
   "agent": "claude",
   "binary": "/var/lib/aoe/.local/bin/claude",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-02T23:38:42Z",
+  "checked_at": "2026-11-03T08:43:01Z",
   "exit_code": 1,
   "session_override": {
-    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: {\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-h6BS1x/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-810313\",\"team\":\"core\",\"tool\":\"claude\"}"
+    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: {\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-UwxXZ5/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-1838017\",\"team\":\"core\",\"tool\":\"claude\"}"
   },
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-h6BS1x/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-810313\",\"team\":\"core\",\"tool\":\"claude\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-UwxXZ5/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-1838017\",\"team\":\"core\",\"tool\":\"claude\"}"
   ],
   "requests": 2,
   "deliveries": [
     {
       "where": "header",
-      "name": "X-AoE-Tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-claude-h6BS1x/project",
+        "project_path": "/tmp/aoe-probe-claude-UwxXZ5/project",
         "session": "S-prob",
-        "session_id": "probe-claude-810313",
+        "session_id": "probe-claude-1838017",
         "team": "core",
         "tool": "claude"
-      }
+      },
+      "name": "X-AoE-Tags"
     },
     {
       "where": "header",
-      "name": "X-AoE-Tags",
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-claude-h6BS1x/project",
+        "project_path": "/tmp/aoe-probe-claude-UwxXZ5/project",
         "session": "S-prob",
-        "session_id": "probe-claude-810313",
+        "session_id": "probe-claude-1838017",
         "team": "core",
         "tool": "claude"
-      }
+      },
+      "name": "X-AoE-Tags"
     }
   ],
-  "delivered": true
+  "delivered": true,
+  "outcome": "delivered"
 }

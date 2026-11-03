@@ -2,8 +2,8 @@
   "agent": "opencode",
   "binary": "/var/lib/aoe/.local/bin/opencode",
   "cli": "target/debug/aoe-llm-tags",
-  "session_id": "d307cff15cec433f",
-  "overlay": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/sessions/d307cff15cec433f/opencode",
+  "session_id": "f1551a8ae28d4110",
+  "overlay": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/sessions/f1551a8ae28d4110/opencode",
   "overlay_entries": {
     "opencode.json": "file"
   },
@@ -17,7 +17,7 @@
     {
       "where": "header",
       "name": "x-aoe-flat",
-      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-d307"
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-f155"
     },
     {
       "where": "header",
@@ -26,10 +26,10 @@
         "cost": 1.5,
         "feature": "billing",
         "profile": "main",
-        "project": "d307cff15cec433f",
-        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-        "session": "S-d307",
-        "session_id": "d307cff15cec433f",
+        "project": "f1551a8ae28d4110",
+        "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+        "session": "S-f155",
+        "session_id": "f1551a8ae28d4110",
         "team": "core",
         "tool": "opencode"
       }
@@ -41,10 +41,10 @@
         "cost": 1.5,
         "feature": "billing",
         "profile": "main",
-        "project": "d307cff15cec433f",
-        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-        "session": "S-d307",
-        "session_id": "d307cff15cec433f",
+        "project": "f1551a8ae28d4110",
+        "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+        "session": "S-f155",
+        "session_id": "f1551a8ae28d4110",
         "team": "core",
         "tool": "opencode"
       }
@@ -52,7 +52,7 @@
     {
       "where": "header",
       "name": "x-aoe-flat",
-      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-d307"
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-f155"
     },
     {
       "where": "header",
@@ -61,10 +61,10 @@
         "cost": 1.5,
         "feature": "billing",
         "profile": "main",
-        "project": "d307cff15cec433f",
-        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-        "session": "S-d307",
-        "session_id": "d307cff15cec433f",
+        "project": "f1551a8ae28d4110",
+        "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+        "session": "S-f155",
+        "session_id": "f1551a8ae28d4110",
         "team": "core",
         "tool": "opencode"
       }
@@ -76,10 +76,10 @@
         "cost": 1.5,
         "feature": "billing",
         "profile": "main",
-        "project": "d307cff15cec433f",
-        "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-        "session": "S-d307",
-        "session_id": "d307cff15cec433f",
+        "project": "f1551a8ae28d4110",
+        "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+        "session": "S-f155",
+        "session_id": "f1551a8ae28d4110",
         "team": "core",
         "tool": "opencode"
       }
@@ -94,10 +94,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "d307cff15cec433f",
-      "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-      "session": "S-d307",
-      "session_id": "d307cff15cec433f",
+      "project": "f1551a8ae28d4110",
+      "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+      "session": "S-f155",
+      "session_id": "f1551a8ae28d4110",
       "team": "core",
       "tool": "opencode"
     },
@@ -105,10 +105,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "d307cff15cec433f",
-      "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-      "session": "S-d307",
-      "session_id": "d307cff15cec433f",
+      "project": "f1551a8ae28d4110",
+      "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+      "session": "S-f155",
+      "session_id": "f1551a8ae28d4110",
       "team": "core",
       "tool": "opencode"
     },
@@ -116,10 +116,10 @@
       "cost": 1.5,
       "feature": "billing",
       "profile": "main",
-      "project": "d307cff15cec433f",
-      "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-      "session": "S-d307",
-      "session_id": "d307cff15cec433f",
+      "project": "f1551a8ae28d4110",
+      "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+      "session": "S-f155",
+      "session_id": "f1551a8ae28d4110",
       "team": "core",
       "tool": "opencode"
     }
@@ -130,12 +130,12 @@
     "cost": 1.5,
     "feature": "billing",
     "profile": "main",
-    "project": "d307cff15cec433f",
-    "project_path": "/tmp/aoe-session-opencode-keAwYE/home/.config/agent-of-empires/scratch/d307cff15cec433f",
-    "session": "S-d307",
-    "session_id": "d307cff15cec433f",
+    "project": "f1551a8ae28d4110",
+    "project_path": "/tmp/aoe-session-opencode-jnJ3kB/home/.config/agent-of-empires/scratch/f1551a8ae28d4110",
+    "session": "S-f155",
+    "session_id": "f1551a8ae28d4110",
     "team": "core",
     "tool": "opencode"
   },
-  "run_dir": "/tmp/aoe-session-opencode-keAwYE"
+  "run_dir": "/tmp/aoe-session-opencode-jnJ3kB"
 }

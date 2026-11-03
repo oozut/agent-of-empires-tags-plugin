@@ -50,11 +50,19 @@ pub struct Adapter {
     pub native_env: String,
     /// How one target renders into that variable (`{header}`, `{param}`, `{value}`).
     pub native_format: String,
+    /// What separates two targets inside that variable: a newline for claude,
+    /// a comma for gemini, whose parser only splits on commas.
+    pub native_sep: String,
     /// aoe installs its own hooks into this agent's config file, which pins that
     /// file's path for the launch: aoe refuses any `before_session` hook that
     /// moves it, so this harness can only be served through a reference the
     /// user's own config already carries.
     pub aoe_hooks: bool,
+    /// This harness splits its header variable on `,(?=name:)`, so a value that
+    /// contains such a comma is addressed as a second header: the harness either
+    /// sends a corrupted value or refuses to send anything at all. Gemini's
+    /// `GEMINI_CLI_CUSTOM_HEADERS` parser does exactly this.
+    pub splits_on_commas: bool,
     pub status: String,
     pub notes: String,
 }
@@ -185,7 +193,9 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         writer: text("writer"),
         native_env: text("native_env"),
         native_format: text("native_format"),
+        native_sep: or_default(text("native_sep"), "\n"),
         aoe_hooks: flag("aoe_hooks"),
+        splits_on_commas: flag("splits_on_commas"),
         supports: {
             let listed = list("supports");
             if listed.is_empty() {
@@ -335,6 +345,56 @@ pub fn supports(adapter: &Adapter, kind: &str) -> bool {
 /// Does this harness expand `$VAR` at `delivery` (`header`, `query`, `body`)?
 pub fn interpolates(adapter: &Adapter, delivery: &str) -> bool {
     adapter.interpolates.iter().any(|point| point == delivery)
+}
+
+/// Would this value be read as *two* headers by a comma-splitting parser?
+///
+/// Gemini's `parseCustomHeaders` splits on `,(?=\s*[^,:]+:)`, so
+/// `{"team":"core","feature":"billing"}` becomes `X-AoE-Tags: {"team":"core"`
+/// plus a header named `"feature"`, and the request is dropped entirely
+/// (`docs/harness-evidence/gemini.json`). A comma that is not followed by
+/// `name:` (`a,b`) survives, so the check is on the value, not on the presence
+/// of a comma.
+pub fn comma_splits(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b',' {
+            continue;
+        }
+        let mut rest = value[index + 1..].chars().peekable();
+        // `\s*` then one or more characters that are neither `,` nor `:`, then `:`.
+        while matches!(rest.peek(), Some(c) if c.is_whitespace()) {
+            rest.next();
+        }
+        // `[^,:]+` is one or more characters, then the colon that ends a name.
+        let mut chars = rest.by_ref().skip_while(|c| *c == ',');
+        let mut hit_colon = false;
+        if let Some(first) = chars.next() {
+            if first != ':' {
+                hit_colon = chars.take_while(|c| *c != ',').any(|c| c == ':');
+            }
+        }
+        if hit_colon {
+            return true;
+        }
+    }
+    false
+}
+
+/// The reason a `splits_on_commas` harness cannot carry this value, if any.
+pub fn comma_refusal(adapter: &Adapter, name: &str, value: &str) -> Option<String> {
+    if !adapter.splits_on_commas || !comma_splits(value) {
+        return None;
+    }
+    Some(
+        format!(
+            "adapter {} reads {} as a header list split on `,(name:)`, and this value contains ",
+            adapter.agent, name
+        ) + "one: the harness would truncate it or send no request at all. \
+       Use `template = \"{tags_b64}\"` (the same JSON, base64url-encoded so it cannot \
+       be split) or a comma-free template such as \
+       `\"{project}/{feature}\"`",
+    )
 }
 
 /// The value the mapping line and the writer put at `delivery`:
@@ -577,6 +637,49 @@ supports = ["header", "query"]
         assert_eq!(rows[0].write_mode, MODE_NONE);
         assert_eq!(rows[0].supports, vec!["header"]);
         assert!(warnings[0].contains("hook path moves"), "{warnings:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_header_list_parser_splits_on_a_comma_before_a_name() {
+        // Gemini's parseCustomHeaders splits on `,(?=\s*[^,:]+:)`.
+        assert!(comma_splits(r#"{"a":1,"b":2}"#));
+        assert!(comma_splits("team:core,feature:billing"));
+        assert!(comma_splits("{x},other: 1"));
+        // A comma with nothing name-shaped after it survives untouched.
+        assert!(!comma_splits("a,b"));
+        assert!(!comma_splits("a, b, c"));
+        assert!(!comma_splits(r#"{"tags_b64":"eyJhIjoxfQ"}"#));
+        assert!(!comma_splits(""));
+    }
+
+    #[test]
+    fn the_gemini_row_refuses_a_value_its_parser_would_split() {
+        let dir = std::env::temp_dir().join(format!("aoe-adapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(ADAPTERS_FILENAME),
+            r#"
+[[adapter]]
+agent = "gemini"
+mechanism = "custom_headers_env"
+mapping_format = 'GEMINI_CLI_CUSTOM_HEADERS="{header}: ${env_var}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "env_only"
+native_env = "GEMINI_CLI_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+splits_on_commas = true
+aoe_hooks = true
+status = "verified"
+"#,
+        )
+        .unwrap();
+        let (rows, _) = load(Some(&dir));
+        let gemini = &rows[0];
+        assert!(gemini.splits_on_commas);
+        assert!(comma_refusal(gemini, "X-AoE-Tags", r#"{"a":1,"b":2}"#).is_some());
+        assert!(comma_refusal(gemini, "X-AoE-Tags", "S-cf11").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

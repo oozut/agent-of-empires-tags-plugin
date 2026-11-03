@@ -119,20 +119,104 @@ versions also read opencode.jsonc; not probed here.
 agent = "hermes"
 tools = ["hermes"]
 label = "hermes"
-mechanism = "unknown"
-config_paths = []
-config_format = "none"
-status = "needs_research"
-notes = "Provider plugin `extra_headers` looks promising; config path unknown."
+mechanism = "config_headers"
+config_paths = ["~/.hermes/config.yaml"]
+config_format = "text"
+mapping_format = 'providers."<id>".extra_headers."{header}" = "{value}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "verified"
+notes = """
+Hermes expands `${VAR}` and `${env:VAR}` recursively in config strings (`_expand_env_vars`,
+hermes_cli/config.py), so one line in the provider entry carries a session's value with nothing
+generated: `providers.<id>.extra_headers."X-AoE-Tags" = "${AOE_LLM_TAGS}"`. The file is YAML and
+aoe installs its own hooks into it, so this row is a reference only: `config_format = "text"` means
+`doctor` checks that the header name and the variable both appear, rather than parsing YAML it
+cannot rewrite. Verified with tools/probe-harness.sh hermes (docs/harness-evidence/hermes.json).
+"""
 
 [[adapter]]
 agent = "gemini"
 tools = ["gemini"]
 label = "gemini"
-mechanism = "unknown"
+mechanism = "custom_headers_env"
 config_paths = ["~/.gemini/settings.json"]
 config_format = "none"
-status = "needs_research"
+mapping_format = 'GEMINI_CLI_CUSTOM_HEADERS="{header}: ${env_var}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "env_only"
+native_env = "GEMINI_CLI_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+native_sep = ","
+splits_on_commas = true
+aoe_hooks = true
+status = "verified"
+notes = """
+gemini reads its whole header list from `GEMINI_CLI_CUSTOM_HEADERS` (`parseCustomHeaders`,
+@google/gemini-cli 0.66.0), so the value rides the launch environment and nothing is written.
+The parser splits on `,(?=name:)`, which means the default JSON payload — `{"a":1,"b":2}` — is
+addressed as two headers, and the request is then dropped with
+`TypeError: Headers.append: invalid header name` before anything leaves the process. This row is
+therefore marked `splits_on_commas`: `setup --apply` refuses such a target instead of writing one,
+and `{tags_b64}` carries the same JSON in a spelling no parser can split. A comma that is not
+followed by `name:` (`a,b`) is fine and is not refused. Verified with
+tools/probe-harness.sh gemini (docs/harness-evidence/gemini.json).
+"""
+
+[[adapter]]
+agent = "droid"
+tools = ["droid"]
+label = "droid"
+mechanism = "config_headers"
+config_paths = ["~/.factory/settings.json", "~/.factory/config.json"]
+config_format = "text"
+mapping_format = '<file> → customModels[].extraHeaders["{header}"] = "{value}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "documented"
+notes = """
+droid's settings carry `customModels[]` entries with an `extraHeaders` map, and user-level
+settings expand `${VAR}` inside it (`i1()`/`fd()` in the droid 1.2.0 binary; the expansion is
+withheld for project-level sources). So one static line in `~/.factory/settings.json` serves every
+session: `"X-AoE-Tags": "${AOE_HDR_X_AOE_TAGS}"`. `config_format = "text"` because `doctor` only
+checks that the header name and the variable both appear rather than rewriting a file aoe does not
+own. `aoe_hooks = true` is conservative: aoe installs its own hooks for this agent, so a
+per-session config directory would be refused anyway. `tools/probe-harness.sh droid` records
+`blocked-by-auth` (docs/harness-evidence/droid.json): droid validates a Factory account before it
+sends anything, so the parser and the expansion were read out of the binary and no request could be
+observed. That is why the status is `documented`, not `verified` — an account-bound probe can turn
+this row into `verified` without any code change.
+"""
+
+[[adapter]]
+agent = "qwen"
+tools = ["qwen"]
+label = "qwen"
+mechanism = "config_headers"
+config_paths = ["~/.qwen/settings.json"]
+config_format = "text"
+mapping_format = '<file> → modelProviders.<protocol>[].generationConfig.customHeaders["{header}"] = "{value}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "verified"
+notes = """
+qwen's settings carry `modelProviders` keyed by protocol, each entry a model config; a
+`generationConfig.customHeaders` map on the entry reaches the wire (a provider-level
+`customHeaders` is merged into it by `applyProviderCustomHeaders`). `${VAR}` is expanded from the
+environment, so one static line in `~/.qwen/settings.json` serves every session:
+`"X-Aoe-Tags": "${AOE_HDR_X_AOE_TAGS}"`. A `${session_id}` placeholder is dropped unless
+`outboundCorrelation.allowDynamicHeaderValues` is true, which is why the reference is the variable
+and not a runtime placeholder. `aoe hooks` installs qwen hooks, so `write_mode = "none"` — a
+per-session config directory would be refused anyway. Verified with tools/probe-harness.sh qwen
+(docs/harness-evidence/qwen.json).
+"""
 
 [[adapter]]
 agent = "vibe"

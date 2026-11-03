@@ -1,0 +1,190 @@
+{
+  "agent": "gemini",
+  "binary": "/var/lib/aoe/.local/bin/gemini",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T08:43:21Z",
+  "exit_code": 1,
+  "session_override": {
+    "GEMINI_CLI_CUSTOM_HEADERS": "X-Aoe-B64: eyJwcm9maWxlIjoibWFpbiIsInByb2plY3QiOiJwcm9qZWN0IiwicHJvamVjdF9wYXRoIjoiL3RtcC9hb2UtcHJvYmUtZ2VtaW5pLVM0S1p6cS9wcm9qZWN0Iiwic2Vzc2lvbiI6IlMtcHJvYiIsInNlc3Npb25faWQiOiJwcm9iZS1nZW1pbmktMTgzOTIxOSIsInRlYW0iOiJjb3JlIiwidG9vbCI6ImdlbWluaSJ9,X-Aoe-Session: probe-gemini-1839219"
+  },
+  "minted_values": [
+    "eyJwcm9maWxlIjoibWFpbiIsInByb2plY3QiOiJwcm9qZWN0IiwicHJvamVjdF9wYXRoIjoiL3RtcC9hb2UtcHJvYmUtZ2VtaW5pLVM0S1p6cS9wcm9qZWN0Iiwic2Vzc2lvbiI6IlMtcHJvYiIsInNlc3Npb25faWQiOiJwcm9iZS1nZW1pbmktMTgzOTIxOSIsInRlYW0iOiJjb3JlIiwidG9vbCI6ImdlbWluaSJ9",
+    "probe-gemini-1839219"
+  ],
+  "requests": 9,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "session": "S-prob",
+        "session_id": "probe-gemini-1839219",
+        "team": "core",
+        "tool": "gemini"
+      },
+      "name": "X-Aoe-B64",
+      "encoding": "base64url"
+    },
+    {
+      "where": "header",
+      "value": "probe-gemini-1839219",
+      "name": "X-Aoe-Session"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

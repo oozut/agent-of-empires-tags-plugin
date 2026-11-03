@@ -52,8 +52,9 @@ one object, `csv` sends the flat `team:core,feature:billing` list an older consu
 
 `template` overrides the format for one target and picks the slice itself: `{tags}` for the
 comma-joined list, `{tags_json}` for the tags alone as JSON, `{payload_json}` for the full
-object, or a single field such as `{feature}`, `{session}`, `{session_id}`, `{group}`,
-`{project}`, `{tool}`.
+object, `{tags_b64}` for that object base64url-encoded, or a single field such as `{feature}`,
+`{session}`, `{session_id}`, `{group}`, `{project}`, `{tool}`. `{tags_b64}` is what a harness that
+splits its header list on commas (gemini) needs: same bytes, no splittable comma.
 
 Some harnesses only expand `$NAME` in headers (pi, claude, codex): a `query`/`body` target
 there needs `literal` — the value written as-is — instead of an environment reference.
