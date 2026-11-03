@@ -7,9 +7,10 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
+use common::{settings_config, Run, Sandbox, CLI, DEFAULT_PAYLOAD, PLUGIN_ID, SESSION_JSON};
 
-const DEFAULT_VALUE: &str = "aoe,feature:,session:S-cf11";
+/// The default target carries one JSON object, not a flat string.
+const DEFAULT_VALUE: &str = DEFAULT_PAYLOAD;
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -54,7 +55,10 @@ fn a_broken_aoe_is_a_warning_and_exit_zero() {
     let run = sandbox.run_with(&["hook"], &[("AOE_BIN", "/nonexistent/aoe")]);
     run.assert_ok();
     assert!(run.stderr.contains("falling back"), "{}", run.stderr);
-    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={DEFAULT_VALUE}")]);
+    assert_eq!(
+        run.lines(),
+        vec![format!("AOE_LLM_TAGS={}", common::DEFAULT_PAYLOAD_NO_AOE)]
+    );
 }
 
 #[test]
@@ -253,10 +257,80 @@ fn an_unknown_adapter_names_the_known_ones() {
 
 #[test]
 fn an_unresearched_adapter_is_refused() {
+    // A row nobody has researched is refused, not guessed at. Every shipped row
+    // carries a real mechanism today, so the fixture is the table the CLI reads
+    // from the plugin root.
     let sandbox = Sandbox::new();
-    let run = sandbox.run(&["setup", "--print", "--adapter", "gemini"]);
+    let dir = sandbox.path("plugin");
+    sandbox.write_file(
+        &dir.join("adapters.toml"),
+        r#"[[adapter]]
+agent = "unresearched"
+tools = ["unresearched"]
+label = "unresearched"
+mechanism = "unknown"
+config_format = "none"
+status = "needs_research"
+"#,
+    );
+    let run = sandbox.run_installed(&["setup", "--print", "--adapter", "unresearched"]);
     run.assert_code(1);
     assert!(run.stderr.contains("needs_research"), "{}", run.stderr);
+    assert!(run.stderr.contains("unresearched"), "{}", run.stderr);
+}
+
+#[test]
+fn a_writer_backed_row_points_at_the_session_copy_instead_of_a_line() {
+    // vibe does not expand $NAME in its config, so the only place its value can
+    // live is the copy the hook writes. That is not a failure to map: `setup`
+    // says where the value comes from and prints nothing to paste.
+    let mut sandbox = Sandbox::new();
+    sandbox.session("cf11af87da7e4bf0", "vibe");
+    sandbox.write_file(
+        &sandbox.path("home/.vibe/config.toml"),
+        "[[providers]]\nname = \"gw\"\napi_base = \"http://h/v1\"\n\n[[models]]\nname = \"m\"\nprovider = \"gw\"\n",
+    );
+    let run = sandbox.run(&["setup", "--print", "--adapter", "vibe"]);
+    run.assert_ok();
+    assert!(run.stderr.contains("per-session copy"), "{}", run.stderr);
+    assert!(run.stderr.contains("overlay_dir"), "{}", run.stderr);
+    assert!(!run.stdout.contains("extra_headers"), "{}", run.stdout);
+}
+
+#[test]
+fn a_comma_splitting_harness_refuses_a_json_payload() {
+    // gemini reads GEMINI_CLI_CUSTOM_HEADERS as a header list split on `,(name:)`,
+    // so {"a":1,"b":2} is addressed as two headers and the request is dropped.
+    // The plan is refused rather than written as a value gemini would mangle.
+    let mut sandbox = Sandbox::new();
+    sandbox.session("cf11af87da7e4bf0", "gemini");
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\", \"feature:billing\"]\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"header\"\nname = \"X-AoE-Tags\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["setup", "--adapter", "gemini", "--apply", "--yes"]);
+    run.assert_code(1);
+    assert!(run.stderr.contains("split on `,(name:)`"), "{}", run.stderr);
+    assert!(run.stderr.contains("tags_b64"), "{}", run.stderr);
+
+    // The escape hatch is accepted: the same payload, spelled without a comma.
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\", \"feature:billing\"]\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"{tags_b64}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["setup", "--adapter", "gemini", "--apply", "--yes"]);
+    run.assert_ok();
+    // The launch carries the same payload as one un-splittable token.
+    let hook = sandbox.run(&["hook"]);
+    hook.assert_ok();
+    let line = hook
+        .lines()
+        .into_iter()
+        .find(|line| line.starts_with("GEMINI_CLI_CUSTOM_HEADERS="))
+        .expect("gemini's own variable is exported");
+    let value = line.split_once(": ").expect("header: value").1;
+    assert!(!value.contains(','), "{value}");
+    assert!(!value.contains(':'), "{value}");
 }
 
 #[test]
@@ -330,4 +404,166 @@ fn hook_cli_is_the_installed_binary() {
     assert_eq!(Path::new(&argv[1]).file_name().unwrap(), "aoe-llm-tags");
     assert!(Path::new(&argv[1]).is_file(), "{argv:?}");
     let _ = (SESSION_JSON, CLI);
+}
+
+#[test]
+fn static_tags_come_first_and_rules_add_to_them() {
+    // The tag set is listed once; rules only extend it.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\", \"env:prod\"]\nrules = [{ tag = \"feature:build\", match_kind = \"manual\" }]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nname = \"X-AoE-Tags\"\ntemplate = \"{tags}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(
+        run.lines(),
+        vec!["AOE_HDR_X_AOE_TAGS=team:core,env:prod,feature:build"]
+    );
+}
+
+#[test]
+fn a_query_target_carries_the_tag_set_as_a_parameter() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\"]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"query\"\nname = \"tags\"\ntemplate = \"{tags}\"\nliteral = \"aoe,team:core\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    // A query target still mints one variable, under a query-specific prefix.
+    assert_eq!(run.lines(), vec!["AOE_QRY_TAGS=team:core"]);
+}
+
+#[test]
+fn a_query_target_is_refused_for_a_harness_without_one() {
+    // pi appends the endpoint path to `baseUrl`, so `?tags=x` would land inside
+    // the path. The plan is refused rather than written.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"query\"\nname = \"tags\"\ntemplate = \"{tags}\"\nliteral = \"aoe\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["setup", "--adapter", "pi", "--apply", "--yes"]);
+    run.assert_code(1);
+    assert!(
+        run.stderr.contains("cannot deliver a query value"),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("refusing to write"), "{}", run.stderr);
+    assert!(
+        !sandbox.root.join("home/.pi/agent/models.json").exists(),
+        "nothing was written"
+    );
+}
+
+#[test]
+fn a_body_target_goes_into_each_model_sampling_params() {
+    // pi reads samplingParams per model; a provider-level one is dropped.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nkind = \"body\"\nname = \"metadata\"\ntemplate = \"{tags}\"\nliteral = \"aoe,team:core\"\n",
+        "",
+    ));
+    sandbox.write_pi_models(
+        r#"{"providers":{"litellm":{"baseUrl":"http://h/v1","models":[{"id":"m1"},{"id":"m2"}]}}}"#,
+    );
+    let run = sandbox.run(&["setup", "--adapter", "pi", "--apply", "--yes"]);
+    run.assert_ok();
+    // The session's own copy carries the value…
+    let generated = run
+        .lines()
+        .first()
+        .and_then(|line| line.strip_prefix("wrote "))
+        .map(Path::new)
+        .expect("apply names the file it wrote");
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(generated).expect("generated config"))
+            .expect("valid JSON");
+    for model in written["providers"]["litellm"]["models"]
+        .as_array()
+        .unwrap()
+    {
+        assert_eq!(model["samplingParams"]["metadata"], "aoe,team:core");
+    }
+    assert!(written["providers"]["litellm"]
+        .get("samplingParams")
+        .is_none());
+    // …and the user's config is untouched.
+    assert!(sandbox.read_pi_models()["providers"]["litellm"]
+        .get("headers")
+        .is_none());
+    assert!(
+        sandbox.read_pi_models()["providers"]["litellm"]["models"][0]
+            .get("samplingParams")
+            .is_none()
+    );
+}
+
+#[test]
+fn the_m0_headers_key_is_still_read_as_header_targets() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "headers = [{ header = \"X-AoE-Tags\", template = \"a\", env_var = \"AOE_LLM_TAGS\" }]",
+        "",
+    ));
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(run.lines(), vec!["AOE_LLM_TAGS=a"]);
+}
+
+#[test]
+fn a_feature_tag_is_a_key_value_entry_at_every_level() {
+    // `feature_tag` is one tag, not a second taxonomy: the global config, a
+    // profile override and a project form all hold the same `key:value` grammar,
+    // and all of them land as an ordinary payload field.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config("feature_tag = 'billing'", ""));
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(
+        run.lines()[0].contains(r#""feature":"billing""#),
+        "{}",
+        run.stdout
+    );
+
+    // A profile override replaces it, and may use the standard spelling.
+    sandbox.write_profile_config(
+        "main",
+        &format!("[plugins.\"{PLUGIN_ID}\".settings]\nfeature_tag = \"feature:checkout\"\n"),
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(
+        run.lines()[0].contains(r#""feature":"checkout""#),
+        "{}",
+        run.stdout
+    );
+
+    // The same pair written with its key and its value apart is the same entry.
+    sandbox.write_profile_config(
+        "main",
+        &format!(
+            "[plugins.\"{PLUGIN_ID}\".settings]\nfeature_tag = {{ key = \"feature\", value = \"reconcile\" }}\n"
+        ),
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(
+        run.lines()[0].contains(r#""feature":"reconcile""#),
+        "{}",
+        run.stdout
+    );
+
+    // A pair under another key is that field, not a second `feature`.
+    sandbox.write_profile_config(
+        "main",
+        &format!("[plugins.\"{PLUGIN_ID}\".settings]\nfeature_tag = \"epic:checkout\"\n"),
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    let payload = &run.lines()[0];
+    assert!(payload.contains(r#""epic":"checkout""#), "{payload}");
+    assert!(!payload.contains(r#""feature":"#), "{payload}");
 }

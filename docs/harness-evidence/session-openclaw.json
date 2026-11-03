@@ -1,0 +1,14 @@
+{
+  "agent": "openclaw",
+  "binary": "/var/lib/aoe/.local/bin/openclaw",
+  "cli": "target/debug/aoe-llm-tags",
+  "session_id": null,
+  "overlay": null,
+  "overlay_entries": [],
+  "requests": 0,
+  "deliveries": [],
+  "delivered": [],
+  "env_payloads": {},
+  "outcome": "unsupported-by-aoe",
+  "aoe_message": "`aoe agents` does not list this harness, so aoe cannot launch it and there is no session to probe. The delivery proof is docs/harness-evidence/openclaw.json (a real process)."
+}

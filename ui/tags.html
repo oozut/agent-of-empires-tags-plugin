@@ -1,0 +1,383 @@
+<!doctype html>
+<!--
+  LLM Tags — per-session editor.
+
+  This page is the only UI that writes anything, and everything it writes lands in
+  `<app dir>/sessions/<session id>/overrides.toml`. The global settings are read by
+  the worker and never rewritten here, so two sessions can carry different tags
+  without a rule or a config edit between them.
+
+  It is served from the manifest's `entry`, so it is one self-contained file: a
+  sandboxed document with no network access, whose only data path is the bridge.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LLM Tags</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --fg: #e6e6e6;
+        --muted: #9aa0a6;
+        --line: #2a2e37;
+        --card: #161a21;
+        --accent: #6ea8fe;
+        --danger: #f28b82;
+        color-scheme: dark light;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 20px;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 { font-size: 17px; margin: 0 0 2px; }
+      h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 22px 0 8px; }
+      p.lead { margin: 0 0 16px; color: var(--muted); max-width: 70ch; }
+      code, mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+      .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      .grow { flex: 1 1 160px; min-width: 0; }
+      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+      input, textarea, select, button {
+        font: inherit; color: inherit; background: #0b0e12; border: 1px solid var(--line);
+        border-radius: 8px; padding: 7px 9px; min-width: 0;
+      }
+      textarea { width: 100%; resize: vertical; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+      button { cursor: pointer; background: #1b212a; }
+      button:hover { border-color: var(--accent); }
+      button.primary { background: var(--accent); color: #06101f; border-color: transparent; font-weight: 600; }
+      button.quiet { background: transparent; color: var(--muted); }
+      button.danger { color: var(--danger); }
+      button:disabled { opacity: .45; cursor: default; }
+      table { width: 100%; border-collapse: collapse; }
+      td { padding: 5px 8px 5px 0; vertical-align: top; border-top: 1px solid var(--line); }
+      tr:first-child td { border-top: 0; }
+      td.key { width: 30%; }
+      td.act { width: 1%; white-space: nowrap; text-align: right; }
+      .pill { font-size: 11px; border: 1px solid var(--line); border-radius: 999px; padding: 1px 7px; color: var(--muted); }
+      .pill.session { color: var(--accent); border-color: var(--accent); }
+      .note { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+      .warn { color: var(--danger); }
+      .token { word-break: break-all; color: var(--muted); }
+      #banner { display: none; margin-bottom: 14px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); }
+      #banner.on { display: block; }
+      #banner.err { border-color: var(--danger); color: var(--danger); }
+    </style>
+  </head>
+  <body>
+    <h1>LLM Tags</h1>
+    <p class="lead">
+      Tags are resolved once and delivered to every enabled target. Editing here changes
+      <strong>one session</strong>: the entry is written to that session's own
+      <span class="mono">overrides.toml</span> and the global settings are left alone.
+    </p>
+
+    <div id="banner"></div>
+
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <label for="session">Session</label>
+          <select id="session" class="grow" style="width: 100%"></select>
+        </div>
+        <div class="grow">
+          <label>&nbsp;</label>
+          <span id="sessionsub" class="note"></span>
+        </div>
+      </div>
+    </div>
+
+    <h2>Tags</h2>
+    <div class="card">
+      <table id="tags"><tbody></tbody></table>
+      <p class="note" id="tagsub"></p>
+      <div class="row" style="margin-top: 12px">
+        <div class="grow">
+          <label for="key">Key</label>
+          <input id="key" placeholder="team" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="grow">
+          <label for="value">Value</label>
+          <input id="value" placeholder="platform" autocomplete="off" spellcheck="false" />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button id="add" class="primary">Set for this session</button>
+        </div>
+      </div>
+      <p class="note">
+        A value is sent as a string. Leave it empty for a marker (<span class="mono">true</span>).
+        Use the CLI for a typed value: <span class="mono">aoe-llm-tags tag --set 'cost:=1.5'</span>.
+      </p>
+    </div>
+
+    <h2>Token</h2>
+    <div class="card">
+      <label for="token">Literal value for this session</label>
+      <textarea id="token" rows="3" placeholder='{"team":"platform"}' spellcheck="false"></textarea>
+      <p class="note">
+        Replaces what a target with no template renders — the JSON payload or the csv list,
+        depending on the target. A target with its own template (<span class="mono">{session_id}</span>)
+        is unaffected.
+      </p>
+      <div class="row" style="margin-top: 10px">
+        <button id="savetoken" class="primary">Save token</button>
+        <button id="cleartoken">Clear token</button>
+        <button id="reset" class="quiet danger">Reset every edit</button>
+      </div>
+    </div>
+
+    <h2>What this session sends</h2>
+    <div class="card">
+      <table id="targets"><tbody></tbody></table>
+      <p class="note" id="targetsub"></p>
+    </div>
+
+    <script>
+      "use strict";
+      const PLUGIN = "dev.oozut.llm-tags";
+      const PAGE = "tags";
+
+      // ---- bridge -----------------------------------------------------------
+      let next = 0;
+      const pending = new Map();
+      const handlers = {};
+      const { port1, port2 } = new MessageChannel();
+
+      port1.onmessage = ({ data }) => {
+        if (!data) return;
+        if (data.event) return handlers[data.event] && handlers[data.event](data.data);
+        const settle = pending.get(data.id);
+        if (!settle) return;
+        pending.delete(data.id);
+        settle(data);
+      };
+
+      // One shape for every request: a message object and a transport. The two
+      // call sites below differ only in which end of the channel they post on,
+      // so neither can pass the transport where the params belong.
+      function request(message, send) {
+        // The transport is a parameter, so a call site that forgets it used to
+        // fail as "send is not a function" deep inside the promise. Say it here.
+        if (typeof send !== "function") throw new TypeError("a request needs a transport");
+        const id = ++next;
+        return new Promise((resolve, reject) => {
+          pending.set(id, (reply) =>
+            reply.error ? reject(new Error(reply.error.message || reply.error.code)) : resolve(reply.result),
+          );
+          send({ aoeBridge: 1, id, ...message });
+        });
+      }
+      const call = (method, params) =>
+        request({ method, params }, (m) => port1.postMessage(m));
+
+      handlers.theme = (data) => {
+        for (const [name, value] of Object.entries(data.cssVars || {})) {
+          document.documentElement.style.setProperty(name, String(value));
+        }
+      };
+      handlers.selection = (data) => {
+        if (data.sessionId) select(data.sessionId);
+      };
+      handlers.context = (data) => {
+        context = data || context;
+        render();
+      };
+
+      // ---- state ------------------------------------------------------------
+      let sessions = [];
+      let selected = null;
+      let context = { readOnly: false, cityhall: false };
+
+      function banner(text, isError) {
+        const el = document.getElementById("banner");
+        el.textContent = text || "";
+        el.className = text ? (isError ? "on err" : "on") : "";
+      }
+
+      function current() {
+        return sessions.find((s) => s.id === selected) || sessions[0] || null;
+      }
+
+      function select(id) {
+        if (!sessions.some((s) => s.id === id)) return;
+        selected = id;
+        document.getElementById("session").value = id;
+        render();
+      }
+
+      function formatValue(tag) {
+        if (tag.value === true) return "true";
+        if (tag.value === null) return "null";
+        if (typeof tag.value === "string") return tag.value;
+        return JSON.stringify(tag.value);
+      }
+
+      function render() {
+        const session = current();
+        const selectEl = document.getElementById("session");
+        selectEl.innerHTML = "";
+        for (const item of sessions) {
+          const option = document.createElement("option");
+          option.value = item.id;
+          option.textContent = `${item.title || item.id} — ${item.tool || "?"}`;
+          selectEl.appendChild(option);
+        }
+        if (session) selectEl.value = session.id;
+
+        const body = document.querySelector("#tags tbody");
+        body.innerHTML = "";
+        const targetsBody = document.querySelector("#targets tbody");
+        targetsBody.innerHTML = "";
+        document.getElementById("tagsub").textContent = "";
+        document.getElementById("targetsub").textContent = "";
+        document.getElementById("sessionsub").textContent = "";
+
+        document.getElementById("add").disabled = !session || context.readOnly || context.cityhall;
+        document.getElementById("savetoken").disabled = !session || context.readOnly || context.cityhall;
+        document.getElementById("cleartoken").disabled = !session || context.readOnly || context.cityhall;
+        document.getElementById("reset").disabled = !session || context.readOnly || context.cityhall;
+
+        if (!session) {
+          banner(sessions.length ? "Pick a session." : "The worker has not pushed any state yet.");
+          return;
+        }
+        if (context.readOnly || context.cityhall) {
+          banner(
+            context.cityhall
+              ? "CityHall mode is on: this page reads, it does not write."
+              : "The dashboard is in read-only mode: this page reads, it does not write.",
+          );
+        } else {
+          banner("");
+        }
+
+        document.getElementById("sessionsub").textContent = session.path || "";
+        document.getElementById("sessionsub").className = "note mono";
+
+        for (const tag of session.tags || []) {
+          const tr = document.createElement("tr");
+          const key = document.createElement("td");
+          key.className = "key mono";
+          key.textContent = tag.key;
+          const value = document.createElement("td");
+          value.className = "mono";
+          value.textContent = formatValue(tag);
+          const origin = document.createElement("td");
+          origin.innerHTML = "";
+          const pill = document.createElement("span");
+          pill.className = "pill" + (tag.origin === "session" ? " session" : "");
+          pill.textContent = tag.origin === "session" ? "this session" : "settings";
+          origin.appendChild(pill);
+          const act = document.createElement("td");
+          act.className = "act";
+          const drop = document.createElement("button");
+          drop.className = "quiet danger";
+          drop.textContent = "Drop";
+          drop.title =
+            tag.origin === "session"
+              ? "Remove this session's entry"
+              : "Hide this tag for this session (the settings keep it)";
+          drop.disabled = context.readOnly || context.cityhall;
+          drop.onclick = () => edit("tag.remove", { key: tag.key });
+          act.appendChild(drop);
+          tr.append(key, value, origin, act);
+          body.appendChild(tr);
+        }
+        if (!(session.tags || []).length) {
+          const tr = document.createElement("tr");
+          const td = document.createElement("td");
+          td.colSpan = 4;
+          td.className = "note";
+          td.textContent = "No tags: the settings have none and this session adds none.";
+          tr.appendChild(td);
+          body.appendChild(tr);
+        }
+        const parts = [];
+        if ((session.unset || []).length) parts.push(`dropped here: ${session.unset.join(", ")}`);
+        if (session.token) parts.push("a token override is in place");
+        document.getElementById("tagsub").textContent = parts.join(" · ");
+
+        for (const target of session.targets || []) {
+          const tr = document.createElement("tr");
+          const name = document.createElement("td");
+          name.className = "key mono";
+          name.textContent = target.name;
+          const value = document.createElement("td");
+          value.className = "token mono";
+          value.textContent = target.value;
+          const env = document.createElement("td");
+          env.className = "act mono";
+          env.textContent = target.env_var || "";
+          tr.append(name, value, env);
+          targetsBody.appendChild(tr);
+        }
+        document.getElementById("targetsub").textContent = (session.targets || []).length
+          ? "Values are what the hook exports for this session, already merged with the edits above."
+          : "No target is enabled for this session.";
+
+        document.getElementById("token").value = session.token || "";
+      }
+
+      // ---- writes -----------------------------------------------------------
+      async function edit(method, params) {
+        const session = current();
+        if (!session) return;
+        try {
+          // The host forwards `method` verbatim to the worker and merges in the
+          // authoritative session id, so no prefix is added here.
+          await call("action", { method, params: { ...params, session_id: session.id }, sessionId: session.id });
+          banner("Saved. The pane and the next launch pick it up.", false);
+          // The effect arrives in the plugin's ui-state once the worker re-pushes.
+          setTimeout(refresh, 120);
+          setTimeout(refresh, 600);
+        } catch (err) {
+          banner(String(err.message || err), true);
+        }
+      }
+
+      async function refresh() {
+        try {
+          const state = await call("plugins.uiState");
+          const entries = (state && (state.entries || state)) || [];
+          const list = Array.isArray(entries) ? entries : [];
+          const ours = list.find((e) => e.plugin_id === PLUGIN && e.slot === "page" && e.id === PAGE);
+          const payload = (ours && ours.payload) || {};
+          sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+          if (!sessions.some((s) => s.id === selected)) selected = sessions[0] ? sessions[0].id : null;
+          render();
+        } catch (err) {
+          banner(`Cannot read the plugin state: ${err.message || err}`, true);
+        }
+      }
+
+      document.getElementById("session").onchange = (event) => select(event.target.value);
+      document.getElementById("add").onclick = () => {
+        const key = document.getElementById("key").value.trim();
+        const value = document.getElementById("value").value;
+        if (!key) return banner("A tag needs a key.", true);
+        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(key)) return banner("A key starts with a letter or digit.", true);
+        edit("tag.set", { key, value });
+        document.getElementById("key").value = "";
+        document.getElementById("value").value = "";
+      };
+      document.getElementById("savetoken").onclick = () =>
+        edit("token.set", { token: document.getElementById("token").value });
+      document.getElementById("cleartoken").onclick = () => edit("token.clear", {});
+      document.getElementById("reset").onclick = () => {
+        if (!confirm("Forget every edit this session has?")) return;
+        edit("tags.reset", {});
+      };
+
+      request({ method: "ready", params: { nonce: location.hash.slice(1) } }, (m) =>
+        parent.postMessage(m, "*", [port2]),
+      )
+        .then(() => refresh())
+        .catch((err) => banner(`The bridge did not open: ${err.message || err}`, true));
+    </script>
+  </body>
+</html>

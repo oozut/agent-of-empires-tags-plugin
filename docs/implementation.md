@@ -21,10 +21,12 @@ of it.
 | Plugin id | `dev.oozut.llm-tags` | Namespaces config (`[plugins."<id>".settings]`), commands (`plugin.<id>.<command>`), worker logs. Changing it later orphans user settings, so pick before the first install. |
 | Install path | `<app_dir>/plugins/dev.oozut.llm-tags/` (here: `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`) | The hook line hardcodes it. The path survives upgrades; the contents are replaced. |
 | CLI entrypoint | `bin/aoe-llm-tags` (mode 0755, static Rust binary) | Must be runnable by path from a hook, with no interpreter, venv or `PATH` in the hook shell. |
-| Wire unit | A **header set**: `{header, template, env_var, enabled}` list in settings. Shipped default: `X-AoE-Tags` with template `aoe,feature:{feature},session:{session}`, `env_var = "AOE_LLM_TAGS"` | One header is enough for cost attribution; discrete and signed headers exist for consumers that validate or route. The set is data, so adding one costs a settings row, not a code change. |
+| Wire unit | One **JSON payload** per target: `{kind, name, format, template, env_var, enabled}` list in settings. Tags are `key:value` / `key:=json` / bare `key`; the payload merges them with the session fields. Shipped default: `X-AoE-Tags`, `format = "json"`, `env_var = "AOE_LLM_TAGS"` | A consumer reads `tags["team"]` instead of splitting a string, and a new dimension never changes the shape it parses. `format = "csv"` and `template` stay for a consumer that wants the flat list or one field. The set is data, so adding a channel costs a settings row, not a code change. |
 | Env var naming | Default `AOE_HDR_` + upper snake of the header name (`X-AoE-Session` → `AOE_HDR_X_AOE_SESSION`); the shipped default header pins `AOE_LLM_TAGS` | The hook prints one line per enabled header, so the name must be derivable by both the CLI and `setup`. Pinning keeps the common case short. |
-| Tag model | Accumulate **all** matching rules, cap 5 values, grammar `[a-z0-9._:-]`, `session_tagging = short_id` → `S-<first 4 chars of the session id>`, never the title | Recorded decision. `S-cf11` is derivable from `sessions.list` by anyone auditing a request log. |
+| Tag model | Accumulate **all** matching rules; a tag is a key and a typed value (`team:core`, `cost:=1.5`, `platform` = true), keys start with a letter or digit and stop at 96 characters; `session_tagging = short_id` → `S-<first 4 chars of the session id>`, never the title | Recorded decision. `S-cf11` is derivable from `sessions.list` by anyone auditing a request log. A tag that names a session field cannot shadow it: the session wins and the tag is dropped with a warning. |
 | Resolution | Session row from the session manager first, hook environment as fallback | Superset of the hook env, and the only source of `group`/`title` for structured host sessions. |
+| Where a target writes | `header`, `query` or `body`, decided per target; a kind the harness cannot carry is refused by `setup --apply` and failed by `doctor` | "Supported" is a per-harness fact (pi has no query channel, codex and opencode have no body knob), so the plugin must never write a value the harness will silently drop. |
+| Session scope | The user's config is never edited: the hook exports an env value, or points the harness at a generated copy inside `<app dir>/sessions/<session id>/<agent>/`, pruned with the session | Concurrent sessions must not overwrite each other's tags, and a per-session value has no place in a file everyone shares. A harness whose config aoe itself writes hooks into cannot be redirected at all (`aoe_hooks`). |
 | Timing | Per launch (host) / per container start (sandbox). No live mode | Harnesses cache command-valued headers for the process lifetime, so a command buys nothing. |
 | Downstream system | None assumed, none required | The header is the deliverable. A deployment picks the consumer; see `header-contract.md` for the consumer classes and `reference-deployment.md` for this host's. |
 
@@ -87,6 +89,8 @@ link the library directly.
 | `value [header]` | same | one header's value alone (default: the shipped tag header) | harnesses that take a command as the header value (`!aoe-llm-tags value X-AoE-Session`) |
 | `doctor` | both hook keys, plugin path, every enabled header's mapping, `aoe` binary | human report, exit 1 on any failure | the user, after installing |
 | `setup --print` | adapter row + install path + enabled headers | the exact hook lines + one mapping line per header | the user, before pasting |
+| `classify` | every substrate: the harness config, the user's config, this session's copy, leftovers | one verdict per substrate (`wired`, `detected-not-wired`, `sandbox-stale`, `unknown`, `unsupported`) | the user and the pane, before trusting a mapping |
+| `tag` | the settings, plus this session's `overrides.toml` | that session's `overrides.toml` only (`--set` / `--unset` / `--token` / `--reset`) | the **LLM Tags** page and a shell; the settings are never rewritten |
 | `verify` | the configured consumer's request/usage records | pass/fail | roadmap — consumer read-back is deferred (`plan/roadmap.md` §1) |
 
 Flags for `hook`/`value` (all optional; every one is a *fallback*, the row wins):
@@ -112,7 +116,8 @@ Settings read: `[plugins."dev.oozut.llm-tags".settings]` from the effective conf
 global `<app_dir>/config.toml` with the profile's sparse override file
 (`<app_dir>/profiles/<profile>/config.toml`, top level = the override tree) merged onto it the way
 aoe merges: object keys recurse, **arrays replace** (`merge_configs_generic`). A missing section
-means no rules, which is not an error; an explicit `headers = []` means no headers at all.
+means no rules, which is not an error; an explicit `targets = []` means the tags are resolved but
+delivered nowhere. `headers` is still accepted as the M0 name for a header target.
 `src/settings.rs` reproduces that merge, so the hook and the settings UI agree about a
 value; a file that cannot be parsed is a warning and is ignored (profile → global → defaults).
 
@@ -230,15 +235,21 @@ session_tagging = "short_id"
 session_signature = "none"          # "hmac" appends .<16 hex> to {session_id}; needs a key
 signing_key = ""                    # operator-supplied; the same value at the consumer
 
-# default row, spelled out; omitting the whole [[headers]] block uses the code default
-[[plugins."dev.oozut.llm-tags".settings.headers]]
-header = "X-AoE-Tags"
-env_var = "AOE_LLM_TAGS"
-enabled = true
-template = "aoe,feature:{feature},session:{session}"
+# the tag set, added once; each tag is `key:value`, `key:=json`, or a bare marker
+tags = ["team:core", "feature:billing", "cost:=1.5"]
 
-[[plugins."dev.oozut.llm-tags".settings.headers]]
-header = "X-AoE-Session"   # opt-in: for consumers that validate sessions, not ones that bill
+# default rows, spelled out; omitting the whole [[targets]] block uses the code default
+# (one JSON-payload header X-AoE-Tags on AOE_LLM_TAGS). The older `[[headers]]` key with
+# `header = …` still parses, so an existing settings block keeps working.
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"            # header | query | body
+name = "X-AoE-Tags"
+# format = "json"          # default: the whole payload object; "csv" sends team:core,…
+# template = "{tags}"      # overrides the format: {tags}, {tags_json}, {payload_json}, {feature}…
+
+[[plugins."dev.oozut.llm-tags".settings.targets]]
+kind = "header"
+name = "X-AoE-Session"     # opt-in: for consumers that validate sessions, not ones that bill
 enabled = false
 template = "{session_id}"
 
@@ -355,7 +366,7 @@ JSON
 # inside an aoe session (terminal view), with the proxy env vars unset:
 env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy \
   PI_CODING_AGENT_DIR=/tmp/sink-agent pi --print --model sink/sink "ping"
-grep -o '"X-AoE-Tags": "[^"]*"' /tmp/tag-sink.jsonl                     # aoe,feature:...,session:S-xxxx
+grep -o '"X-AoE-Tags": "[^"]*"' /tmp/tag-sink.jsonl                     # {"session":"S-xxxx","team":"core",...}
 ```
 
 2. **Consumer leg** (the real path): the same harness through whatever wrapper/launch path the
@@ -388,14 +399,23 @@ hook, and that is the one thing worth a shared unit test in both directions.
 
 ## Step 8 — M2 discovery
 
-Per adapter row: resolve config path (setting → harness env var → aoe `agent_config_dir` →
-default), classify per substrate (`wired`, `detected-not-wired`, `sandbox-stale`, `unknown`,
-`unsupported`), cache with the file hash, show a diff, apply only on `--yes`.
+Per adapter row: resolve the source config (setting → harness env var → `config_paths`),
+classify per substrate (`wired`, `detected-not-wired`, `sandbox-stale`, `unknown`,
+`unsupported`), and report the session artifact the row would build.
 
-Edit rules, all mandatory: backup beside the file, refuse symlinks and non-regular files, write
-with the marker `"// aoe-llm-tags: managed"` so `undo` is exact, atomic replace (temp file in
-the same directory + rename), re-read and re-parse after writing, and never write a config the
-user has not seen in the diff.
+**Nothing is written into the user's config.** A row's `write_mode` decides how a session gets
+its own copy (`docs/harness-adapters.md` §Per-session config):
+
+- `env_only` — the hook exports the harness's own variable (`native_env`); no file at all.
+- `overlay_file` / `overlay_dir` — the hook builds
+  `<app dir>/sessions/<session id>/<agent>/…` from the user's file, bakes this session's values
+  in, and exports `overlay_env` pointing at it. `overlay_dir` link the user's other entries
+  (auth, session stores) next to our file so writes through them still reach the real ones.
+
+Edit rules for the session copy, all mandatory: build it in this plugin's app dir, write via a
+temp file in the same directory plus rename, re-read and re-parse after writing, export no
+override when nothing could be placed, and prune directories whose session is gone. Undo is
+`rm -rf` of the copy — there is no backup to restore because the original is never modified.
 
 ## Step 9 — M3 page (roadmap-gated)
 
@@ -462,9 +482,9 @@ These are the two that bite during M0 and are about the build, not the design:
 1. ~~Which consumer system on the reference path counts as "recorded"~~ — **resolved 2026-10-29:
    deferred.** The plugin does not read a consumer back, so no vendor's read API is a dependency;
    `verify`, `consumer.*` and M3 wait on `plan/roadmap.md` §1.
-2. Whether `setup <agent>` stays print-only in M2 or applies the mapping on `--yes` with a
-   backup. The edit rules above are written for the "applies" case, so deciding "print-only" is
-   a subtraction, not a redesign.
+2. ~~Whether `setup <agent>` stays print-only in M2 or applies the mapping on `--yes` with a
+   backup.~~ **resolved 2026-11-02:** neither — `setup --apply` builds the session's own copy and
+   the user's config is never edited (see §Step 8).
 3. Whether the default template should carry fewer or more fields (`tool:` today looks free, but
    every consumer that keys on the string makes a later change a breaking one). Cheap to decide
    before the first real integration, expensive after.

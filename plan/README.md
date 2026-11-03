@@ -112,7 +112,7 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 |---|---|---|
 | M0 | 11 of 13 | Header minted at launch, delivered by both hook keys, visible at a local sink, `doctor` that names any broken piece |
 | M1 | 4 of 8 | Header set and rules editable in aoe, badge showing the resolved value, worker + capabilities declared once |
-| M2 | 4 of 8 | Path detection, per-substrate verdicts, diff → apply → `undo` (`verify` is roadmap-gated) |
+| M2 | 4 of 8 | Path detection, per-substrate verdicts, per-session config build → `undo` (`verify` is roadmap-gated) |
 | M3 | 3 of 6 | Consumer adapter, page board, honest degradation — **roadmap-gated**, cannot start before a consumer is named |
 | M4 | 2 of 6 | Honest row statuses for every target, install from the published source |
 
@@ -132,9 +132,9 @@ a slip in P1/P2 never leaves a half-built layer that blocks the next milestone.
 
 | Milestone | State | Blocking |
 |---|---|---|
-| M0 | in progress — done: T01, T02, T03, T04, T05, T06, T07, T08 (sink leg), T10, T11, T12, T13 (Rust port, installable runtime, CI matrix); open: acceptance 2 (sandbox); T09 deferred to `roadmap.md` | sandbox runtime access (deployment); `release-binary` verifiable only from a GitHub source, not a local checkout |
-| M1 | not started | M0 |
-| M2 | not started | M1 |
+| M0 | **done** — P0 complete (T01–T03, T05–T08 incl. sink + sandbox legs, T10, T11, T13); P1 T04/T12 done; T09 (consumer leg) deferred to `roadmap.md` (decision #4) | `release-binary` verifiable only from a GitHub source, not a local checkout |
+| M1 | done — manifest, settings, resolver match kinds + priority, worker protocol, bidirectional host RPC, row-badge + pane publishing, per-project feature_tag; lifecycle cache via re-publish | M0 |
+| M2 | in progress — verdicts, per-session overlay for `pi`/`opencode`, reference channel for `claude`/`codex` (`aoe_hooks`), `undo`; four harnesses verified by portable probe *and* a real aoe session (`docs/harness-evidence/`); pane actions and `verify` open | M1 |
 | M3 | not started — roadmap-gated (`roadmap.md` §1) | M2 + a named consumer with a read path |
 | M4 | not started | M0 (P0 rows and publish path can start earlier) |
 

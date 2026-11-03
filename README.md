@@ -1,16 +1,39 @@
 # Agent of Empires LLM Tags
 
-An Agent of Empires plugin that makes each agent session attach identifying headers to every LLM
-request it sends, so any system on the request path — a gateway, an egress proxy, a log pipeline,
-a session-control plane — can attribute, route, or validate that request.
+An Agent of Empires plugin that makes each agent session attach identifying headers — or query
+parameters, or request-body fields — to every LLM request it sends, so any system on the request
+path — a gateway, an egress proxy, a log pipeline, a session-control plane — can attribute,
+route, or validate that request.
 
-Status: M0 nearly done — Rust port landed (M0-T13, CI green on `main`). The package installs,
-`aoe plugin update` builds and installs both binaries, `hook|value` resolves a session to one
-`NAME=value` per enabled header (T02), `setup --print` emits the exact hook and mapping lines (T05),
-`doctor` names any broken piece (T11), two independent headers reach a request (T10), and the sink
-proof plus `docs/install.md` are done (T08, T12) — 76 tests green. Open: the sandbox acceptance leg
-(host has no reachable container runtime for `pi-proxy`). Reading a consumer back is deferred, not
-missing: see `plan/roadmap.md`. See `plan/README.md`.
+Status: M0 and M1 done, M2 delivering per session. M0's proof (two independent headers reaching a
+request, including a sandboxed leg via podman) still holds; M2 changed *what* travels and *where*.
+
+Editing a tag is a **per-session** operation, in the UI and on the command line: the session pane
+and the **LLM Tags** page list every tag with where it came from, let you add, replace or drop one,
+and let you write a literal token for that session — and every write lands in
+`<app dir>/sessions/<session id>/overrides.toml`. The global settings are read by the plugin and
+never rewritten, so two sessions can carry different tags at the same time with no rule and no
+config edit between them. The same edit from a shell:
+
+```sh
+aoe-llm-tags tag --set team:platform        # this session only (AOE_SESSION_ID)
+aoe-llm-tags tag --session <id> --unset cost --token '{"hand":true}'
+aoe-llm-tags tag --reset                    # back to the settings
+```
+
+What travels is a **JSON object, not a string**: `tags` is a set of `key:value` (and `key:=json`)
+entries, merged with the session's own fields, so a consumer reads `tags["team"]` instead of
+splitting a comma list, and a new dimension never changes the shape it already parses.
+`format = "csv"` and `template` remain for a consumer that wants the flat list or one field.
+
+`setup --apply` no longer edits any user config: a value rides the launch environment, or the
+hook builds this session's own copy of the harness's config under the plugin's app dir and exports
+the variable that points the harness at it. Verified end to end on this host for `pi` (header
+**and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
+(env-only header) and `codex` (header through a reference in its own config) — evidence in
+`docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
+session per harness, `tools/probe-session.sh <agent>`. 149 tests green.
+The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
 
@@ -25,13 +48,15 @@ The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
 lines reference and which survives upgrades.
 
 Setting it up on a session is three steps: `setup --print` shows the two `[host_hooks]` lines and
-the harness mapping line, `doctor` checks what is actually wired, and `hook` is what aoe runs per
-launch.
+the mapping line per target, `doctor` says how each installed harness can be delivered
+(`wired` / `overlay` / `unsupported`), and `hook` is what aoe runs per launch — it mints the
+values, builds this session's config copy, and exports the variable that points the harness at
+it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modified.
 
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 76 tests, no aoe, no network
+cargo test --locked                  # 149 tests, no aoe, no network
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 
@@ -102,14 +127,17 @@ Plan (what ships when, and with which values):
 
 | Path | Contents |
 |---|---|
-| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 17` (`aoe_version = ">=1.20.0, <2.0.0"`), `capabilities = ["runtime.worker"]`, one `status` command, `[runtime]` + source-install build step |
+| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read", "net"]`, one `status` command, `[runtime]` + source-install build step |
 | `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
-| `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `verify` (stub) |
-| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`) |
+| `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `classify` / `tag` / `verify` (stub) |
+| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the badge, pane and editor page, and applies the pane's per-session edits) |
 | `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
+| `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the page that writes them; the only writer, and it never touches the settings |
 | `src/settings.rs` | Where the settings live and how a profile overrides them (arrays replace, objects recurse) |
 | `src/adapters.rs`, `adapters.toml` | Per-harness header mechanism, as data; the file is embedded, so an install without it still works |
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
+| `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane and page payloads — and a click's edit — can be checked without a browser |
+| `tools/check-page.mjs` | Runs the page's script against a stub DOM and a stub dashboard (needs `node`), which is how the bridge handshake is checked: a page can pass every static check and still throw the moment it runs |
 | `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |
 | `tests/` | CLI, resolver and `doctor` tests behind a sandboxed app dir and a fake `aoe`; no aoe and no network needed |

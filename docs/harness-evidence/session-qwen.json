@@ -1,0 +1,55 @@
+{
+  "agent": "qwen",
+  "binary": "/var/lib/aoe/.local/bin/qwen",
+  "cli": "target/debug/aoe-llm-tags",
+  "session_id": "bd37175d27804ea7",
+  "overlay": "/tmp/aoe-session-qwen-hwkvSy/home/.config/agent-of-empires/sessions/bd37175d27804ea7/qwen",
+  "overlay_entries": {},
+  "overlay_carries": {
+    "header": false,
+    "query": false,
+    "body": false
+  },
+  "requests": 0,
+  "deliveries": [],
+  "delivered": [],
+  "env_payloads": {
+    "AOE_BODY_METADATA": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "bd37175d27804ea7",
+      "project_path": "/tmp/aoe-session-qwen-hwkvSy/home/.config/agent-of-empires/scratch/bd37175d27804ea7",
+      "session": "S-bd37",
+      "session_id": "bd37175d27804ea7",
+      "team": "core",
+      "tool": "qwen"
+    },
+    "AOE_HDR_X_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "bd37175d27804ea7",
+      "project_path": "/tmp/aoe-session-qwen-hwkvSy/home/.config/agent-of-empires/scratch/bd37175d27804ea7",
+      "session": "S-bd37",
+      "session_id": "bd37175d27804ea7",
+      "team": "core",
+      "tool": "qwen"
+    },
+    "AOE_QRY_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "bd37175d27804ea7",
+      "project_path": "/tmp/aoe-session-qwen-hwkvSy/home/.config/agent-of-empires/scratch/bd37175d27804ea7",
+      "session": "S-bd37",
+      "session_id": "bd37175d27804ea7",
+      "team": "core",
+      "tool": "qwen"
+    }
+  },
+  "outcome": "no-request",
+  "aoe_message": "No auth type is selected. Please configure an auth type (e.g. via settings or `-",
+  "payload_fields": {},
+  "run_dir": "/tmp/aoe-session-qwen-hwkvSy"
+}

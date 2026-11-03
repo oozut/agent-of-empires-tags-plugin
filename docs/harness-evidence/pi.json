@@ -1,0 +1,31 @@
+{
+  "agent": "pi",
+  "binary": "/usr/bin/pi",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T10:58:26Z",
+  "exit_code": 0,
+  "session_override": {
+    "PI_CODING_AGENT_DIR": "/tmp/aoe-probe-pi-0bJ7w2/home/.config/agent-of-empires/sessions/probe-pi-2111358/pi"
+  },
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-pi-0bJ7w2/project\",\"session\":\"S-prob\",\"session_id\":\"probe-pi-2111358\",\"team\":\"core\",\"tool\":\"pi\"}"
+  ],
+  "requests": 1,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-pi-0bJ7w2/project",
+        "session": "S-prob",
+        "session_id": "probe-pi-2111358",
+        "team": "core",
+        "tool": "pi"
+      },
+      "name": "x-aoe-tags"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

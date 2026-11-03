@@ -19,6 +19,16 @@ pub const CLI: &str = env!("CARGO_BIN_EXE_aoe-llm-tags");
 
 pub const SESSION_JSON: &str = r#"{"id":"cf11af87da7e4bf0","title":"Lithuanians","path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","group":"","tool":"pi-proxy","profile":"main"}"#;
 
+/// The default target sends the whole tag set as one JSON object. Keys are
+/// sorted (serde_json's default map), so this is the exact header value for the
+/// fixture session — a change in the payload shape fails here first.
+pub const DEFAULT_PAYLOAD: &str = r#"{"profile":"main","project":"lithuanians","project_path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","session":"S-cf11","session_id":"cf11af87da7e4bf0","tool":"pi-proxy"}"#;
+
+/// The same payload when `aoe` cannot be reached: no project row, so only the
+/// fields the hook environment carries are present.
+pub const DEFAULT_PAYLOAD_NO_AOE: &str =
+    r#"{"profile":"main","session":"S-cf11","session_id":"cf11af87da7e4bf0","tool":"pi-proxy"}"#;
+
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Sandbox {
@@ -85,6 +95,35 @@ impl Sandbox {
         fs::write(path, body).expect("config");
     }
 
+    /// Replace the fake session this sandbox reports: the session row beats the
+    /// environment, so a test that needs another harness says so here.
+    pub fn session(&mut self, id: &str, tool: &str) {
+        let json = format!(
+            r#"{{"id":"{id}","title":"Lithuanians","path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","group":"","tool":"{tool}","profile":"main"}}"#
+        );
+        let path = self.fake_aoe(&json);
+        self.env
+            .insert("AOE_BIN".to_string(), path.display().to_string());
+        self.env
+            .insert("AOE_SESSION_ID".to_string(), id.to_string());
+        self.env.insert("AOE_TOOL".to_string(), tool.to_string());
+    }
+
+    /// `$HOME/.pi/agent/models.json` — where the pi adapter writes.
+    pub fn pi_models_path(&self) -> PathBuf {
+        self.path("home/.pi/agent/models.json")
+    }
+
+    pub fn write_pi_models(&self, body: &str) {
+        let path = self.pi_models_path();
+        self.write_file(&path, body);
+    }
+
+    pub fn read_pi_models(&self) -> serde_json::Value {
+        let body = fs::read_to_string(self.pi_models_path()).expect("models.json");
+        serde_json::from_str(&body).expect("valid JSON")
+    }
+
     pub fn write_file(&self, path: &Path, body: &str) {
         fs::create_dir_all(path.parent().unwrap()).expect("parent");
         fs::write(path, body).expect("file");
@@ -111,7 +150,10 @@ impl Sandbox {
         self.write_executable(
             path,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n  session) echo '{session_json}' ;;\n  list) echo '[]' ;;\n  *) echo '{{}}' ;;\nesac\n"
+                // `list` answers with the same row in an array, the way the host does: the
+                // substrate check needs a live-id set, and an empty list would mean "aoe did
+                // not answer" rather than "no sessions".
+                "#!/bin/sh\ncase \"$1\" in\n  session) echo '{session_json}' ;;\n  list) echo '[{session_json}]' ;;\n  *) echo '{{}}' ;;\nesac\n"
             ),
         );
     }
@@ -155,7 +197,22 @@ impl Sandbox {
     }
 
     pub fn run_with(&self, args: &[&str], extra: &[(&str, &str)]) -> Run {
-        let mut command = std::process::Command::new(CLI);
+        self.run_bin(std::path::Path::new(CLI), args, extra)
+    }
+
+    /// Run this CLI through a copy placed in `<root>/plugin/bin`, so the plugin
+    /// root — and therefore the adapter table it reads — is the one the test
+    /// wrote. `plugin_root()` is the parent of the executable's directory.
+    pub fn run_installed(&self, args: &[&str]) -> Run {
+        let bin = self.root.join("plugin/bin");
+        fs::create_dir_all(&bin).expect("bin");
+        let cli = bin.join("aoe-llm-tags");
+        fs::copy(CLI, &cli).expect("copy the CLI");
+        self.run_bin(&cli, args, &[])
+    }
+
+    fn run_bin(&self, cli: &std::path::Path, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        let mut command = std::process::Command::new(cli);
         command.env_clear().args(args);
         for (key, value) in &self.env {
             command.env(key, value);

@@ -1,0 +1,29 @@
+{
+  "agent": "hermes",
+  "binary": "/usr/local/bin/hermes",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T10:58:41Z",
+  "exit_code": 124,
+  "session_override": {},
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-hermes-tz7SGo/project\",\"session\":\"S-prob\",\"session_id\":\"probe-hermes-2112216\",\"team\":\"core\",\"tool\":\"hermes\"}"
+  ],
+  "requests": 4,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-hermes-tz7SGo/project",
+        "session": "S-prob",
+        "session_id": "probe-hermes-2112216",
+        "team": "core",
+        "tool": "hermes"
+      },
+      "name": "X-AoE-Tags"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

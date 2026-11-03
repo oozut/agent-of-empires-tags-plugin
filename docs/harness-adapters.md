@@ -5,60 +5,313 @@ plugin release. The plugin only needs to know how to turn the resolved values in
 harness expects, and where that harness's config lives. Which system eventually reads those
 values is not part of an adapter row — see `docs/header-contract.md`.
 
-An adapter row is per **header**, not per harness: a harness that can send three headers needs
-three mapping lines, all fed by the same hook. The default header is listed in each row's
-`setup` column; additional enabled headers follow the same shape with their own variable.
+An adapter row is per **target**, not per harness: a harness that can send three headers needs
+three mapping lines, all fed by the same hook. The default target is listed in each row's
+`setup` column; additional enabled targets follow the same shape with their own variable.
+
+A target is a place the tag set is delivered to: a request header (`kind = "header"`), a query
+parameter on the provider URL (`kind = "query"`), or a JSON field in the request body
+(`kind = "body"`). Tags are resolved once into one JSON payload — `tags` is a set of `key:value`
+(and `key:=json`) entries, plus the session fields — and each target chooses where it goes and
+what of it travels: `format = "json"` (default) sends the whole object, `format = "csv"` the flat
+`team:core,feature:billing` list, and `template` overrides both for one target
+(`{tags}`, `{tags_json}`, `{payload_json}`, `{feature}`, `{session}`…).
+
+`interpolates` lists the delivery points where that harness expands an env reference; `supports`
+lists the kinds it can carry at all. pi, claude and codex expand `$NAME` only in headers, so a
+`body` target there needs `literal` — the value written as-is — and `setup --apply` refuses rather
+than writing an unexpanded `$VAR`.
+
+`supports` is absent-means-`["header"]` (the common case) but `supports = []` is taken literally
+and means **no channel at all** — that is how `kiro` says so, and a loader that filled the default
+in for an explicit empty list would hand it a header delivery it cannot make.
+
+pi's `supports` is `["header", "body"]`, verified on the host (2026-11): a header arrives, a
+`body` target lands in the request body through `models[].samplingParams`, and a query parameter
+in `baseUrl` does **not** work — pi appends the endpoint path, so `http://h/v1?tags=x` becomes
+`/v1?tags=x/chat/completions`. A `query` target for pi is refused, not written.
 
 ## Adapter data format
+
+A row describes two things: where the harness keeps a mapping, and how this plugin gets a
+*session-scoped* copy of it in front of the harness. The second half is the `write_mode` group.
 
 ```toml
 [[adapter]]
 agent = "pi"
 label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
-headers = [                          # one entry per enabled header
-  { header = "X-AoE-Tags",    env_var = "AOE_LLM_TAGS" },
-  { header = "X-AoE-Session", env_var = "AOE_HDR_X_AOE_SESSION", optional = true },
-]
-config_env = "PI_CODING_AGENT_DIR"  # optional: directory override variable
+interpolates = ["header"]           # delivery points that expand `$NAME`
+supports = ["header", "body"]       # delivery kinds it can carry; `[]` = none (not "default")
+aoe_hooks = false                   # true when aoe installs its own hooks into this config
+config_env = "PI_CODING_AGENT_DIR"  # directory override the harness itself honours
 # Where the mapping is *written* can differ from where the launched process reads it, when a
 # launcher regenerates the directory. The first entry is the file a harness reads from; a
 # rewritten directory is never the target.
 config_paths = ["~/.pi/agent/models.json", "$PI_CODING_AGENT_DIR/models.json"]
-config_format = "json"
-status = "documented"               # verified | documented | needs_research | unsupported
-notes = "header values resolve like apiKey: $NAME, ${NAME}, or !command"
+config_format = "json"              # json | toml
+status = "verified"                 # verified | documented | needs_research | unsupported
+
+# --- how a session gets its own config (docs/harness-adapters.md §Per-session config)
+write_mode = "overlay_dir"          # env_only | overlay_file | overlay_dir | none
+overlay_env = "PI_CODING_AGENT_DIR" # variable that points the harness at the session copy
+overlay_file = "models.json"        # our file inside that copy
+writer = "pi_models"                # src/writer.rs
+
+# --- only for write_mode = "env_only"
+native_env = "ANTHROPIC_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+native_sep = "\n"                     # "," for a harness whose parser only splits on commas
+splits_on_commas = false              # true when the harness reads the value as `a,b,…`
 ```
 
-| `mechanism` | Meaning | Static setup needed |
+`mapping_format` spells the reference itself when it needs a particular form. Three placeholders
+matter: `{env_var}` is the bare variable *name* (codex's `env_http_headers` already means "read a
+variable"), `{env_ref}` is the harness's own spelling from `env_ref`, and `{value}` is a literal when
+the row does not interpolate. `env_ref` defaults to `${env_var}`, which now really renders
+`${AOE_LLM_TAGS}` — the braced form hermes, qwen, droid and openclaw expand — while a row that wants
+`$NAME` writes `"$"` before it and codex writes `env_ref = "{env_var}"`. A reference that silently
+lost its braces (`$NAME` in a JSON value) is a mapping the harness reads as a literal string, so the
+spelling is part of the row, not a rendering detail.
+
+`splits_on_commas` is a *refusal*, not a hint: gemini's `parseCustomHeaders` splits its variable on
+`,(?=\s*[^,:]+:)`, so a JSON payload `{"a":1,"b":2}` becomes two headers and the request is dropped
+with `TypeError: Headers.append: invalid header name`. Such a row declares the shape, and
+`setup --apply` refuses a target whose rendered value would be split (`comma_splits` checks the
+value, so a comma-free `a,b` still passes). The escape hatch is `template = "{tags_b64}"` — the same
+payload, base64url-encoded, so it cannot contain a splittable comma.
+
+| `write_mode` | What a session gets | The user's config |
 |---|---|---|
-| `custom_headers_env` | The harness reads one env var holding whole header lines | no |
-| `headers_from_env` | The harness config maps a header name to a variable it reads | yes, once |
-| `config_headers` | The harness config holds the header value with env interpolation | yes, once |
-| `command_headers` | The harness config runs a command per request to produce the value | yes, once |
-| `url_param` | Only a base URL override exists; the value travels in path or query | yes, and the consumer must honor it |
-| `none` | No usable mechanism found | values cannot be sent |
+| `env_only` | nothing on disk: the hook exports the harness's own variable (`native_env`) carrying this session's lines | never read for writing |
+| `overlay_file` | one file this plugin generates, named by `overlay_env` | copied as the starting point, then untouched |
+| `overlay_dir` | a directory holding our file plus links to the user's other entries, named by `overlay_env` | linked, never edited |
+| `none` | nothing: only the printed mapping is available, `doctor` says `unsupported` | untouched |
+
+`aoe_hooks = true` marks a harness whose config file aoe itself writes hooks into (`claude`'s
+`settings.json`, `codex`'s `hooks.json`, and the other agents `aoe hooks status` lists). aoe pins
+that file's path for the launch and refuses a launch where `before_session` moves it:
+
+```
+Error: before_session changed the agent hook path from …/home/.claude/settings.json to
+…/sessions/<id>/claude/settings.json; declare the override in the profile environment before
+approving
+```
+
+So a per-session copy is not merely expensive for those agents, it is refused. A row that marks
+`aoe_hooks` and still asks for `overlay_file`/`overlay_dir` is downgraded at load time to `none`
+with a warning, and keeps only the `header` kind — the reference channel is what it actually has.
+
+| `mechanism` | Meaning | Delivery |
+|---|---|---|
+| `custom_headers_env` | The harness reads one env var holding whole header lines | `env_only` |
+| `headers_from_env` | The harness config maps a header name to a variable it reads | session copy |
+| `config_headers` | The harness config holds the header value, with env interpolation | session copy |
+| `command_headers` | The harness config runs a command per request to produce the value | session copy or `env_only` |
+| `url_param` | Only a base URL override exists; the value travels in path or query | refused unless the harness keeps query strings intact |
+| `none` | No usable mechanism found | `unsupported` |
+
+## Per-session config
+
+The M0 mapping wrote a header into the user's config and relied on the harness expanding
+`$AOE_LLM_TAGS` at request time. That only survives while every session's value fits in one
+global file — it does not for body fields, query parameters or literal-only channels, where one
+session's value would freeze into everybody else's requests.
+
+So the rule is now: **the user's config is never edited.** At launch the hook builds a copy for
+that session alone, bakes this session's values into it, and exports the variable that points
+the harness at the copy:
+
+```
+hook  ──►  <app dir>/sessions/<session id>/<agent>/…    (built from the user's file)
+      ──►  PI_CODING_AGENT_DIR=<that dir>               (harness reads the copy)
+```
+
+Properties that follow, and that the tests pin down:
+
+- **Two sessions never share a file.** Different session id ⇒ different directory, so
+  concurrent sessions cannot overwrite each other's tags.
+- **Nothing is written outside the app dir.** `setup --undo` deletes the copy; there is no
+  backup to restore because the original was never touched.
+- **A copy cannot outlive its session.** The worker prunes `sessions/` against the host's live
+  session list, and `doctor` reports what is there.
+- **A copy that carries nothing is not used.** If the writer has nowhere to put any target
+  (no provider with models, no provider table), the hook exports no override, so the harness
+  keeps reading its real config instead of an empty one.
+- **The shape is preserved before it is modified.** The copy starts as a parse of the user's
+  file; the TOML writer edits the document so the user's comments survive.
+
+Writers (`src/writer.rs`) are per config format, not per vendor:
+
+| `writer` | Into | Delivery |
+|---|---|---|
+| `pi_models` | `providers.<id>.headers`, `models[].samplingParams` | header, body (query refused) |
+| `opencode_json` | `provider.<id>.options.headers`, `.queryParams` | header, query |
+| `codex_toml` | `[model_providers.<id>] http_headers`, `.query_params` | header, query |
+| `vibe_toml` | `[[providers]]` → `extra_headers` on the entry the `[[models]]` name | header (query and body refused) |
+
+Both writers receive the payload, not a string: a `json` target is set as a JSON object where the
+harness takes one (pi's `samplingParams`, opencode's `headers` value stays a string), and a `csv`
+target as the flat list.
+
+`codex_toml` and `opencode_json` both carry a query parameter because the harnesses do; codex's
+row still declares only `header` under aoe, because `aoe_hooks` rules out the copy that would
+carry it (see above). The writer stays: it is what a launcher that does not install aoe's hooks
+uses, and `tools/probe-harness.sh codex` proves it.
+
+A new harness is a row plus, at most, one small writer. `tests/overlay.rs` refuses a row that
+claims `overlay_*` without an `overlay_env` and an implemented writer, so the table cannot drift
+into lying about a capability.
+
+### Verdicts: what is actually there
+
+`doctor` used to print the *plan* — what a row would do with this machine — which reads as
+`wired` on a machine where nothing is wired at all. `classify` (and one `substrate` line per
+scope in `doctor`) reports what was found, under the five verdicts `plan/parameters.md` fixes:
+
+| verdict | means | `doctor` |
+|---|---|---|
+| `wired` | the file exists and every enabled target is in it | ok |
+| `detected-not-wired` | the harness config exists, our mapping is missing (some or all) | warn |
+| `sandbox-stale` | a generated copy exists for a session `aoe list` does not have | warn |
+| `unknown` | nothing to inspect: no adapter row, or no config at any known path | skip |
+| `unsupported` | the row can neither write a copy nor be referenced (no channel) | fail |
+
+Four substrates are checked per session: the **harness** (can this row deliver at all — a
+`write_mode = "none"` row still passes when it interpolates, because the reference channel is a
+real channel), the **user's own config** (present, and carrying our line or not), this
+**session's copy** (built at launch, pointed at by the override variable), and leftovers
+(`sandbox-stale`).
+
+Two rules keep the verdicts honest:
+
+- **Pessimistic on ignorance.** `unknown` when a check cannot be performed: an unreadable file,
+  an `aoe list` that did not answer, a harness with no row. `sandbox-stale` is only claimed when
+  the host proved a session gone — an empty live list means the query failed, not that every
+  copy is stale.
+- **Cached by path + sha256** (`<app dir>/cache/substrates.json`). The digest is the key, so a
+  hand-edited config is re-scanned rather than trusted — which is also how drift shows up as
+  `detected-not-wired` instead of a stale `wired`.
+
+```
+aoe-llm-tags classify                 # this session's harness, from $AOE_TOOL
+aoe-llm-tags classify --adapter codex # one row, whatever the environment says
+aoe-llm-tags classify --json          # findings + `worst`, the pessimistic badge verdict
+```
+
+`classify` exits 0 for a missing or unwired config (a fact to report) and 1 only for
+`unsupported` (a session that cannot carry the tag at all).
+
+### Verification, portably
+
+```
+tools/probe-harness.sh <agent>            # one harness, by absolute path
+tools/probe-harness.sh --list             # agents with a recipe
+```
+
+The probe runs in a throwaway `HOME`, calls the harness binary directly (a user-prefix install
+in `~/.local/bin` is fine and need not be visible to `aoe agents`), points its provider at
+`tools/header-sink.py`, and records what arrived in `docs/harness-evidence/<agent>.json`. It
+needs no API key and no model: the harness is expected to fail at completion, and the request it
+sent is the result. `--extra-settings FILE` appends targets to the probe's own plugin config, so
+body and query delivery can be checked the same way.
+
+Verified on this host (2026-11, evidence in `docs/harness-evidence/`):
+
+| Agent | Session scope | Delivered |
+|---|---|---|
+| `pi` | `PI_CODING_AGENT_DIR` → overlay dir | header, and the `samplingParams` body field |
+| `claude` | `ANTHROPIC_CUSTOM_HEADERS` from the hook | header |
+| `codex` | reference in the user's `config.toml` → `env_http_headers` | header (query only outside aoe) |
+| `opencode` | `OPENCODE_CONFIG` → overlay file | header and query parameter |
+| `vibe` | `VIBE_HOME` → overlay dir, `config.toml` | header (`extra_headers`) |
+| `openclaw` | reference in the user's own JSON (`models.providers.*.headers`) | header |
+
+Every value above is the JSON payload object, not a comma list — `docs/header-contract.md`.
+
+The probe covers the harness in isolation. The second, stronger check is a **real aoe session per
+harness**:
+
+```
+tools/probe-session.sh <agent> --cli target/debug/aoe-llm-tags --bin "$(command -v <agent>)" --sink 8950
+```
+
+It creates a throwaway `HOME`, writes the plugin settings and the hook config into a throwaway
+`XDG_CONFIG_HOME`, runs `aoe hooks approve` there, adds a scratch session whose command is this
+harness, starts it, waits for the sink, captures the pane, and stops it. The evidence
+(`docs/harness-evidence/session-<agent>.json`) records `requests`, which channels the sink saw
+(`delivered`), which variables in the launched pane carried the payload (`env_payloads`), and an
+`outcome`:
+
+| `outcome` | Meaning |
+|---|---|
+| `unsupported-by-aoe` | aoe has no launcher for this harness, so there is no session to probe: the harness-level evidence is the whole proof |
+| `delivered` | a request from the launched harness reached the sink carrying the payload |
+| `no-request` | the pane got the payload in its environment, but the harness sent nothing (no credential or endpoint it can read) |
+| `refused-by-aoe` | aoe refused the launch because the hook path moved — a `write_mode` aoe cannot allow |
+| `request-without-the-tag` | a request arrived without the payload: a real defect |
 
 ## Harness table
 
-Ten targets. Only two are installed on this host (`/usr/bin/pi`, `/usr/local/bin/hermes`), so
-verification order follows what can actually be tested — a deployment fact, not a ranking.
+Seventeen agents exist in aoe; this table covers the twelve that have been researched, and no row
+is a `needs_research` placeholder any more. Nine are `verified`: a real process sent the payload to
+`tools/header-sink.py`, and a user-prefix install (`~/.local/bin`) is enough — the binaries need
+not be visible to `aoe agents`. Three are `documented`, each for a stated reason: `droid` validates
+a Factory account before sending (`blocked-by-auth`), `cline` exposes the channel in its SDK but
+keeps its config dir behind a `--config` flag with no environment override, and `kiro` has no
+channel at all (its transport is the AWS SDK, so `supports = []`). A `documented` row is not a
+failure: it says exactly where the evidence stops, which is why `setup --apply` refuses a target
+for `kiro` instead of writing a mapping nothing reads.
 
-| Agent | Mechanism | Default header → var | Static setup | Discovery | Status |
-|---|---|---|---|---|---|
-| `pi` | `config_headers` and `command_headers` | `X-AoE-Tags` → `AOE_LLM_TAGS` | `models.json` → `providers.<id>.headers` | `~/.pi/agent/models.json`, `$PI_CODING_AGENT_DIR` | documented; verify on host (M0 gate); sandbox unverified |
-| `hermes` | `config_headers` via provider plugin `extra_headers` | `X-AoE-Tags` → `AOE_LLM_TAGS` | provider plugin/config | `hermes` config dir | needs research |
-| `claude` | `custom_headers_env` | whole header lines in one var (`ANTHROPIC_CUSTOM_HEADERS`) | none | `$CLAUDE_CONFIG_DIR`, `~/.claude/settings.json` | documented, verify |
-| `codex` | `headers_from_env` | `X-AoE-Tags` → `AOE_LLM_TAGS` | `[model_providers.<id>.env_http_headers]` | `$CODEX_HOME`, `~/.codex/config.toml` | documented, verify |
-| `opencode` | `config_headers` | `X-AoE-Tags` → `AOE_LLM_TAGS` | `provider.<id>.options.headers` with `{env:...}` | `$XDG_CONFIG_HOME/opencode/opencode.json` | documented, verify |
-| `gemini` | TBD | TBD | TBD | `~/.gemini/settings.json` | needs research |
-| `vibe` | TBD | TBD | TBD | `~/.config/vibe` | needs research |
-| `kiro` | TBD | TBD | TBD | agent config JSON | needs research |
-| `cline` | TBD | TBD | TBD | VS Code extension storage | needs research |
-| `openclaw` | TBD | TBD | TBD | TBD | needs research |
+### Support matrix
 
-Snippets for the documented rows (default header shown; a second enabled header is one more
-entry in the same map, using its own `env_var`):
+What each row can actually carry, and how a session gets it. `✓` is a channel the plugin
+writes today; `—` is a kind `setup --apply` refuses for that row rather than writing a value the
+harness would drop.
+
+| Agent | Header | Query | Body | Mechanism | Session scope | Evidence |
+|---|---|---|---|---|---|---|
+| `pi` | ✓ | — | ✓ | `config_headers`, `command_headers` | `overlay_dir` via `PI_CODING_AGENT_DIR` (`pi_models`) | verified |
+| `opencode` | ✓ | ✓ | — | `config_headers` | `overlay_file` via `OPENCODE_CONFIG` (`opencode_json`) | verified |
+| `claude` | ✓ | — | — | `custom_headers_env` | `env_only`: `ANTHROPIC_CUSTOM_HEADERS` (`aoe_hooks`) | verified |
+| `codex` | ✓ | — | — | `headers_from_env` | reference in the user's `config.toml` → `env_http_headers` (`aoe_hooks`); query only outside aoe (`codex_toml`) | verified |
+| `hermes` | ✓ | — | — | `config_headers` | reference in the user's YAML (`extra_headers`, `aoe_hooks`) | verified |
+| `gemini` | ✓ | — | — | `custom_headers_env` | `env_only`: `GEMINI_CLI_CUSTOM_HEADERS` (`aoe_hooks`) | verified |
+| `qwen` | ✓ | — | — | `config_headers` | reference in the user's JSON (`generationConfig.customHeaders`, `aoe_hooks`) | verified |
+| `droid` | ✓ | — | — | `config_headers` | reference in the user's JSON (`customModels[].extraHeaders`, `aoe_hooks`) | documented |
+| `vibe` | ✓ | — | — | `config_headers` | `overlay_dir` via `VIBE_HOME`, `config.toml` (`vibe_toml`) | verified |
+| `openclaw` | ✓ | — | — | `config_headers` | reference in the user's JSON (`models.providers.*.headers`) | verified |
+| `cline` | ✓ | — | — | `config_headers` | none: the SDK takes a `headers` map, the CLI's config dir is a `--config` flag | documented |
+| `kiro` | — | — | — | `none` | nothing: AWS-SDK signed transport, no header setting | documented |
+
+Where the value comes from, per row, is one of three shapes:
+
+| Session scope | Rows | What the user has to do |
+|---|---|---|
+| `overlay_dir` / `overlay_file` | `pi`, `opencode`, `vibe` | nothing — the hook writes this session's copy and exports the override variable |
+| `env_only` | `claude`, `gemini` | nothing — the hook exports the harness's own variable |
+| reference in the user's own config | `codex`, `hermes`, `qwen`, `droid`, `openclaw` | paste the one line `setup --print` shows (it names a *variable*, never a value); aoe installs its hooks into `codex`/`hermes`/`qwen`/`droid`, so the file cannot be scoped per session |
+| none | `cline`, `kiro` | nothing until the harness grows a scoping channel; `setup --apply` refuses and `classify` says `unsupported` |
+
+Two rows carry a caveat that is a limit, not a defect:
+
+- **gemini** splits its variable on `,(?=\s*[^,:]+:)`, so a JSON payload would become two broken
+  headers and the request is dropped (`TypeError: Headers.append: invalid header name`). The row
+  declares `splits_on_commas`, and the escape hatch is `template = "{tags_b64}"` — the same
+  payload, base64url, so it cannot contain a splittable comma.
+- **droid** can be *mapped* (its config expands `${VAR}`), but the binary refuses to send
+  anything without a Factory account, so the probe records `blocked-by-auth`. The row is
+  `documented`: the mapping is real, the request never was.
+
+Discovery paths, per row, are what `doctor`/`classify` read: `~/.pi/agent/models.json` and
+`$PI_CODING_AGENT_DIR`, `$XDG_CONFIG_HOME/opencode/opencode.json`, `$CLAUDE_CONFIG_DIR` and
+`~/.claude/settings.json`, `$CODEX_HOME` and `~/.codex/config.toml`, `~/.hermes/config.yaml`,
+`~/.gemini/settings.json`, `~/.qwen/settings.json`, `~/.factory/settings.json`,
+`~/.vibe/config.toml` and `$VIBE_HOME`, `~/.openclaw/openclaw.json` and
+`$OPENCLAW_CONFIG_PATH`, `~/.cline`, `~/.local/share/kiro-cli`.
+
+Snippets for the documented rows. They describe the *shape* of the session copy; nothing here is
+pasted into a user config by hand any more (default header shown):
 
 ```jsonc
 // pi, ~/.pi/agent/models.json — merge into the provider entry the harness actually uses;
@@ -80,10 +333,10 @@ entry in the same map, using its own `env_var`):
 A harness may be started by a wrapper, not by aoe directly. Two rules follow, and both are
 adapter facts, not vendor facts:
 
-- **Write to the wrapper's source file**, not to the directory it generates. If a launcher
+- **Start from the wrapper's source file**, not from the directory it generates. If a launcher
   recreates `$CONFIG_DIR` on every start (this deployment's `pi-proxy` does), a mapping written
-  there is deleted at the next launch, and the environment variable pointing at it is not
-  evidence of anything.
+  there is deleted at the next launch; the per-session copy is built from the source path
+  (`config_paths[0]`) instead.
 - **Keep the shape the launcher expects.** A launcher may carry over only some keys, or only
   providers it considers usable; a mapping it discards is a silent failure. Record the required
   shape in the adapter row's `notes` (here: the provider entry must keep a non-empty `models`
@@ -100,13 +353,57 @@ The plugin must work on a host with no wrapper at all.
 ```
 
 ```jsonc
-// opencode, opencode.json
-{ "provider": { "gw": { "options": { "headers": { "X-AoE-Tags": "{env:AOE_LLM_TAGS}" } } } } }
+// opencode, opencode.json — the same payload can ride a query parameter, which is the only
+// channel this harness offers besides headers (options.body and options.extraBody are ignored)
+{ "provider": { "gw": { "options": {
+    "headers": { "X-AoE-Tags": "{env:AOE_LLM_TAGS}" },
+    "queryParams": { "aoe_tags": "{env:AOE_QRY_AOE_TAGS}" } } } } }
 ```
 
 ```sh
 # claude: no static config, the variable carries whole header lines
-ANTHROPIC_CUSTOM_HEADERS="X-AoE-Tags: aoe,feature:review,session:S-9f3a"
+ANTHROPIC_CUSTOM_HEADERS="X-AoE-Tags: {\"session\":\"S-9f3a\",\"feature\":\"review\",\"team\":\"core\"}"
+```
+
+```sh
+# gemini: no static config either, but its variable is a comma-separated list, so the payload
+# must be spelled without a splittable comma. {tags_b64} is that spelling.
+GEMINI_CLI_CUSTOM_HEADERS="X-Aoe-B64: eyJzZXNzaW9uIjoiUy05ZjNhIiwidGVhbSI6ImNvcmUifQ"
+```
+
+```jsonc
+// qwen, ~/.qwen/settings.json — the entry is a model config; a provider-level customHeaders map
+// is merged into it by applyProviderCustomHeaders, so set it where it reaches the wire
+{ "modelProviders": { "openai": [{
+    "id": "<model-id>", "name": "<Model name>", "baseUrl": "<endpoint>", "envKey": "OPENAI_API_KEY",
+    "generationConfig": { "customHeaders": { "X-AoE-Tags": "${AOE_LLM_TAGS}" } } }] } }
+```
+
+```jsonc
+// droid, ~/.factory/settings.json — ${VAR} is expanded for user-level sources only
+{ "customModels": [{ "model": "<model-id>", "provider": "openai", "baseUrl": "<endpoint>",
+    "apiKey": "<key>", "extraHeaders": { "X-AoE-Tags": "${AOE_LLM_TAGS}" } }] }
+```
+
+```toml
+# vibe, ~/.vibe/config.toml — the session copy (VIBE_HOME) holds the value, because vibe does
+# not expand $NAME in config strings: the literal "${AOE_LLM_TAGS}" reaches the wire
+[[providers]]
+name = "<provider-id>"
+api_base = "<endpoint>"
+api_key_env_var = "<KEY_VAR>"
+
+[providers.extra_headers]
+X-AoE-Tags = '{"session":"S-9f3a","team":"core"}'
+```
+
+```jsonc
+// openclaw, ~/.openclaw/openclaw.json — a custom provider must declare models, and the
+// `${VAR}` spelling *is* expanded here (an unset variable is left on the wire verbatim)
+{ "models": { "providers": { "<provider-id>": {
+    "baseUrl": "<endpoint>", "apiKey": "<key>", "api": "openai-completions",
+    "headers": { "X-AoE-Tags": "${AOE_LLM_TAGS}" },
+    "models": [{ "id": "<model-id>", "name": "<Model name>" }] } } } }
 ```
 
 ## What the agent process actually receives

@@ -55,7 +55,16 @@ before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook
 2. Add the mapping line(s) to the harness config named, one line per enabled header, leaving the
    rest of that file alone. For `pi` that means `~/.pi/agent/models.json`,
    `providers.<id>.headers["X-AoE-Tags"] = "$AOE_LLM_TAGS"`, and the provider entry must keep a
-   non-empty `models` list or the wrapper drops the whole entry, headers included.
+   non-empty `models` list or the wrapper drops the whole entry, headers included. The value is a
+   JSON object (`{"session":"S-cf11","team":"core"}`), so the consumer parses it rather than
+   splitting a comma list; `setup --print` also shows a `csv` target for a consumer that still
+   wants `team:core,feature:billing`.
+
+Where a harness's config cannot hold a `$VAR` (or has no config file at all), the plugin does not
+ask you to edit it: for `claude` the value rides `ANTHROPIC_CUSTOM_HEADERS` in the launch
+environment, and for a harness that only accepts literals the plugin generates a config inside
+the session's own directory. Your own config is never rewritten — `setup --print` tells you which
+of the three applies.
 
 `setup --print` never writes anything. Editing those files is yours, deliberately.
 
@@ -70,7 +79,7 @@ Expect `0 failed` and one line per check, each naming the absolute path it looke
 ```
   [ok  ] before_session hook    AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook …
   [ok  ] mapping X-AoE-Tags     ~/.pi/agent/models.json → litellm (value: $AOE_LLM_TAGS, models: 1)
-  [ok  ] value rendering        X-AoE-Tags=AOE_LLM_TAGS="aoe,feature:,session:S-cf11"
+  [ok  ] value rendering        X-AoE-Tags=AOE_LLM_TAGS={"session":"S-cf11","feature":"","team":"core"}
   [skip] last verification      consumer read-back is out of scope for this build; prove arrival …
 ```
 
@@ -86,7 +95,7 @@ Inside a session (or with the variables exported by hand):
 
 ```sh
 env | grep '^AOE_'
-# AOE_LLM_TAGS=aoe,feature:,session:S-cf11
+# AOE_LLM_TAGS={"session":"S-cf11","session_id":"cf11…","tool":"pi",…,"team":"core"}
 ```
 
 Nothing there means the hook line is absent, in the wrong profile, or exited non-zero — `doctor`
@@ -104,8 +113,10 @@ python3 tools/header-sink.py 8787 /tmp/tag-sink.jsonl --reset &
 grep -o '"x-aoe-tags": "[^"]*"' /tmp/tag-sink.jsonl
 ```
 
-That run is the verification this build offers: the header leaves the harness with the value aoe's
-hook minted for the session. A worked example, with the exact commands and the two traps (use the
+That run is the cheapest verification: the payload leaves the harness with the value aoe's hook
+minted for the session. The repeatable form is `tools/probe-harness.sh <agent>` (one harness, in a
+throwaway `HOME`) and `tools/probe-session.sh <agent>` (a real aoe session per harness); both write
+their evidence to `docs/harness-evidence/`. A worked example, with the exact commands and the two traps (use the
 real `pi`, not a wrapper that regenerates its config; the fixture must answer streaming requests),
 is in `docs/reference-deployment.md` §Proof runs.
 

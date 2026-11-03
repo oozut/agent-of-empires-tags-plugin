@@ -24,33 +24,74 @@ dimension, a log join key, a rate-limit bucket, a tenant check, or a validity as
 
 The plugin commits to exactly three:
 
-1. **Presence.** Every outbound LLM request from a session carries the configured headers, or the
-   plugin says plainly that it cannot, and why (`doctor`).
-2. **Derivation.** Header values are computed from the session's identity and the plugin's
-   settings, at launch, by one implementation shared by every harness and both hook substrates.
-3. **Opacity.** Nothing else about the request changes: no body, no prompt, no response, no
-   ordering, no extra network hop. Values the plugin emits are strings it constructed; it never
-   inspects traffic.
+1. **Presence.** Every outbound LLM request from a session carries the configured payload on the
+   channels that harness supports, or the plugin says plainly that it cannot, and why (`doctor`).
+2. **Derivation.** Values are computed from the session's identity and the plugin's settings, at
+   launch, by one implementation shared by every harness and both hook substrates.
+3. **Opacity.** Nothing else about the request changes: no prompt, no response, no ordering, no
+   extra network hop, and no body edit beyond the field a `body` target names. Values the plugin
+   emits are values it constructed or was configured with; it never inspects traffic.
 
 Everything else is a consumer's business: whether a header is trusted, parsed, stored, expired,
 charged against, or ignored.
 
-## What is in the headers
+## What travels: one payload, three channels
 
-A header set, not a single tag. Each entry is a name plus a value template:
+A tag is a **key and a value**, not a word in a string. `tags` is a set of them:
+
+| You write | It means |
+|---|---|
+| `team:core` | `"team": "core"` |
+| `cost:=1.5` | `"cost": 1.5` — `:=` takes any JSON value: `true`, `2`, `["a","b"]`, `{"k":1}` |
+| `platform` | `"platform": true` — a marker that carries no value |
+
+The resolved payload is a JSON object: the session fields first, then every tag. It is what a
+target carries unless the target says otherwise, so a consumer reads `tags["team"]` instead of
+splitting a comma list, and adding a dimension later never changes the shape a consumer already
+parses.
+
+```json
+{"session":"S-9f3a","session_id":"9f3a...","tool":"pi","profile":"main",
+ "group":"Payments","project":"core","project_path":"/w/core","branch":"main",
+ "feature":"billing","team":"core","cost":1.5}
+```
+
+Fields are included only when they have a value, and `feature` is written last so a `feature:`
+tag overrides the derived one. A tag whose key is a session field cannot shadow it: the session
+wins and the tag is dropped with a warning.
+
+`feature_tag` — the per-project setting for the feature a session belongs to — is **one of these
+entries**, not a bare word with a key implied elsewhere:
+
+| You write | It means |
+|---|---|
+| `feature_tag = "feature:billing"` | `"feature": "billing"`, the standard entry |
+| `feature_tag = "billing"` | the same entry; the old spelling keeps the implied key |
+| `feature_tag = "epic:checkout"` | `"epic": "checkout"` — the key is the payload field, so there is no `feature` field and `{feature}` reads a `feature:` tag instead |
+| `feature_tag = { key = "epic", value = "checkout" }` | the same pair, for a settings form that stores key and value apart |
+
+Global config, a profile (`profiles/<name>/config.toml`) and a project each hold the same grammar
+and are parsed by the same code, so a value means the same thing wherever it was written. Like a
+tag, it cannot take a session field: `feature_tag = "session:mine"` is dropped with a warning.
+
+### Targets: where a payload goes, and which slice
+
+A target chooses **where** the payload travels and **what** of it travels there.
 
 | Field | Meaning |
 |---|---|
-| `header` | Wire name, e.g. `X-AoE-Tags`, `X-AoE-Session`, `x-tenant`. Must be a valid HTTP field name; no plugin-owned prefix is required. |
-| `template` | Value template with fields from the session, e.g. `aoe,feature:{feature},session:{session}`. |
-| `env_var` | Variable that carries the rendered value at launch. Default: `AOE_HDR_` + the header name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for compatibility. |
+| `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
+| `name` | Wire name: a header name, a query parameter, or the body field to set. |
+| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. |
+| `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, `{tags_b64}`, or one field such as `{feature}`. |
+| `literal` | Written as-is instead of the rendered template. |
+| `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
 
-Available template fields, all resolved from the session manager first and the hook environment
-second:
+Template fields, resolved from the session manager first and the hook environment second:
 
 `{session}` `{session_id}` `{feature}` `{tool}` `{profile}` `{group}` `{group_slug}` `{project}`
-`{project_slug}` `{branch}` `{tags}`
+`{project_slug}` `{branch}` `{tags}` `{tags_csv}` `{tags_json}` `{payload_json}` `{tags_b64}`
 
 Rules that keep the contract honest:
 
@@ -60,8 +101,11 @@ Rules that keep the contract honest:
   A path can contain a username; a title can contain anything at all.
 - **Fixed per launch.** The value cannot change while the process lives — that is a property of
   the delivery mechanism, not a limitation to be worked around.
-- **Bounded.** At most 5 tag values per header, and the grammar is the consumer's; the plugin
-  emits lowercase `[a-z0-9._:-]` tokens, one list per header, comma-separated by default.
+- **Bounded.** Keys start with a letter or digit and stop at 96 characters; values are printable
+  JSON. A key or value outside the grammar is dropped with a warning rather than written.
+- **Values are typed.** `:=` is the only way to get a number, boolean or nested value into a
+  payload, and it stays typed all the way to the consumer; a `csv` target flattens it back to
+  text, because a comma list has no types.
 
 ## Who reads it
 
@@ -81,17 +125,79 @@ is a list of templates rather than one fixed format.
 
 ## Delivery, and why it is launch-scoped
 
-Two paths, both fed by the same resolved values:
+Three paths, all fed by the same resolved payload:
 
-1. **Environment** (default). The hook prints `AOE_HDR_…=<value>` lines; a harness maps its header
-   to that variable once, statically. This is the portable path — it needs no proxy, no daemon,
-   and no network call from inside a sandbox.
-2. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
+1. **Environment.** The hook prints `AOE_HDR_…=<value>` lines and the harness's own config maps
+   its header to that variable once, statically. This is the portable path — no proxy, no daemon,
+   no network call from inside a sandbox — and it is the only one that works for a harness whose
+   config aoe itself writes hooks into, because aoe refuses a launch that moves that file.
+2. **A per-session file** (`overlay_file` / `overlay_dir`). For a harness whose config can only
+   hold a literal, the plugin builds a generated config inside the session's own directory and
+   points the harness at it with an environment variable. The user's config is never touched, and
+   the copy is deleted when the session is gone. A copy that would carry nothing is not used.
+3. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
    directly (`!aoe-llm-tags value X-AoE-Session`). Same values, one process later, and subject to
    the harness's own caching.
 
 Neither path can update mid-session. A consumer that needs liveness has to query the control
 plane instead of trusting the header; the header identifies, it does not assert current state.
+
+## Changing a tag for one session
+
+A tag belongs to a session, so changing one is a per-session act. The plugin has no path that
+rewrites the settings: `setup --apply` writes a backup and a session copy, the worker has no
+config-write RPC, and the editor below writes only inside the session's own directory. Two
+sessions can therefore carry different tags at the same time without a rule, a profile or a
+config edit between them.
+
+Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`:
+
+| Surface | What it does |
+|---|---|
+| Session pane (`llm_tags_pane`) | Lists each tag with its origin, and the values this session would send. Clicking a tag drops it for this session; the action button opens the editor page. |
+| **LLM Tags** page (`ui/tags.html`) | Pick a session, then add/replace a tag, drop one, write or clear a literal token, or reset every edit. Shows the resulting wire values. |
+| `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard. |
+
+The file holds the same tag grammar the settings use, in three keys:
+
+```toml
+tags  = ["team:platform", "epic:=42"]  # add, or replace the same key
+unset = ["cost"]                       # drop a tag the settings carry
+token = '{"hand":true}'                # a literal standing in for the rendered payload
+```
+
+Resolution order, in one place (`session_tags::apply`, inside `snapshot`), so the hook, `status`,
+`doctor`, `classify` and the UI cannot disagree: the settings are read first, the session's `unset`
+keys are dropped, its own entries replace a same-key entry (then append), and finally a `token`
+replaces what a target with **no** `template` would have rendered. A target that names its own
+field (`{session_id}`) keeps it: a session-wide literal does not override a target that says what
+it wants.
+
+Two honest limits:
+
+- An edit applies to the **next** launch. The value a running process sends came from the
+  environment it was started with, and the plugin does not reach into a live process; the pane
+  shows what the next launch mints, not what the current one holds.
+- Dropping a tag the settings carry is still per-session: it records the key in `unset` rather than
+  editing the settings, so the same tag stays on every other session.
+
+Both clickable surfaces reach the worker the same way: the host forwards a block's `method`
+**verbatim**, so `tag.set`, `tag.remove`, `token.set`, `token.clear` and `tags.reset` are whole
+names, not `plugin.<id>.<command>` — which is how a host *request* is addressed. `worker::EDITS`
+lists them, `tests/docs.rs` holds the page and the worker to the same list, and the host adds the
+session id it trusts (a `session_id` in the page's params is overwritten, never believed).
+
+Checked against the running daemon, not only in tests: `POST /api/plugins/dev.oozut.llm-tags/action`
+with `{"method":"tag.set","params":{"key":"team","value":"platform"}}` answered `202`, wrote
+`sessions/cf11af87da7e4bf0/overrides.toml`, moved that session's UI revision (so the clicked
+control's spinner clears), and the next `/api/plugins/ui-state` read carried the tag with
+`origin: "session"` in both the pane row and the page payload; `tags.reset` removed the file
+again. `tools/drive-worker.py` reproduces the same conversation without a browser, which is what
+makes the payload shape checkable on a machine with no dashboard open.
+
+The store is deleted with the session. `overlay::prune` runs on every host event and removes any
+session directory the host no longer lists — which takes `overrides.toml` with it — and it treats
+an empty live list as a failed query rather than as evidence that every session is gone.
 
 ## What the plugin does not decide
 

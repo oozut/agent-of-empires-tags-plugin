@@ -1,0 +1,94 @@
+{
+  "agent": "codex",
+  "binary": "/var/lib/aoe/.local/bin/codex",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T10:58:28Z",
+  "exit_code": 1,
+  "session_override": {},
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-codex-ndBqxy/project\",\"session\":\"S-prob\",\"session_id\":\"probe-codex-2111526\",\"team\":\"core\",\"tool\":\"codex\"}"
+  ],
+  "requests": 6,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-ndBqxy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-2111526",
+        "team": "core",
+        "tool": "codex"
+      },
+      "name": "x-aoe-tags"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-ndBqxy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-2111526",
+        "team": "core",
+        "tool": "codex"
+      },
+      "name": "x-aoe-tags"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-ndBqxy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-2111526",
+        "team": "core",
+        "tool": "codex"
+      },
+      "name": "x-aoe-tags"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-ndBqxy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-2111526",
+        "team": "core",
+        "tool": "codex"
+      },
+      "name": "x-aoe-tags"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-ndBqxy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-2111526",
+        "team": "core",
+        "tool": "codex"
+      },
+      "name": "x-aoe-tags"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-codex-ndBqxy/project",
+        "session": "S-prob",
+        "session_id": "probe-codex-2111526",
+        "team": "core",
+        "tool": "codex"
+      },
+      "name": "x-aoe-tags"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

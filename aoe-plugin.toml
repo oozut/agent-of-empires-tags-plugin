@@ -1,24 +1,181 @@
 id = "dev.oozut.llm-tags"
 name = "LLM Tags"
 version = "0.1.0"
-api_version = 17
-aoe_version = ">=1.20.0, <2.0.0"
+api_version = 18
+aoe_version = ">=1.21.0, <2.0.0"
 description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."
-capabilities = ["runtime.worker"]
+capabilities = ["runtime.worker", "session.read", "net"]
 
-# The worker answers `plugin.dev.oozut.llm-tags.status` with the header set this
-# install would send. M1 turns it into the reconciler; M0 only proves it runs.
 [[commands]]
 id = "status"
 title = "LLM Tags: status"
 description = "Report the header set this install would send, without starting a session."
 
+[[ui]]
+slot = "row-badge"
+id = "llm_tags_badge"
+
+[[ui]]
+slot = "pane"
+id = "llm_tags_pane"
+
+# The per-session editor: the only place a tag or the token is changed, and it
+# changes them for one session. Nothing here can write the global settings.
+[[ui]]
+slot = "page"
+id = "tags"
+title = "LLM Tags"
+icon = "tags"
+entry = "ui/tags.html"
+
+[[settings]]
+key = "tags"
+label = "Tags for every session"
+type = "string_list"
+help = """
+Tags every session carries, before any rule matches. Rules add to this set.
+
+A tag is a key and a value, and it is delivered as a JSON object, so a consumer reads
+`tags["team"]` instead of splitting a string:
+
+* `team:core` — the string value `core`
+* `cost:=1.5` — any JSON value (`true`, `2`, `["a","b"]`, `{"k":1}`)
+* `platform` — just `true`, for a marker that carries no value
+
+Keys start with a letter or digit and are at most 96 characters. The payload always
+carries the session fields too: `session`, `session_id`, `tool`, `profile`, `group`,
+`project`, `project_path`, `branch` and `feature` when they have a value.
+"""
+
+[[settings]]
+key = "targets"
+label = "Where the tags are delivered"
+type = "object_list"
+help = """
+One row per place the tag set is delivered. Resolve the tags once, then choose where they go:
+a request header, a query parameter on the provider URL, or a JSON field in the request body.
+
+`kind` is `header`, `query` or `body`; `name` is the header or parameter name.
+`format` decides what the target carries: `json` (the default) sends the whole tag set as
+one object, `csv` sends the flat `team:core,feature:billing` list an older consumer expects.
+
+`template` overrides the format for one target and picks the slice itself: `{tags}` for the
+comma-joined list, `{tags_json}` for the tags alone as JSON, `{payload_json}` for the full
+object, `{tags_b64}` for that object base64url-encoded, or a single field such as `{feature}`,
+`{session}`, `{session_id}`, `{group}`, `{project}`, `{tool}`. `{tags_b64}` is what a harness that
+splits its header list on commas (gemini) needs: same bytes, no splittable comma.
+
+Some harnesses only expand `$NAME` in headers (pi, claude, codex): a `query`/`body` target
+there needs `literal` — the value written as-is — instead of an environment reference.
+"""
+
+[[settings.fields]]
+key = "kind"
+label = "Kind"
+type = "select"
+options = ["header", "query", "body"]
+default = "header"
+
+[[settings.fields]]
+key = "name"
+label = "Header or parameter name"
+type = "string"
+
+[[settings.fields]]
+key = "format"
+label = "Format"
+type = "select"
+options = ["json", "csv"]
+default = "json"
+
+[[settings.fields]]
+key = "template"
+label = "Value template (overrides the format)"
+type = "string"
+
+[[settings.fields]]
+key = "env_var"
+label = "Environment variable"
+type = "string"
+
+[[settings.fields]]
+key = "param"
+label = "Parameter name override"
+type = "string"
+
+[[settings.fields]]
+key = "literal"
+label = "Literal value (when this harness does not expand $VAR there)"
+type = "string"
+
+[[settings.fields]]
+key = "enabled"
+label = "Enabled"
+type = "bool"
+default = true
+
+[[settings]]
+key = "rules"
+label = "Rules"
+type = "object_list"
+
+[[settings.fields]]
+key = "tag"
+label = "Tag"
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "match_kind"
+label = "Match kind"
+type = "select"
+options = ["project", "group", "tool", "title_regex", "manual"]
+default = "project"
+
+[[settings.fields]]
+key = "match_value"
+label = "Match value"
+type = "string"
+
+[[settings.fields]]
+key = "priority"
+label = "Priority"
+type = "integer"
+default = 0
+min = -100
+max = 100
+
+[[settings]]
+key = "session_tagging"
+label = "Session tagging"
+type = "select"
+options = ["none", "short_id", "full_id"]
+default = "short_id"
+
+[[settings]]
+key = "feature_tag"
+label = "Feature tag"
+type = "string"
+default = ""
+per_project = true
+help = """
+The feature this session belongs to, written as one tag entry — the same grammar as an entry in
+`tags`, so it is a key/value pair and not a bare word with a key implied somewhere else:
+
+* `feature:billing` — a tag entry with the key `feature`
+* `billing` — the older spelling, the same as `feature:billing`
+* `epic:checkout` — another key; the payload then carries `epic` and there is no `feature` field
+
+It is set per project, and a profile or the global config can each hold it too; all levels are
+parsed by the same code, so a value means the same thing wherever it was written. The session
+fields always win: `feature_tag = "session:mine"` is dropped rather than allowed to rewrite the
+session's identity.
+"""
+
 [runtime]
 kind = "command"
 command = ["./bin/aoe-llm-tags-worker"]
 
-# Source installs build both binaries in place. Release installs use
-# `kind = "release-binary"` and skip this step entirely; see plan/parameters.md §9.
 [[runtime.build]]
 command = ["./tools/build-worker.sh"]
 platforms = ["linux", "macos"]

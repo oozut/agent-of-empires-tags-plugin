@@ -23,11 +23,15 @@ use crate::settings;
 // --- constants: plan/parameters.md §4, §5, §7 -------------------------------
 
 pub const TAG_CAP: usize = 5;
-pub const TAG_MAX_CHARS: usize = 32;
+/// A tag carries a whole `key:=value` pair now, so the ceiling is the string in
+/// settings, not the delivered value (`VALUE_MAX_BYTES` still clamps that).
+pub const TAG_MAX_CHARS: usize = 96;
 pub const VALUE_MAX_BYTES: usize = 800;
 pub const SHORT_ID_PREFIX: &str = "S-";
 pub const SHORT_ID_CHARS: usize = 4;
 pub const ENV_PREFIX: &str = "AOE_HDR_";
+pub const ENV_PREFIX_QUERY: &str = "AOE_QRY_";
+pub const ENV_PREFIX_BODY: &str = "AOE_BODY_";
 pub const DEFAULT_HEADER: &str = "X-AoE-Tags";
 pub const DEFAULT_SESSION_TAGGING: &str = "short_id";
 pub const DEFAULT_TOOL: &str = "unknown";
@@ -80,27 +84,94 @@ pub enum AoeError {
     },
 }
 
+/// Where the harness should put the value: a request header (default), a query
+/// parameter on the provider URL, or a JSON field in the request body.
+///
+/// Only a header can carry a per-session value on every harness: pi interpolates
+/// `$VAR` in `headers` values, not in `baseUrl` or `samplingParams`. A `query` or
+/// `body` entry therefore needs a `literal` on such a harness, and the CLI says so
+/// instead of writing a `$VAR` that would arrive verbatim.
+pub const KINDS: [&str; 3] = ["header", "query", "body"];
+pub const DEFAULT_KIND: &str = "header";
+
+/// How a target encodes the tag set.
+///
+/// `json` is the default: the tag set goes out as one object, so a consumer reads
+/// a field (`tags["team"]`) instead of splitting a string and guessing where a
+/// value starts. `csv` is the M0 flat form, kept for consumers that already parse
+/// it and for values a JSON object would not carry (a bare header, a shell line).
+pub const FORMATS: [&str; 2] = ["json", "csv"];
+pub const DEFAULT_FORMAT: &str = "json";
+
+/// One place the tag set is delivered to: a request header, a query parameter on
+/// the provider URL, or a JSON field in the request body.
+///
+/// The tag set is resolved once (`tags`); a target only chooses `where` and
+/// `which slice of it` — `{tags}` for the whole set, `{feature}`/`{session}`/…
+/// for one field.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Header {
+pub struct Target {
     pub name: String,
     pub template: String,
     pub env_var: String,
     pub enabled: bool,
+    /// `header`, `query` or `body`.
+    pub kind: String,
+    /// Query-parameter or body-field name; empty means "use `name`".
+    pub param: String,
+    /// Value written verbatim when the target cannot interpolate `$VAR`.
+    pub literal: String,
+    /// `json` (the tag set as an object) or `csv` (the flat tag list).
+    pub format: String,
 }
 
-impl Header {
+impl Target {
     pub fn new(name: &str, template: &str, env_var: &str) -> Self {
         Self {
             name: name.to_string(),
             template: template.to_string(),
             env_var: env_var.to_string(),
             enabled: true,
+            kind: DEFAULT_KIND.to_string(),
+            param: String::new(),
+            literal: String::new(),
+            format: DEFAULT_FORMAT.to_string(),
         }
+    }
+
+    pub fn with_format(mut self, format: &str) -> Self {
+        self.format = format.to_string();
+        self
+    }
+
+    /// True when this target sends the tag set as one JSON object.
+    pub fn renders_payload(&self) -> bool {
+        self.template.trim().is_empty() && self.format != "csv"
     }
 
     pub fn disabled(mut self) -> Self {
         self.enabled = false;
         self
+    }
+
+    pub fn with_kind(mut self, kind: &str, param: &str) -> Self {
+        self.kind = kind.to_string();
+        self.param = param.to_string();
+        self
+    }
+
+    pub fn with_literal(mut self, literal: &str) -> Self {
+        self.literal = literal.to_string();
+        self
+    }
+
+    /// The query-parameter or body-field name this target writes.
+    pub fn param_name(&self) -> &str {
+        if self.param.is_empty() {
+            &self.name
+        } else {
+            &self.param
+        }
     }
 }
 
@@ -109,6 +180,7 @@ pub struct Rule {
     pub tag: String,
     pub match_kind: String,
     pub match_value: String,
+    pub priority: i32,
 }
 
 impl Rule {
@@ -117,38 +189,51 @@ impl Rule {
             tag: tag.to_string(),
             match_kind: match_kind.to_string(),
             match_value: match_value.to_string(),
+            priority: 0,
         }
+    }
+
+    pub fn with_priority(mut self, priority: i32) -> Self {
+        self.priority = priority;
+        self
     }
 }
 
-pub fn default_headers() -> Vec<Header> {
+pub fn default_targets() -> Vec<Target> {
     vec![
-        Header::new(
-            DEFAULT_HEADER,
-            "aoe,feature:{feature},session:{session}",
-            "AOE_LLM_TAGS",
-        ),
-        Header::new("X-AoE-Session", "{session_id}", "AOE_HDR_X_AOE_SESSION").disabled(),
+        // No template: the default target sends the whole tag set as JSON, so a
+        // consumer can read `session`, `team`, `feature` as fields.
+        Target::new(DEFAULT_HEADER, "", "AOE_LLM_TAGS"),
+        Target::new("X-AoE-Session", "{session_id}", "AOE_HDR_X_AOE_SESSION").disabled(),
     ]
 }
 
 /// Validated settings. Malformed rows are dropped with a warning, never fatal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    pub headers: Vec<Header>,
+    /// Tags every session carries, before any rule matches.
+    pub tags: Vec<String>,
+    /// Where the tag set is delivered.
+    pub targets: Vec<Target>,
     pub rules: Vec<Rule>,
     pub session_tagging: String,
-    pub feature_tag: String,
+    /// The operator's feature: one standard tag entry, not a second taxonomy.
+    pub feature_tag: Option<Tag>,
+    /// Per-session only: a literal standing in for what a template-less target
+    /// would render. Never read from a settings file — see [`crate::session_tags`].
+    pub token: String,
     pub warnings: Vec<String>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            headers: default_headers(),
+            tags: Vec::new(),
+            targets: default_targets(),
             rules: Vec::new(),
             session_tagging: DEFAULT_SESSION_TAGGING.to_string(),
-            feature_tag: String::new(),
+            feature_tag: None,
+            token: String::new(),
             warnings: Vec::new(),
         }
     }
@@ -157,7 +242,8 @@ impl Default for Settings {
 impl Settings {
     pub fn from_table(table: &toml::Table, warnings: Vec<String>) -> Self {
         let mut warns = warnings;
-        let headers = parse_headers(table.get("headers"), &mut warns);
+        let tags = parse_static_tags(table.get("tags"), &mut warns);
+        let targets = parse_targets(table, &mut warns);
         let rules = parse_rules(table.get("rules"), &mut warns);
 
         let mut tagging = table
@@ -175,27 +261,15 @@ impl Settings {
             tagging = DEFAULT_SESSION_TAGGING.to_string();
         }
 
-        let mut feature_tag = match table.get("feature_tag") {
-            None => String::new(),
-            Some(toml::Value::String(text)) => text.clone(),
-            Some(_) => {
-                warns.push("settings: feature_tag is not a string; ignoring it".to_string());
-                String::new()
-            }
-        };
-        if !feature_tag.is_empty() && !valid_tag(&feature_tag) {
-            warns.push(format!(
-                "settings: feature_tag {feature_tag:?} is not a valid tag \
-                 ([a-z0-9][a-z0-9._:-]*, ≤{TAG_MAX_CHARS} chars); ignoring it"
-            ));
-            feature_tag.clear();
-        }
+        let feature_tag = parse_feature_tag(table.get("feature_tag"), &mut warns);
 
         Self {
-            headers,
+            tags,
+            targets,
             rules,
             session_tagging: tagging,
             feature_tag,
+            token: String::new(),
             warnings: warns,
         }
     }
@@ -270,6 +344,353 @@ pub struct SessionFacts {
     pub tool: String,
     pub profile: String,
     pub branch: String,
+}
+
+/// One configured tag, parsed once.
+///
+/// A tag is a key/value pair, not a word: `team:core` is `"team": "core"`.
+/// Three shapes are accepted, so a value can grow past a plain string without
+/// inventing a new settings syntax:
+///
+/// * `key:value`  — a string value
+/// * `key:=json`  — any JSON value (`cost:=1.5`, `scope:=["a","b"]`)
+/// * `key`        — `true`, for a tag that is just a marker
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tag {
+    pub key: String,
+    pub value: Value,
+}
+
+impl Tag {
+    pub fn parse(raw: &str) -> Result<Self, String> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err("the tag is empty".to_string());
+        }
+        let (key, rest) = match raw.split_once(':') {
+            Some((key, rest)) => (key.trim(), Some(rest)),
+            None => (raw, None),
+        };
+        if key.is_empty() {
+            return Err(format!("tag {raw:?} has no key"));
+        }
+        if key.chars().any(|ch| ch.is_whitespace() || ch == '=') {
+            return Err(format!("tag key {key:?} has spaces or `=` in it"));
+        }
+        let value = match rest {
+            None => Value::Bool(true),
+            Some(rest) if rest.starts_with('=') => {
+                let text = rest[1..].trim();
+                serde_json::from_str::<Value>(text)
+                    .map_err(|err| format!("tag {raw:?} has invalid JSON after `:=` ({err})"))?
+            }
+            Some(rest) => Value::String(rest.to_string()),
+        };
+        Ok(Self {
+            key: key.to_string(),
+            value,
+        })
+    }
+
+    /// The tag as written in settings, for the `csv` format and `{tags}`.
+    pub fn csv(&self) -> String {
+        match &self.value {
+            Value::Bool(true) => self.key.clone(),
+            Value::String(text) => format!("{}:{text}", self.key),
+            other => format!("{}:{other}", self.key),
+        }
+    }
+}
+
+/// The JSON object every target can carry: session fields first, then tags.
+pub type Payload = Vec<(String, Value)>;
+
+/// The tag list, parsed. A tag that does not parse is reported and dropped, so
+/// one typo never costs a session its tags.
+pub fn parse_tags(raw: &[String]) -> (Vec<Tag>, Vec<String>) {
+    let mut tags = Vec::new();
+    let mut warnings = Vec::new();
+    for row in raw {
+        match Tag::parse(row) {
+            Ok(tag) => tags.push(tag),
+            Err(message) => warnings.push(format!("settings: {message}; dropping it")),
+        }
+    }
+    (tags, warnings)
+}
+
+/// Fields [`payload`] derives from the session. A tag or a `feature_tag` naming
+/// one of these is dropped rather than allowed to rewrite the session's identity.
+const SESSION_FIELDS: [&str; 8] = [
+    "session",
+    "session_id",
+    "tool",
+    "profile",
+    "group",
+    "project",
+    "project_path",
+    "branch",
+];
+
+/// The operator's feature, spelled as one standard tag entry.
+///
+/// `feature_tag` is a single tag, not a second taxonomy, so it accepts the shapes
+/// a `tags` entry does — plus the bare word older settings files hold:
+///
+/// * `feature:billing` — a normal entry, with any key
+/// * `billing` — the same as `feature:billing` (the key was implied, so it stays implied)
+/// * `{ key = "epic", value = "checkout" }` — an explicit pair, the shape a
+///   per-project settings form stores when it keeps the key and value apart
+/// * `["feature:billing"]` — a one-entry list, the shape a `tags` field has
+///
+/// The result is a [`Tag`], so every level that can set this — the global config,
+/// a profile, a project — is parsed, validated and delivered by the same code as
+/// every other tag.
+pub fn parse_feature_tag(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Option<Tag> {
+    match value? {
+        toml::Value::String(raw) => feature_from_entry(raw, warnings),
+        toml::Value::Array(items) => {
+            let mut parsed: Option<Tag> = None;
+            for item in items {
+                let tag = match item {
+                    toml::Value::String(raw) => feature_from_entry(raw, warnings),
+                    other => feature_from_pair(other, warnings),
+                };
+                if tag.is_none() {
+                    continue;
+                }
+                if parsed.is_some() {
+                    warnings.push(
+                        "settings: feature_tag is a list; only its first entry is used".to_string(),
+                    );
+                    break;
+                }
+                parsed = tag;
+            }
+            parsed
+        }
+        other => feature_from_pair(other, warnings),
+    }
+}
+
+fn feature_from_entry(raw: &str, warnings: &mut Vec<String>) -> Option<Tag> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if !valid_tag(raw) {
+        warnings.push(format!(
+            "settings: feature_tag {raw:?} is not a valid tag \
+             (starts [a-z0-9], printable, ≤{TAG_MAX_CHARS} chars); ignoring it"
+        ));
+        return None;
+    }
+    if raw.contains(':') {
+        return match Tag::parse(raw) {
+            Ok(tag) => Some(tag),
+            Err(message) => {
+                warnings.push(format!("settings: {message}; ignoring feature_tag"));
+                None
+            }
+        };
+    }
+    Some(Tag {
+        key: "feature".to_string(),
+        value: Value::String(raw.to_string()),
+    })
+}
+
+fn feature_from_pair(value: &toml::Value, warnings: &mut Vec<String>) -> Option<Tag> {
+    let table = match value {
+        toml::Value::Table(table) => table,
+        other => {
+            warnings.push(format!(
+                "settings: feature_tag {other:?} is not a tag entry \
+                 (`key:value`, a bare word, or {{ key = …, value = … }}); ignoring it"
+            ));
+            return None;
+        }
+    };
+    let key = table
+        .get("key")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("feature")
+        .trim()
+        .to_string();
+    if !valid_tag(&key) {
+        warnings.push(format!(
+            "settings: feature_tag key {key:?} is not a valid tag key; ignoring it"
+        ));
+        return None;
+    }
+    let Some(raw) = table.get("value") else {
+        // No value is a marker, the same as a bare entry in `tags`.
+        return Some(Tag {
+            key,
+            value: Value::Bool(true),
+        });
+    };
+    match serde_json::to_value(raw) {
+        Ok(value) => Some(Tag { key, value }),
+        Err(err) => {
+            warnings.push(format!(
+                "settings: feature_tag value {raw:?} is not representable ({err}); ignoring it"
+            ));
+            None
+        }
+    }
+}
+
+/// `{feature}` is the operator's feature, not merely the first tag: the setting
+/// wins, else the first `feature:<name>` rule, else nothing.
+///
+/// The setting only answers `{feature}` when it is *the* `feature` entry. A pair
+/// with another key (`epic:checkout`) renames the field rather than leaving the
+/// payload's `feature` field and `{feature}` pointing at different values.
+pub fn feature_of(settings: &Settings, tags: &[Tag]) -> String {
+    if let Some(tag) = &settings.feature_tag {
+        if tag.key == "feature" {
+            return match &tag.value {
+                Value::String(name) => name.clone(),
+                other => other.to_string(),
+            };
+        }
+    }
+    tags.iter()
+        .find_map(|tag| {
+            if tag.key != "feature" {
+                return None;
+            }
+            match &tag.value {
+                Value::String(name) if !name.is_empty() => Some(name.clone()),
+                _ => None,
+            }
+        })
+        .unwrap_or_default()
+}
+
+/// The tag set as one object, without the session fields.
+pub fn tags_json(tags: &[Tag]) -> String {
+    let mut map = serde_json::Map::new();
+    for tag in tags {
+        map.insert(tag.key.clone(), tag.value.clone());
+    }
+    Value::Object(map).to_string()
+}
+
+/// Base64url without padding: the same bytes as the input, spelled with a
+/// 64-symbol alphabet that cannot contain a comma.
+///
+/// A harness that splits one environment variable into several headers on
+/// `,(?=name:)` — `GEMINI_CLI_CUSTOM_HEADERS` does — cannot carry a JSON payload
+/// verbatim, because `{"a":1,"b":2}` looks like two headers. `{tags_b64}` is
+/// the whole payload in a spelling no parser can mistake for a second header,
+/// and a consumer decodes it with a two-line base64url call.
+pub fn base64url(input: &str) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = input.as_bytes();
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[(triple >> 18) as usize & 0x3f] as char);
+        out.push(ALPHABET[(triple >> 12) as usize & 0x3f] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[(triple >> 6) as usize & 0x3f] as char);
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[triple as usize & 0x3f] as char);
+        }
+    }
+    out
+}
+
+/// Build what a consumer receives: the session fields every target needs, then
+/// the tags. Tags with the same key as a field are reported and dropped rather
+/// than allowed to rewrite the session's identity.
+pub fn payload(
+    settings: &Settings,
+    facts: &SessionFacts,
+    tags: &[Tag],
+    branch: &str,
+) -> (Payload, Vec<String>) {
+    let mut warnings = Vec::new();
+    let mut payload: Payload = Vec::new();
+    let mut push = |key: &str, value: String| {
+        if !value.is_empty() {
+            payload.push((key.to_string(), Value::String(value)));
+        }
+    };
+    push("session", short_id(&facts.id, &settings.session_tagging));
+    push("session_id", facts.id.clone());
+    push("tool", facts.tool.clone());
+    push("profile", facts.profile.clone());
+    push("group", facts.group.clone());
+    let project = project_slug(&facts.path);
+    push(
+        "project",
+        if project.is_empty() {
+            facts.path.clone()
+        } else {
+            project
+        },
+    );
+    push("project_path", facts.path.clone());
+    push("branch", branch.to_string());
+    for tag in tags {
+        if payload.iter().any(|(key, _)| *key == tag.key) {
+            warnings.push(format!(
+                "settings: tag {:?} names a session field; the field wins, so the tag is dropped",
+                tag.key
+            ));
+            continue;
+        }
+        payload.push((tag.key.clone(), tag.value.clone()));
+    }
+    // The operator's feature is one more tag, delivered like any other, and
+    // written last so it can override a `feature:<name>` entry from `tags`. It
+    // cannot rewrite a session field, for the same reason a tag cannot.
+    if let Some(tag) = &settings.feature_tag {
+        if SESSION_FIELDS.contains(&tag.key.as_str()) {
+            warnings.push(format!(
+                "settings: feature_tag {:?} names a session field; the field wins, so it is dropped",
+                tag.key
+            ));
+        } else {
+            match payload.iter_mut().find(|(key, _)| *key == tag.key) {
+                Some((_, value)) => *value = tag.value.clone(),
+                None => payload.push((tag.key.clone(), tag.value.clone())),
+            }
+        }
+    }
+    (payload, warnings)
+}
+
+/// The payload as a compact JSON object — what a `json` target sends.
+pub fn payload_json(payload: &Payload) -> String {
+    let mut map = serde_json::Map::new();
+    for (key, value) in payload {
+        map.insert(key.clone(), value.clone());
+    }
+    Value::Object(map).to_string()
+}
+
+/// The value one target sends: its own template when it has one, else the
+/// configured format. Unknown fields in a template are returned for reporting.
+pub fn target_value(
+    target: &Target,
+    payload: &Payload,
+    fields: &BTreeMap<String, String>,
+) -> (String, Vec<String>) {
+    if !target.template.trim().is_empty() {
+        return render_template(&target.template, fields);
+    }
+    if target.format == "csv" {
+        return (fields.get("tags").cloned().unwrap_or_default(), Vec::new());
+    }
+    (payload_json(payload), Vec::new())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -605,9 +1026,18 @@ pub fn project_slug(path: &str) -> String {
 
 /// `X-AoE-Session` → `AOE_HDR_X_AOE_SESSION` (parameters §3).
 pub fn derive_env_var(header: &str) -> String {
-    let mut out = String::from(ENV_PREFIX);
+    derive_env_var_for(DEFAULT_KIND, header)
+}
+
+/// The minted variable name for one target; `AOE_HDR_`, `AOE_QRY_`, `AOE_BODY_`.
+pub fn derive_env_var_for(kind: &str, name: &str) -> String {
+    let mut out = String::from(match kind {
+        "query" => ENV_PREFIX_QUERY,
+        "body" => ENV_PREFIX_BODY,
+        _ => ENV_PREFIX,
+    });
     let mut pending = false;
-    for ch in header.chars() {
+    for ch in name.chars() {
         if ch.is_ascii_alphanumeric() {
             if pending && !out.ends_with('_') {
                 out.push('_');
@@ -632,9 +1062,10 @@ pub fn valid_tag(tag: &str) -> bool {
     if !(first.is_ascii_lowercase() || first.is_ascii_digit()) {
         return false;
     }
-    if !chars.all(|ch| {
-        ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | ':' | '-')
-    }) {
+    // A value may be JSON (`cost:=1.5`, `scope:=["api","ui"]`), so any printable
+    // non-space character is allowed after the key. Quotes and backslashes stay
+    // out: they make a value unreadable in a header and unquotable in `csv`.
+    if !chars.all(|ch| ch.is_ascii_graphic() && !matches!(ch, '"' | '\\' | '\'')) {
         return false;
     }
     tag.chars().count() <= TAG_MAX_CHARS
@@ -679,8 +1110,14 @@ fn valid_env_name(name: &str) -> bool {
 /// Every matching rule contributes; dedupe, then cap at 5 (parameters §5).
 pub fn matched_tags(settings: &Settings, facts: &SessionFacts) -> Vec<String> {
     let slugged = project_slug(&facts.path);
-    let mut tags: Vec<String> = Vec::new();
-    for rule in &settings.rules {
+    // Stable sort by priority (descending); equal priorities keep list order.
+    let mut ordered: Vec<&Rule> = settings.rules.iter().collect();
+    ordered.sort_by_key(|a| std::cmp::Reverse(a.priority));
+    // Settings `tags` come first: the operator lists what every session carries,
+    // and rules add to that set. A rule never displaces a static tag.
+    let mut tags: Vec<String> = settings.tags.clone();
+    tags.truncate(TAG_CAP);
+    for rule in ordered {
         if tags.contains(&rule.tag) {
             continue;
         }
@@ -713,6 +1150,26 @@ pub fn rule_matches(rule: &Rule, facts: &SessionFacts, slugged_project: &str) ->
             };
             rule.match_value == slugged || rule.match_value == facts.path
         }
+        "group" => {
+            if rule.match_value.is_empty() {
+                return false;
+            }
+            rule.match_value == facts.group || rule.match_value == slug(&facts.group)
+        }
+        "tool" => {
+            if rule.match_value.is_empty() {
+                return false;
+            }
+            rule.match_value == facts.tool
+        }
+        "title_regex" => {
+            if rule.match_value.is_empty() {
+                return false;
+            }
+            regex::Regex::new(&rule.match_value)
+                .map(|re| re.is_match(&facts.title))
+                .unwrap_or(false)
+        }
         _ => false,
     }
 }
@@ -720,21 +1177,23 @@ pub fn rule_matches(rule: &Rule, facts: &SessionFacts, slugged_project: &str) ->
 pub fn build_fields(
     settings: &Settings,
     facts: &SessionFacts,
-    tags: &[String],
+    tags: &[Tag],
+    payload: &Payload,
     branch: &str,
 ) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
-    let feature = tags
-        .first()
-        .cloned()
-        .unwrap_or_else(|| settings.feature_tag.clone());
+    let csv: Vec<String> = tags.iter().map(Tag::csv).collect();
     fields.insert(
         "session".to_string(),
         short_id(&facts.id, &settings.session_tagging),
     );
     fields.insert("session_id".to_string(), facts.id.clone());
-    fields.insert("feature".to_string(), feature);
-    fields.insert("tags".to_string(), tags.join(","));
+    fields.insert("feature".to_string(), feature_of(settings, tags));
+    fields.insert("tags".to_string(), csv.join(","));
+    fields.insert("tags_csv".to_string(), csv.join(","));
+    fields.insert("tags_json".to_string(), tags_json(tags));
+    fields.insert("payload_json".to_string(), payload_json(payload));
+    fields.insert("tags_b64".to_string(), base64url(&payload_json(payload)));
     fields.insert(
         "tool".to_string(),
         if facts.tool.is_empty() {
@@ -771,8 +1230,11 @@ pub fn render_template(template: &str, fields: &BTreeMap<String, String>) -> (St
             continue;
         };
         let name = &template[index + 1..index + close];
-        let is_field =
-            !name.is_empty() && name.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_');
+        // Field names are lower_snake: `tags_b64` has digits and is still a field.
+        let is_field = !name.is_empty()
+            && name
+                .chars()
+                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
         if !is_field {
             out.push('{');
             index += 1;
@@ -815,27 +1277,53 @@ pub fn clamp_bytes(value: &str, limit: usize) -> (String, bool) {
 }
 
 /// The headers this launch will emit or map: enabled, in settings order.
-pub fn enabled_headers(settings: &Settings) -> Vec<&Header> {
+pub fn enabled_targets(settings: &Settings) -> Vec<&Target> {
     settings
-        .headers
+        .targets
         .iter()
         .filter(|header| header.enabled)
         .collect()
 }
 
 pub fn snapshot(flags: &Flags, env: &Env, runner: Option<Runner<'_>>) -> Snapshot {
+    snapshot_with_table(flags, env, runner, None, None)
+}
+
+pub fn snapshot_with_table(
+    flags: &Flags,
+    env: &Env,
+    runner: Option<Runner<'_>>,
+    table_override: Option<toml::Table>,
+    facts_override: Option<SessionFacts>,
+) -> Snapshot {
     let started = Instant::now();
-    let (mut facts, session_warnings) = resolve_session(flags, runner, env, DEFAULT_TIMEOUT);
+    let (mut facts, session_warnings) = match facts_override {
+        Some(facts) => (facts, Vec::new()),
+        None => resolve_session(flags, runner, env, DEFAULT_TIMEOUT),
+    };
     let elapsed = started.elapsed();
     let profile = if facts.profile.is_empty() {
         flags.profile.clone()
     } else {
         facts.profile.clone()
     };
-    let raw = settings::load(&profile, None, env);
+    let (raw_table, raw_warnings) = match table_override {
+        Some(table) => (table, Vec::new()),
+        None => {
+            let raw = settings::load(&profile, None, env);
+            (raw.table, raw.warnings)
+        }
+    };
     let mut warnings = session_warnings;
-    warnings.extend(raw.warnings.iter().cloned());
-    let configured = Settings::from_table(&raw.table, warnings);
+    warnings.extend(raw_warnings.iter().cloned());
+    let mut configured = Settings::from_table(&raw_table, warnings);
+    // A session's own edits (the UI page and the `tag` command write them) are
+    // applied here, once, so the hook, `status`, `doctor` and the worker all see
+    // the same tags. They live in the session's directory, never the config.
+    if !facts.id.is_empty() {
+        let app_dir = settings::app_dir(env);
+        crate::session_tags::apply(&mut configured, &app_dir, &facts.id);
+    }
 
     let remaining = DEFAULT_TIMEOUT.saturating_sub(elapsed);
     let (resolved, render_warnings) =
@@ -848,7 +1336,7 @@ pub fn snapshot(flags: &Flags, env: &Env, runner: Option<Runner<'_>>) -> Snapsho
         settings: configured,
         resolved,
         warnings: all_warnings,
-        raw: raw.table,
+        raw: raw_table,
     }
 }
 
@@ -860,11 +1348,13 @@ pub fn render_headers(
     timeout: Duration,
 ) -> (Vec<ResolvedHeader>, Vec<String>) {
     let mut warnings = Vec::new();
-    let enabled = enabled_headers(settings);
+    let enabled = enabled_targets(settings);
 
     let mut branch = String::new();
-    let needs_branch =
-        !facts.id.is_empty() && enabled.iter().any(|h| h.template.contains("{branch}"));
+    let needs_branch = !facts.id.is_empty()
+        && enabled
+            .iter()
+            .any(|h| h.template.contains("{branch}") || h.renders_payload());
     if needs_branch {
         if timeout.is_zero() {
             warnings.push(
@@ -879,18 +1369,39 @@ pub fn render_headers(
     facts.branch = branch.clone();
 
     let tags = matched_tags(settings, facts);
-    let fields = build_fields(settings, facts, &tags, &branch);
+    let (tags, tag_warnings) = parse_tags(&tags);
+    warnings.extend(tag_warnings);
+    let (payload, payload_warnings) = payload(settings, facts, &tags, &branch);
+    warnings.extend(payload_warnings);
+    let fields = build_fields(settings, facts, &tags, &payload, &branch);
+    let configured_token = settings.token.clone();
 
     let mut resolved = Vec::new();
     for header in enabled {
-        if !valid_header_name(&header.name) {
+        // A header target is checked as a header name; a query/body target as a
+        // parameter name (its own `name` when `param` is empty).
+        let is_header = header.kind == DEFAULT_KIND;
+        if is_header && !valid_header_name(&header.name) {
             warnings.push(format!(
                 "settings: {:?} is not a valid HTTP header name; skipping it",
                 header.name
             ));
             continue;
         }
-        let (value, missing) = render_template(&header.template, &fields);
+        if !is_header && !valid_param_name(header.param_name()) {
+            warnings.push(format!(
+                "settings: {:?} is not a valid query/body parameter name; skipping it",
+                header.param_name()
+            ));
+            continue;
+        }
+        let (mut value, missing) = target_value(header, &payload, &fields);
+        // A literal token is the session's hand-written value: it replaces the
+        // payload a template-less target would render, and leaves a target that
+        // names its own field (`{session_id}`) alone.
+        if !configured_token.is_empty() && header.template.trim().is_empty() {
+            value = configured_token.clone();
+        }
         if !missing.is_empty() {
             let mut unique: Vec<String> = Vec::new();
             for name in &missing {
@@ -915,7 +1426,7 @@ pub fn render_headers(
             ));
         }
         let env_var = if header.env_var.is_empty() {
-            derive_env_var(&header.name)
+            derive_env_var_for(&header.kind, &header.name)
         } else {
             header.env_var.clone()
         };
@@ -945,44 +1456,74 @@ pub fn hook_lines(resolved: &[ResolvedHeader]) -> Vec<String> {
 
 // --- settings normalisation -------------------------------------------------
 
-fn parse_headers(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Header> {
+fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target> {
+    // `targets` is the M1 shape; `headers` is the M0 name, read as a header target.
+    let legacy = table.get("targets").is_none();
+    let rows = if legacy {
+        table.get("headers")
+    } else {
+        table.get("targets")
+    };
     let Some(value) = rows else {
-        return default_headers();
+        return default_targets();
     };
     let Some(rows) = value.as_array() else {
-        warnings.push(
-            "settings: headers is not an array of tables; using the built-in header set"
-                .to_string(),
-        );
-        return default_headers();
+        warnings.push(format!(
+            "settings: {key} is not an array of tables; using the built-in target set",
+            key = if legacy { "headers" } else { "targets" }
+        ));
+        return default_targets();
     };
-    let mut headers = Vec::new();
+    let label = if legacy { "headers" } else { "targets" };
+    let mut targets = Vec::new();
     for (index, row) in rows.iter().enumerate() {
         let index = index + 1;
         let Some(row) = row.as_table() else {
             warnings.push(format!(
-                "settings: headers[{index}] is not a table; skipping it"
+                "settings: {label}[{index}] is not a table; skipping it"
             ));
             continue;
         };
-        let Some(name) = row.get("header").and_then(toml::Value::as_str) else {
+        let Some(name) = row
+            .get("name")
+            .or_else(|| row.get("header"))
+            .and_then(toml::Value::as_str)
+            .filter(|name| !name.is_empty())
+        else {
             warnings.push(format!(
-                "settings: headers[{index}] has no header name; skipping it"
+                "settings: {label}[{index}] has no name; skipping it"
             ));
             continue;
         };
-        if name.is_empty() {
-            warnings.push(format!(
-                "settings: headers[{index}] has no header name; skipping it"
-            ));
-            continue;
-        }
+        let kind_row = row.get("kind").or_else(|| row.get("delivery"));
+        let kind = match kind_row {
+            None => {
+                // An M0 row named `X-AoE-*` is a header; anything else with no
+                // kind keeps the header default too, and says so if it looks odd.
+                DEFAULT_KIND.to_string()
+            }
+            Some(toml::Value::String(text)) if KINDS.contains(&text.as_str()) => text.clone(),
+            Some(toml::Value::String(text)) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) kind {text:?} is not one of {}; \
+                     using {DEFAULT_KIND}",
+                    KINDS.join(", ")
+                ));
+                DEFAULT_KIND.to_string()
+            }
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) kind is not a string; using {DEFAULT_KIND}"
+                ));
+                DEFAULT_KIND.to_string()
+            }
+        };
         let template = match row.get("template") {
             None => String::new(),
             Some(toml::Value::String(text)) => text.clone(),
             Some(_) => {
                 warnings.push(format!(
-                    "settings: headers[{index}] ({name}) template is not a string; skipping it"
+                    "settings: {label}[{index}] ({name}) template is not a string; skipping it"
                 ));
                 continue;
             }
@@ -992,29 +1533,137 @@ fn parse_headers(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<
             Some(toml::Value::Boolean(flag)) => *flag,
             Some(_) => {
                 warnings.push(format!(
-                    "settings: headers[{index}] ({name}) enabled is not a boolean; treating it as true"
+                    "settings: {label}[{index}] ({name}) enabled is not a boolean; \
+                     treating it as true"
                 ));
                 true
             }
         };
         let env_var = match row.get("env_var") {
-            None => derive_env_var(name),
+            None => derive_env_var_for(&kind, name),
             Some(toml::Value::String(text)) => text.clone(),
             Some(_) => {
                 warnings.push(format!(
-                    "settings: headers[{index}] ({name}) env_var is not a string; skipping it"
+                    "settings: {label}[{index}] ({name}) env_var is not a string; skipping it"
                 ));
                 continue;
             }
         };
-        headers.push(Header {
+        let param = match row.get("param") {
+            None => String::new(),
+            Some(toml::Value::String(text)) => text.clone(),
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) param is not a string; using {name:?}"
+                ));
+                String::new()
+            }
+        };
+        if kind != DEFAULT_KIND && !valid_param_name(&param_name(name, &param)) {
+            warnings.push(format!(
+                "settings: {label}[{index}] ({name}) param {:?} is not a valid query/body \
+                 parameter name; skipping it",
+                param_name(name, &param)
+            ));
+            continue;
+        }
+        let literal = match row.get("literal") {
+            None => String::new(),
+            Some(toml::Value::String(text)) => text.clone(),
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) literal is not a string; ignoring it"
+                ));
+                String::new()
+            }
+        };
+        let format = match row.get("format") {
+            None => DEFAULT_FORMAT.to_string(),
+            Some(toml::Value::String(text)) if FORMATS.contains(&text.as_str()) => text.clone(),
+            Some(toml::Value::String(text)) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) format {text:?} is not one of {}; \
+                     using {DEFAULT_FORMAT}",
+                    FORMATS.join(", ")
+                ));
+                DEFAULT_FORMAT.to_string()
+            }
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: {label}[{index}] ({name}) format is not a string; \
+                     using {DEFAULT_FORMAT}"
+                ));
+                DEFAULT_FORMAT.to_string()
+            }
+        };
+        targets.push(Target {
             name: name.to_string(),
             template,
             env_var,
             enabled,
+            kind,
+            param,
+            literal,
+            format,
         });
     }
-    headers
+    targets
+}
+
+/// Static tags every session carries, merged in front of the rule matches.
+fn parse_static_tags(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let Some(rows) = value.as_array() else {
+        warnings.push("settings: tags is not an array of strings; ignoring it".to_string());
+        return Vec::new();
+    };
+    let mut tags = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let Some(tag) = row.as_str().filter(|tag| valid_tag(tag)) else {
+            warnings.push(format!(
+                "settings: tags[{}]={} is not a valid tag \
+                 (starts [a-z0-9], printable, ≤{TAG_MAX_CHARS} chars); skipping it",
+                index + 1,
+                render_toml_scalar(row)
+            ));
+            continue;
+        };
+        if !tags.iter().any(|existing| existing == tag) {
+            tags.push(tag.to_string());
+        }
+    }
+    tags
+}
+
+/// The variable the hook exports for one target: the row's own `env_var`, else
+/// the per-kind spelling (`AOE_HDR_`, `AOE_QRY_`, `AOE_BODY_`). One definition so
+/// the hook, the overlay writer and `doctor` can never disagree.
+pub fn target_env_var(target: &Target) -> String {
+    if target.env_var.is_empty() {
+        derive_env_var_for(&target.kind, &target.name)
+    } else {
+        target.env_var.clone()
+    }
+}
+
+/// The effective query/body parameter name for a settings row.
+pub fn param_name(name: &str, param: &str) -> String {
+    if param.is_empty() {
+        name.to_string()
+    } else {
+        param.to_string()
+    }
+}
+
+/// Query/body parameter names: netstring-ish, no `&`, `=`, `#` or spaces.
+pub fn valid_param_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= 64
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-' | '[' | ']'))
 }
 
 fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Rule> {
@@ -1038,7 +1687,7 @@ fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Ru
         let Some(tag) = tag.filter(|tag| valid_tag(tag)) else {
             warnings.push(format!(
                 "settings: rules[{index}] tag {} is not a valid tag \
-                 ([a-z0-9][a-z0-9._:-]*, ≤{TAG_MAX_CHARS} chars); skipping it",
+                 (starts [a-z0-9], printable, ≤{TAG_MAX_CHARS} chars); skipping it",
                 match tag {
                     Some(tag) => format!("{tag:?}"),
                     None => "None".to_string(),
@@ -1056,17 +1705,10 @@ fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Ru
                 continue;
             }
         };
-        if !MATCH_KINDS_M0.contains(&kind.as_str()) {
-            if MATCH_KINDS_M1.contains(&kind.as_str()) {
-                warnings.push(format!(
-                    "settings: rules[{index}] ({tag}) match_kind {kind:?} is not evaluated until M1; \
-                     it never matches yet"
-                ));
-            } else {
-                warnings.push(format!(
-                    "settings: rules[{index}] ({tag}) match_kind {kind:?} is unknown; it never matches"
-                ));
-            }
+        if !MATCH_KINDS_M0.contains(&kind.as_str()) && !MATCH_KINDS_M1.contains(&kind.as_str()) {
+            warnings.push(format!(
+                "settings: rules[{index}] ({tag}) match_kind {kind:?} is unknown; it never matches"
+            ));
         }
         let value = match row.get("match_value") {
             None => String::new(),
@@ -1078,10 +1720,21 @@ fn parse_rules(rows: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<Ru
                 continue;
             }
         };
+        let priority = match row.get("priority") {
+            None => 0,
+            Some(toml::Value::Integer(n)) => (*n).clamp(-100, 100) as i32,
+            Some(_) => {
+                warnings.push(format!(
+                    "settings: rules[{index}] ({tag}) priority is not an integer; using 0"
+                ));
+                0
+            }
+        };
         rules.push(Rule {
             tag: tag.to_string(),
             match_kind: kind,
             match_value: value,
+            priority,
         });
     }
     rules
@@ -1114,4 +1767,247 @@ pub fn plugin_root() -> PathBuf {
         }
     }
     PathBuf::from(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn settings(tags: &[&str]) -> Settings {
+        Settings {
+            tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            targets: default_targets(),
+            rules: Vec::new(),
+            session_tagging: "short".to_string(),
+            feature_tag: None,
+            token: String::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn facts() -> SessionFacts {
+        SessionFacts {
+            id: "cf11af87da7e4bf0".to_string(),
+            title: "Lithuanians".to_string(),
+            path: "/var/lib/aoe/work/lithuanians".to_string(),
+            group: String::new(),
+            tool: "pi".to_string(),
+            profile: "main".to_string(),
+            branch: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_tag_is_a_key_and_a_value_not_a_word() {
+        assert_eq!(Tag::parse("team:core").unwrap().value, Value::from("core"));
+        assert_eq!(Tag::parse("cost:=1.5").unwrap().value, Value::from(1.5));
+        assert_eq!(
+            Tag::parse("scope:=[\"api\",\"ui\"]").unwrap().value,
+            serde_json::json!(["api", "ui"])
+        );
+        assert_eq!(Tag::parse("platform").unwrap().value, Value::Bool(true));
+        // `feature:` keeps an empty value rather than becoming a marker.
+        assert_eq!(Tag::parse("feature:").unwrap().value, Value::from(""));
+        assert!(Tag::parse("team :=core").is_err());
+        assert!(Tag::parse("cost:=not json").is_err());
+        assert!(Tag::parse(":core").is_err());
+    }
+
+    fn feature_settings(raw: &str) -> Settings {
+        let mut warnings = Vec::new();
+        let tag = parse_feature_tag(Some(&toml::Value::String(raw.to_string())), &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        Settings {
+            tags: Vec::new(),
+            targets: default_targets(),
+            rules: Vec::new(),
+            session_tagging: "short".to_string(),
+            feature_tag: tag,
+            token: String::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_feature_tag_is_an_ordinary_tag_entry() {
+        // The spelling older settings files hold: a bare word means the `feature` key.
+        let bare = Some(Tag {
+            key: "feature".to_string(),
+            value: Value::from("billing"),
+        });
+        assert_eq!(feature_settings("billing").feature_tag, bare);
+        // The standard spelling: a key and a value, exactly like an entry in `tags`.
+        assert_eq!(feature_settings("feature:billing").feature_tag, bare);
+        assert_eq!(
+            feature_settings("feature:=42").feature_tag,
+            Some(Tag {
+                key: "feature".to_string(),
+                value: Value::from(42),
+            })
+        );
+        assert_eq!(
+            feature_settings("epic:checkout").feature_tag,
+            Some(Tag {
+                key: "epic".to_string(),
+                value: Value::from("checkout"),
+            })
+        );
+        assert_eq!(feature_settings("").feature_tag, None);
+    }
+
+    #[test]
+    fn a_feature_tag_may_be_a_stored_pair_or_a_one_entry_list() {
+        let pair: toml::Value = toml::from_str("key = 'epic'\nvalue = 'checkout'\n").unwrap();
+        let mut warnings = Vec::new();
+        assert_eq!(
+            parse_feature_tag(Some(&pair), &mut warnings),
+            Some(Tag {
+                key: "epic".to_string(),
+                value: Value::from("checkout"),
+            })
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // A pair with no value is a marker, like a bare `tags` entry.
+        let marker: toml::Value = toml::from_str("key = 'platform'\n").unwrap();
+        assert_eq!(
+            parse_feature_tag(Some(&marker), &mut warnings),
+            Some(Tag {
+                key: "platform".to_string(),
+                value: Value::Bool(true),
+            })
+        );
+
+        let list = toml::Value::Array(vec![
+            toml::Value::String("feature:billing".into()),
+            toml::Value::String("feature:checkout".into()),
+        ]);
+        let mut warnings = Vec::new();
+        assert_eq!(
+            parse_feature_tag(Some(&list), &mut warnings)
+                .map(|tag| tag.value)
+                .and_then(|value| value.as_str().map(str::to_string)),
+            Some("billing".to_string())
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+        // A shape that is not a tag at all is reported, never silently swallowed.
+        let mut warnings = Vec::new();
+        assert_eq!(
+            parse_feature_tag(Some(&toml::Value::Integer(3)), &mut warnings),
+            None
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn the_feature_entry_travels_like_a_tag_and_keeps_the_features_agreement() {
+        let (tags, _) = parse_tags(&["team:core".into(), "feature:billing".into()]);
+        let (own, warnings) = payload(&feature_settings("feature:checkout"), &facts(), &tags, "");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let object: Value = serde_json::from_str(&payload_json(&own)).unwrap();
+        assert_eq!(object["team"], "core");
+        // The setting wins over the `feature:` tag, in the payload and in `{feature}`.
+        assert_eq!(object["feature"], "checkout");
+
+        // A pair under another key is that field — and `{feature}` keeps reading
+        // the `feature` entry, so the two never disagree.
+        let (epic_payload, warnings) =
+            payload(&feature_settings("epic:checkout"), &facts(), &tags, "");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let object: Value = serde_json::from_str(&payload_json(&epic_payload)).unwrap();
+        assert_eq!(object["epic"], "checkout");
+        assert_eq!(object["feature"], "billing");
+        assert_eq!(
+            feature_of(&feature_settings("epic:checkout"), &tags),
+            "billing"
+        );
+
+        // And it cannot rewrite a session field, for the same reason a tag cannot.
+        let (_, warnings) = payload(&feature_settings("session:mine"), &facts(), &tags, "");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn the_payload_carries_session_fields_then_tags() {
+        let (tags, warnings) = parse_tags(&["team:core".into(), "feature:billing".into()]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let (payload, warnings) = payload(&settings(&[]), &facts(), &tags, "main");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let json = payload_json(&payload);
+        let object: Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(object["session"], "S-cf11");
+        assert_eq!(object["session_id"], "cf11af87da7e4bf0");
+        assert_eq!(object["tool"], "pi");
+        assert_eq!(object["project"], "lithuanians");
+        assert_eq!(object["team"], "core");
+        assert_eq!(object["feature"], "billing");
+        // A field that has no value is absent, not empty.
+        assert!(object.get("group").is_none());
+    }
+
+    #[test]
+    fn a_tag_cannot_rewrite_a_session_field() {
+        let (tags, _) = parse_tags(&["session:mine".into()]);
+        let (payload, warnings) = payload(&settings(&[]), &facts(), &tags, "");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let object: Value = serde_json::from_str(&payload_json(&payload)).unwrap();
+        assert_eq!(object["session"], "S-cf11");
+    }
+
+    #[test]
+    fn the_default_target_sends_the_json_object_and_csv_stays_flat() {
+        let (tags, _) = parse_tags(&["team:core".into()]);
+        let (payload, _) = payload(&settings(&[]), &facts(), &tags, "");
+        let fields = build_fields(&settings(&[]), &facts(), &tags, &payload, "");
+        let json_target = &default_targets()[0];
+        assert!(json_target.renders_payload());
+        let (value, missing) = target_value(json_target, &payload, &fields);
+        assert!(missing.is_empty());
+        assert_eq!(
+            serde_json::from_str::<Value>(&value).unwrap()["team"],
+            "core"
+        );
+
+        let mut csv_target = Target::new("X-Flat", "", "AOE_HDR_X_FLAT").with_format("csv");
+        let (flat, _) = target_value(&csv_target, &payload, &fields);
+        assert_eq!(flat, "team:core");
+        // A template still wins over the format, so an old config is unchanged.
+        csv_target.template = "aoe,{tags},session:{session}".to_string();
+        let (templated, _) = target_value(&csv_target, &payload, &fields);
+        assert_eq!(templated, "aoe,team:core,session:S-cf11");
+    }
+
+    #[test]
+    fn a_template_can_ask_for_the_payload_as_json() {
+        let (tags, _) = parse_tags(&["team:core".into(), "weight:=2".into()]);
+        let (payload, _) = payload(&settings(&[]), &facts(), &tags, "");
+        let fields = build_fields(&settings(&[]), &facts(), &tags, &payload, "");
+        let target = Target::new("X-Both", "{payload_json}", "AOE_HDR_X_BOTH");
+        let (value, _) = target_value(&target, &payload, &fields);
+        let object: Value = serde_json::from_str(&value).unwrap();
+        assert_eq!(object["weight"], 2);
+        assert_eq!(object["tags_json"], Value::Null);
+        // `{tags_json}` is the tag map alone, without the session fields.
+        let only_tags: Value = serde_json::from_str(&fields["tags_json"]).unwrap();
+        assert_eq!(only_tags, serde_json::json!({"team": "core", "weight": 2}));
+    }
+
+    #[test]
+    fn a_template_field_may_hold_digits_and_a_brace_that_is_not_a_field_stays() {
+        let mut fields = BTreeMap::new();
+        fields.insert("tags_b64".to_string(), "eyJhIjoxfQ".to_string());
+        let (out, missing) = render_template("x {tags_b64} y", &fields);
+        assert_eq!(out, "x eyJhIjoxfQ y");
+        assert!(missing.is_empty(), "{missing:?}");
+
+        let (out, missing) = render_template("{payload_json}", &fields);
+        assert_eq!(out, "");
+        assert_eq!(missing, vec!["payload_json".to_string()]);
+
+        // `{Name}` is a header line, not one of our fields: leave it alone.
+        let (out, missing) = render_template("{X-Aoe}", &fields);
+        assert_eq!(out, "{X-Aoe}");
+        assert!(missing.is_empty(), "{missing:?}");
+    }
 }

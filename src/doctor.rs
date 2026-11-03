@@ -128,12 +128,46 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
         &adapter_warnings,
     ));
     checks.push(check_session(&snap, flags));
+    checks.push(check_session_config(adapter, &snap, env));
 
     let harness = adapter.and_then(|adapter| adapters::config_path(adapter, env).0);
-    for item in &snap.resolved {
-        checks.push(check_mapping(adapter, item, env));
+    for (item, target) in snap
+        .resolved
+        .iter()
+        .zip(snap.settings.targets.iter().filter(|row| row.enabled))
+    {
+        checks.push(check_delivery(adapter, target, env));
+        if target.kind == crate::resolver::DEFAULT_KIND {
+            checks.push(check_mapping(adapter, item, env));
+        }
     }
     checks.push(check_values(&snap));
+
+    // What is actually on this machine, not what the row would do: the five
+    // verdicts of plan/parameters.md, from the files themselves (`src/substrate.rs`).
+    let live = crate::substrate::live_sessions(env);
+    let mut cache = crate::substrate::Cache::load(&app_dir);
+    let findings = crate::substrate::classify(
+        adapter,
+        &snap.settings.targets,
+        env,
+        &snap.facts.id,
+        &live,
+        &mut cache,
+    );
+    cache.save();
+    for finding in &findings {
+        checks.push(Check {
+            name: format!("substrate {}", finding.scope),
+            status: finding.status().to_string(),
+            detail: format!(
+                "{}: {}{}",
+                finding.verdict,
+                finding.detail,
+                if finding.cached { " (cached)" } else { "" }
+            ),
+        });
+    }
 
     match snap
         .raw
@@ -442,6 +476,120 @@ fn check_session(snap: &Snapshot, flags: &Flags) -> Check {
     }
 }
 
+/// Where the value goes: a header (checked by `check_mapping`) or a query/body
+/// parameter, which a harness that does not expand `$VAR` there cannot carry live.
+/// Where a session's tags land in this harness: a per-session config it is
+/// pointed at, or the launch environment alone.
+fn check_session_config(adapter: Option<&Adapter>, snap: &Snapshot, env: &Env) -> Check {
+    let name = "session config".to_string();
+    let Some(adapter) = adapter else {
+        return Check {
+            name,
+            status: SKIP.to_string(),
+            detail: "no adapter row; nothing to build".to_string(),
+        };
+    };
+    let verdict = crate::overlay::verdict(adapter);
+    let path = crate::overlay::session_dir(&settings::app_dir(env), &snap.facts.id, &adapter.agent);
+    match verdict {
+        "wired" => Check {
+            name,
+            status: OK.to_string(),
+            detail: format!(
+                "{} carries the values in the launch environment; no file is written or edited",
+                adapter.agent
+            ),
+        },
+        "overlay" => {
+            let env_var = if adapter.overlay_env.is_empty() {
+                "(none)".to_string()
+            } else {
+                adapter.overlay_env.clone()
+            };
+            Check {
+                name,
+                status: OK.to_string(),
+                detail: format!(
+                    "{} writes {} per session and points the harness at it with {}",
+                    adapter.agent,
+                    path.display(),
+                    env_var
+                ),
+            }
+        }
+        _ => Check {
+            name,
+            status: FAIL.to_string(),
+            detail: format!(
+                "adapter {} has write_mode {:?} with writer {:?}: no per-session config can be \
+                 generated, so only the printed mapping is available",
+                adapter.agent,
+                if adapter.write_mode.is_empty() {
+                    crate::overlay::MODE_NONE
+                } else {
+                    &adapter.write_mode
+                },
+                adapter.writer
+            ),
+        },
+    }
+}
+
+/// A non-header target is delivered by the per-session config, so the only
+/// question left is whether the harness can carry that kind at all.
+fn check_delivery(adapter: Option<&Adapter>, target: &crate::resolver::Target, env: &Env) -> Check {
+    let name = format!("delivery {}", target.name);
+    if target.kind == crate::resolver::DEFAULT_KIND {
+        return Check {
+            name,
+            status: SKIP.to_string(),
+            detail: "header delivery, checked by the mapping line".to_string(),
+        };
+    }
+    let Some(adapter) = adapter else {
+        return Check {
+            name,
+            status: SKIP.to_string(),
+            detail: "no adapter row; nothing to check".to_string(),
+        };
+    };
+    if !adapters::supports(adapter, &target.kind) {
+        return Check {
+            name,
+            status: FAIL.to_string(),
+            detail: format!(
+                "adapter {} cannot deliver a {} value (it supports {}); use a supported kind or \
+                 a different harness",
+                adapter.agent,
+                target.kind,
+                adapter.supports.join(", ")
+            ),
+        };
+    }
+    Check {
+        name,
+        status: OK.to_string(),
+        detail: format!(
+            "{} {} is written into this session's config as {:?} ({})",
+            target.kind,
+            target.param_name(),
+            if target.literal.is_empty() {
+                target.env_var.clone()
+            } else {
+                target.literal.clone()
+            },
+            config_or_none(adapter, env)
+        ),
+    }
+}
+
+fn config_or_none(adapter: &Adapter, env: &Env) -> String {
+    adapters::config_path(adapter, env)
+        .0
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "(no config path)".to_string())
+}
+
 fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) -> Check {
     let name = format!("mapping {}", item.header);
     let Some(adapter) = adapter else {
@@ -452,9 +600,16 @@ fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) ->
         };
     };
 
-    if adapter.mechanism == "custom_headers_env" {
+    if adapter.write_mode == crate::overlay::MODE_ENV_ONLY
+        || adapter.mechanism == "custom_headers_env"
+    {
         return check_env_mapping(adapter, item, env);
     }
+
+    // A per-session copy is built by our own writer, so the user's file is only
+    // the starting point: what matters is that it *exists* and names a provider
+    // the writer can put the value into. A missing static entry is the norm here.
+    let overlay = adapter.write_mode != crate::overlay::MODE_NONE;
 
     let (path, warnings) = adapters::config_path(adapter, env);
     let Some(path) = path else {
@@ -472,21 +627,48 @@ fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) ->
         return Check {
             name,
             status: FAIL.to_string(),
-            detail: format!(
-                "{} does not exist; the header is not mapped \
-                 (add the line from `aoe-llm-tags setup --print`)",
-                path.display()
-            ),
+            detail: if overlay {
+                format!(
+                    "{} does not exist; this session's copy is built from it, so {} needs a \
+                     provider there first",
+                    path.display(),
+                    adapter.agent
+                )
+            } else {
+                format!(
+                    "{} does not exist; the header is not mapped \
+                     (add the line from `aoe-llm-tags setup --print`)",
+                    path.display()
+                )
+            },
         };
     }
-    match scan_file(adapter, &path, &item.header) {
+    match scan_file(adapter, &path, &item.header, &item.env_var) {
         Err(err) => Check {
             name,
             status: FAIL.to_string(),
             detail: format!("{} could not be read: {err}", path.display()),
         },
         Ok((found, notes, known)) => {
-            if found {
+            if overlay {
+                Check {
+                    name,
+                    status: OK.to_string(),
+                    detail: format!(
+                        "{}{}",
+                        crate::overlay::verdict(adapter),
+                        known
+                            .as_slice()
+                            .first()
+                            .map(|provider| format!(
+                                ": the session copy carries it for provider {provider}"
+                            ))
+                            .unwrap_or_else(|| {
+                                format!(": {} names a provider the writer can use", path.display())
+                            })
+                    ),
+                }
+            } else if found {
                 Check {
                     name,
                     status: OK.to_string(),
@@ -593,11 +775,29 @@ fn check_values(snap: &Snapshot) -> Check {
 // --- helpers ----------------------------------------------------------------
 
 /// Is `header` mapped here? Returns (found, matched provider notes, all ids).
-fn scan_file(
+pub(crate) fn scan_file(
     adapter: &Adapter,
     path: &Path,
     header: &str,
+    env_var: &str,
 ) -> Result<(bool, Vec<String>, Vec<String>), String> {
+    // A reference row (`config_format = "text"`) points at a file this plugin
+    // deliberately does not parse: the user pastes one line into a config we do
+    // not own, so the honest check is whether that line is there.
+    if adapter.config_format == "text" {
+        let raw = std::fs::read_to_string(path).map_err(|err| err.to_string())?;
+        let reference = adapter.env_ref.replace("{env_var}", env_var);
+        let found = raw.to_lowercase().contains(&header.to_lowercase()) && raw.contains(&reference);
+        return Ok((
+            found,
+            if found {
+                vec!["reference found".to_string()]
+            } else {
+                Vec::new()
+            },
+            Vec::new(),
+        ));
+    }
     let data = adapters::read_config(adapter, path)?;
     let wanted = header.to_lowercase();
     let (mut found, mut notes, mut known) = (false, Vec::new(), Vec::new());

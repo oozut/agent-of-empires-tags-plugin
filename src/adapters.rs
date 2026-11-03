@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::env::Env;
-use crate::resolver::plugin_root;
+use crate::resolver::{plugin_root, Target};
 
 pub const ADAPTERS_FILENAME: &str = "adapters.toml";
 
@@ -30,6 +30,39 @@ pub struct Adapter {
     pub config_paths: Vec<String>,
     pub config_format: String,
     pub mapping_format: String,
+    /// Delivery points where this harness expands an env reference (`$VAR`).
+    /// Anything not listed needs a literal value on that entry.
+    pub interpolates: Vec<String>,
+    /// How this harness spells an env reference: `{env_var}` is substituted.
+    pub env_ref: String,
+    /// Delivery kinds this harness can actually carry (`header`, `query`, `body`).
+    pub supports: Vec<String>,
+    /// How the harness is pointed at a per-session config: `env_only`,
+    /// `overlay_file`, `overlay_dir` or `none` (`docs/harness-adapters.md`).
+    pub write_mode: String,
+    /// The variable that points the harness at the session artifact.
+    pub overlay_env: String,
+    /// Our file inside the artifact (defaults to the source file's name).
+    pub overlay_file: String,
+    /// Which writer builds that file (`src/writer.rs`).
+    pub writer: String,
+    /// For `env_only` rows: the harness's own variable that carries headers.
+    pub native_env: String,
+    /// How one target renders into that variable (`{header}`, `{param}`, `{value}`).
+    pub native_format: String,
+    /// What separates two targets inside that variable: a newline for claude,
+    /// a comma for gemini, whose parser only splits on commas.
+    pub native_sep: String,
+    /// aoe installs its own hooks into this agent's config file, which pins that
+    /// file's path for the launch: aoe refuses any `before_session` hook that
+    /// moves it, so this harness can only be served through a reference the
+    /// user's own config already carries.
+    pub aoe_hooks: bool,
+    /// This harness splits its header variable on `,(?=name:)`, so a value that
+    /// contains such a comma is addressed as a second header: the harness either
+    /// sends a corrupted value or refuses to send anything at all. Gemini's
+    /// `GEMINI_CLI_CUSTOM_HEADERS` parser does exactly this.
+    pub splits_on_commas: bool,
     pub status: String,
     pub notes: String,
 }
@@ -69,10 +102,36 @@ fn rows_from(table: toml::Table, path: &Path) -> (Vec<Adapter>, Vec<String>) {
             )],
         );
     };
-    (
-        rows.iter().filter_map(parse_row).collect::<Vec<_>>(),
-        Vec::new(),
-    )
+    let mut warnings = Vec::new();
+    let mut adapters: Vec<Adapter> = rows.iter().filter_map(parse_row).collect();
+    // aoe installs hooks into some agents' own config files and refuses a launch
+    // where `before_session` moves that path. Those rows cannot use a per-session
+    // copy at all: fall back to the reference channel and say so.
+    for adapter in &mut adapters {
+        let Some(reason) = overlay_refused(adapter) else {
+            continue;
+        };
+        warnings.push(reason);
+        adapter.write_mode = MODE_NONE.to_string();
+        adapter.supports.retain(|kind| kind == "header");
+    }
+    (adapters, warnings)
+}
+
+/// Why a per-session copy cannot be used for this agent, if aoe owns its hooks.
+pub fn overlay_refused(adapter: &Adapter) -> Option<String> {
+    // `env_only` moves nothing: it exports values and the harness's own config
+    // reads them, which aoe's hook-path check never sees.
+    let moves_config = matches!(adapter.write_mode.as_str(), "overlay_file" | "overlay_dir");
+    if !adapter.aoe_hooks || !moves_config {
+        return None;
+    }
+    Some(format!(
+        "adapters: {} declares {}, but aoe installs its hooks and refuses a launch whose \
+         hook path moves, so this agent is served through the reference its config already \
+         carries (header targets only)",
+        adapter.agent, adapter.write_mode
+    ))
 }
 
 fn parse(raw: &str) -> Result<toml::Table, toml::de::Error> {
@@ -91,6 +150,7 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
             .unwrap_or_default()
             .to_string()
     };
+    let flag = |key: &str| row.get(key).and_then(toml::Value::as_bool).unwrap_or(false);
     let list = |key: &str| -> Vec<String> {
         row.get(key)
             .and_then(toml::Value::as_array)
@@ -125,6 +185,30 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         config_paths: list("config_paths"),
         config_format: or_default(text("config_format"), "none"),
         mapping_format: text("mapping_format"),
+        interpolates: list("interpolates"),
+        env_ref: or_default(text("env_ref"), "${env_var}"),
+        write_mode: or_default(text("write_mode"), "none"),
+        overlay_env: text("overlay_env"),
+        overlay_file: text("overlay_file"),
+        writer: text("writer"),
+        native_env: text("native_env"),
+        native_format: text("native_format"),
+        native_sep: or_default(text("native_sep"), "\n"),
+        aoe_hooks: flag("aoe_hooks"),
+        splits_on_commas: flag("splits_on_commas"),
+        supports: {
+            // `supports` absent means the default (a header); `supports = []` means
+            // "no channel at all" and must stay empty, or a row that deliberately
+            // declares nothing would claim a header delivery it cannot make.
+            match row.get("supports").and_then(toml::Value::as_array) {
+                Some(values) => values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(str::to_string)
+                    .collect(),
+                None => vec!["header".to_string()],
+            }
+        },
         status: or_default(text("status"), "needs_research"),
         notes: text("notes"),
     })
@@ -256,8 +340,97 @@ pub fn config_path(adapter: &Adapter, env: &Env) -> (Option<PathBuf>, Vec<String
     )
 }
 
+/// Can this harness carry a value of `kind` at all?
+pub const MODE_NONE: &str = "none";
+
+pub fn supports(adapter: &Adapter, kind: &str) -> bool {
+    adapter.supports.iter().any(|listed| listed == kind)
+}
+
+/// Does this harness expand `$VAR` at `delivery` (`header`, `query`, `body`)?
+pub fn interpolates(adapter: &Adapter, delivery: &str) -> bool {
+    adapter.interpolates.iter().any(|point| point == delivery)
+}
+
+/// Would this value be read as *two* headers by a comma-splitting parser?
+///
+/// Gemini's `parseCustomHeaders` splits on `,(?=\s*[^,:]+:)`, so
+/// `{"team":"core","feature":"billing"}` becomes `X-AoE-Tags: {"team":"core"`
+/// plus a header named `"feature"`, and the request is dropped entirely
+/// (`docs/harness-evidence/gemini.json`). A comma that is not followed by
+/// `name:` (`a,b`) survives, so the check is on the value, not on the presence
+/// of a comma.
+pub fn comma_splits(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    for (index, byte) in bytes.iter().enumerate() {
+        if *byte != b',' {
+            continue;
+        }
+        let mut rest = value[index + 1..].chars().peekable();
+        // `\s*` then one or more characters that are neither `,` nor `:`, then `:`.
+        while matches!(rest.peek(), Some(c) if c.is_whitespace()) {
+            rest.next();
+        }
+        // `[^,:]+` is one or more characters, then the colon that ends a name.
+        let mut chars = rest.by_ref().skip_while(|c| *c == ',');
+        let mut hit_colon = false;
+        if let Some(first) = chars.next() {
+            if first != ':' {
+                hit_colon = chars.take_while(|c| *c != ',').any(|c| c == ':');
+            }
+        }
+        if hit_colon {
+            return true;
+        }
+    }
+    false
+}
+
+/// The reason a `splits_on_commas` harness cannot carry this value, if any.
+pub fn comma_refusal(adapter: &Adapter, name: &str, value: &str) -> Option<String> {
+    if !adapter.splits_on_commas || !comma_splits(value) {
+        return None;
+    }
+    Some(
+        format!(
+            "adapter {} reads {} as a header list split on `,(name:)`, and this value contains ",
+            adapter.agent, name
+        ) + "one: the harness would truncate it or send no request at all. \
+       Use `template = \"{tags_b64}\"` (the same JSON, base64url-encoded so it cannot \
+       be split) or a comma-free template such as \
+       `\"{project}/{feature}\"`",
+    )
+}
+
+/// The value the mapping line and the writer put at `delivery`:
+/// an env reference where the harness expands it, else the literal.
+pub fn delivery_value(adapter: &Adapter, target: &Target, kind: &str) -> Option<String> {
+    if interpolates(adapter, kind) {
+        return Some(env_reference(adapter, &target.env_var));
+    }
+    if target.literal.is_empty() {
+        return None;
+    }
+    Some(target.literal.clone())
+}
+
+/// How a row spells "read this variable", from its `env_ref`.
+///
+/// The default is `${env_var}`, and the whole `${env_var}` token is replaced
+/// before the bare `{env_var}` one — otherwise `${env_var}` would render as
+/// `$NAME`, which is a different thing in a JSON or YAML value: `${NAME}` is the
+/// spelling hermes, qwen, droid and openclaw expand, `$NAME` the one pi and
+/// gemini take, and codex wants the bare name because `env_http_headers` already
+/// means "read a variable".
+pub fn env_reference(adapter: &Adapter, env_var: &str) -> String {
+    adapter
+        .env_ref
+        .replace("${env_var}", &format!("${{{env_var}}}"))
+        .replace("{env_var}", env_var)
+}
+
 /// One printable mapping line for one header (`None` when the row has no format).
-pub fn mapping_line(adapter: &Adapter, header: &str, env_var: &str, env: &Env) -> Option<String> {
+pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<String> {
     let (path, _) = config_path(adapter, env);
     let path = path?;
     if adapter.mapping_format.is_empty() {
@@ -269,12 +442,23 @@ pub fn mapping_line(adapter: &Adapter, header: &str, env_var: &str, env: &Env) -
     } else {
         provider
     };
+    if !supports(adapter, &target.kind) {
+        return None;
+    }
+    let value = delivery_value(adapter, target, &target.kind)?;
+    let template = match target.kind.as_str() {
+        "query" => "{file} → {provider} baseUrl query \"{param}\" = \"{value}\"",
+        "body" => "{file} → {provider} models[].samplingParams.\"{param}\" = {value}",
+        _ => adapter.mapping_format.as_str(),
+    };
     Some(
-        adapter
-            .mapping_format
+        template
             .replace("{file}", &path.to_string_lossy())
-            .replace("{header}", header)
-            .replace("{env_var}", env_var)
+            .replace("{header}", &target.name)
+            .replace("{env_ref}", &env_reference(adapter, &target.env_var))
+            .replace("{env_var}", &target.env_var)
+            .replace("{param}", target.param_name())
+            .replace("{value}", &value)
             .replace("{provider}", &provider),
     )
 }
@@ -449,6 +633,112 @@ mod tests {
         let (rows, warnings) = load(Some(&dir));
         assert!(rows.is_empty());
         assert!(warnings[0].contains("could not be read"), "{warnings:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_overlay_row_for_an_agent_aoe_writes_hooks_for_falls_back_to_a_reference() {
+        let dir = std::env::temp_dir().join(format!("llm-tags-hooks-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(ADAPTERS_FILENAME),
+            r#"
+[[adapter]]
+agent = "codex"
+aoe_hooks = true
+write_mode = "overlay_dir"
+overlay_env = "CODEX_HOME"
+overlay_file = "config.toml"
+writer = "codex_toml"
+supports = ["header", "query"]
+"#,
+        )
+        .unwrap();
+        let (rows, warnings) = load(Some(&dir));
+        assert_eq!(rows[0].write_mode, MODE_NONE);
+        assert_eq!(rows[0].supports, vec!["header"]);
+        assert!(warnings[0].contains("hook path moves"), "{warnings:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_header_list_parser_splits_on_a_comma_before_a_name() {
+        // Gemini's parseCustomHeaders splits on `,(?=\s*[^,:]+:)`.
+        assert!(comma_splits(r#"{"a":1,"b":2}"#));
+        assert!(comma_splits("team:core,feature:billing"));
+        assert!(comma_splits("{x},other: 1"));
+        // A comma with nothing name-shaped after it survives untouched.
+        assert!(!comma_splits("a,b"));
+        assert!(!comma_splits("a, b, c"));
+        assert!(!comma_splits(r#"{"tags_b64":"eyJhIjoxfQ"}"#));
+        assert!(!comma_splits(""));
+    }
+
+    #[test]
+    fn an_empty_supports_list_is_taken_literally() {
+        // `supports = []` is how a row says "no channel"; defaulting it to a
+        // header would let `setup` write a delivery the harness drops.
+        let sandbox = std::env::temp_dir().join(format!("adapters-{}", std::process::id()));
+        let plugin = sandbox.join("plugin");
+        std::fs::create_dir_all(plugin.join("bin")).expect("dirs");
+        std::fs::write(
+            plugin.join("adapters.toml"),
+            "[[adapter]]\nagent = \"mute\"\nmechanism = \"none\"\nsupports = []\nstatus = \"documented\"\n\n             [[adapter]]\nagent = \"plain\"\nmechanism = \"config_headers\"\n",
+        )
+        .expect("table");
+        let (rows, _) = load(Some(&plugin));
+        let row = |agent: &str| rows.iter().find(|row| row.agent == agent).expect("row");
+        assert!(
+            row("mute").supports.is_empty(),
+            "{:?}",
+            row("mute").supports
+        );
+        assert_eq!(row("plain").supports, vec!["header".to_string()]);
+        let _ = std::fs::remove_dir_all(&sandbox);
+    }
+
+    #[test]
+    fn a_reference_keeps_the_braces_the_row_asked_for() {
+        // The default `${env_var}` must render `${NAME}`, not `$NAME`: a JSON or
+        // YAML value expands only the braced spelling, and a bare name is not a
+        // reference at all. codex wants the bare name, so its row says so.
+        let (rows, warnings) = load(None);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let row = |agent: &str| rows.iter().find(|row| row.agent == agent).expect("row");
+        let openclaw = row("openclaw");
+        assert_eq!(openclaw.env_ref, "${env_var}");
+        assert_eq!(env_reference(openclaw, "AOE_LLM_TAGS"), "${AOE_LLM_TAGS}");
+        let codex = row("codex");
+        assert_eq!(env_reference(codex, "AOE_LLM_TAGS"), "AOE_LLM_TAGS");
+    }
+
+    #[test]
+    fn the_gemini_row_refuses_a_value_its_parser_would_split() {
+        let dir = std::env::temp_dir().join(format!("aoe-adapters-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(ADAPTERS_FILENAME),
+            r#"
+[[adapter]]
+agent = "gemini"
+mechanism = "custom_headers_env"
+mapping_format = 'GEMINI_CLI_CUSTOM_HEADERS="{header}: ${env_var}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "env_only"
+native_env = "GEMINI_CLI_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+splits_on_commas = true
+aoe_hooks = true
+status = "verified"
+"#,
+        )
+        .unwrap();
+        let (rows, _) = load(Some(&dir));
+        let gemini = &rows[0];
+        assert!(gemini.splits_on_commas);
+        assert!(comma_refusal(gemini, "X-AoE-Tags", r#"{"a":1,"b":2}"#).is_some());
+        assert!(comma_refusal(gemini, "X-AoE-Tags", "S-cf11").is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

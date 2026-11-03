@@ -1,0 +1,44 @@
+{
+  "agent": "claude",
+  "binary": "/var/lib/aoe/.local/bin/claude",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T10:58:27Z",
+  "exit_code": 1,
+  "session_override": {
+    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: {\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-QA0WlN/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-2111451\",\"team\":\"core\",\"tool\":\"claude\"}"
+  },
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-QA0WlN/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-2111451\",\"team\":\"core\",\"tool\":\"claude\"}"
+  ],
+  "requests": 2,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-claude-QA0WlN/project",
+        "session": "S-prob",
+        "session_id": "probe-claude-2111451",
+        "team": "core",
+        "tool": "claude"
+      },
+      "name": "X-AoE-Tags"
+    },
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-claude-QA0WlN/project",
+        "session": "S-prob",
+        "session_id": "probe-claude-2111451",
+        "team": "core",
+        "tool": "claude"
+      },
+      "name": "X-AoE-Tags"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

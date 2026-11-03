@@ -26,14 +26,25 @@ config_env = "PI_CODING_AGENT_DIR"
 config_paths = ["~/.pi/agent/models.json", "$PI_CODING_AGENT_DIR/models.json"]
 config_format = "json"
 mapping_format = '{file} → providers.{provider}.headers["{header}"] = "${env_var}"'
-status = "documented"
+interpolates = ["header"]
+supports = ["header", "body"]
+write_mode = "overlay_dir"
+overlay_env = "PI_CODING_AGENT_DIR"
+overlay_file = "models.json"
+writer = "pi_models"
+status = "verified"
 notes = """
+Verified on the host (2026-11) through tools/probe-harness.sh (docs/harness-evidence/pi.json):
+header delivery works, and a body target lands in `models[].samplingParams` — the session copy is
+written per launch, so the value is baked in and the harness's lack of body interpolation does
+not matter. A query parameter in `baseUrl` does not work: pi appends the endpoint path to
+`baseUrl`, so `http://h/v1?tags=x` becomes `/v1?tags=x/chat/completions`, and a `query` target is
+refused for pi rather than written.
+Headers additionally accept `$VAR` / `!command`, which is why the reference channel still works
+for a config that is not a session copy.
 The provider entry must keep a non-empty `models` list: this host's pi-proxy discards a
 headers-only entry and rebuilds the provider from scratch, taking `headers` with it. The first
-path is the wrapper's source file (`$HOME/.pi/agent/models.json`); `$PI_CODING_AGENT_DIR` is
-regenerated on every launch and is never the write target. `command_headers`
-(`!aoe-llm-tags value X-AoE-Tags`) is also accepted and is cached per process, so it is no more
-live than the minted variable.
+mapping_format is the shipped one; the second is the command variant.
 """
 
 [[adapter]]
@@ -45,10 +56,19 @@ config_env = "CLAUDE_CONFIG_DIR"
 config_paths = ["~/.claude/settings.json"]
 config_format = "none"
 mapping_format = 'ANTHROPIC_CUSTOM_HEADERS="{header}: ${env_var}"'
-status = "documented"
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "env_only"
+native_env = "ANTHROPIC_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+aoe_hooks = true
+status = "verified"
 notes = """
-No static config file: the variable carries whole header lines. The shipped mapping is the
-"no static file" form, so `doctor` checks the variable rather than a file.
+No static config file: the variable carries whole header lines, so the value rides the launch
+environment and nothing is written anywhere. aoe installs claude's own hooks into
+~/.claude/settings.json and refuses a launch whose hook path moves, which rules out a
+per-session config directory for this agent. The shipped mapping is the "no static file" form,
+so `doctor` checks the variable rather than a file.
 """
 
 [[adapter]]
@@ -60,10 +80,18 @@ config_env = "CODEX_HOME"
 config_paths = ["~/.codex/config.toml", "$CODEX_HOME/config.toml"]
 config_format = "toml"
 mapping_format = '{file} → [model_providers.{provider}.env_http_headers] "{header}" = "{env_var}"'
-status = "documented"
+env_ref = "{env_var}"
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+status = "verified"
 notes = """
-aoe owns ~/.codex/hooks.json, so point the hook installer at config.toml only, never at
-hooks.json.
+codex can carry a query parameter too (`query_params`), and `src/writer.rs` has a `codex_toml`
+writer that places both — proven with `tools/probe-harness.sh codex` outside aoe. Under aoe the
+harness is header-only: aoe installs ~/.codex/hooks.json and refuses a launch whose hook path
+moves, which is exactly what a per-session CODEX_HOME does. So the header rides the reference
+this row already declares: `[model_providers.<id>.env_http_headers] X-AoE-Tags = "AOE_LLM_TAGS"`
+in the user's own config, installed once with `setup --print`.
 """
 
 [[adapter]]
@@ -74,61 +102,221 @@ mechanism = "config_headers"
 config_env = "XDG_CONFIG_HOME"
 config_paths = ["~/.config/opencode/opencode.json", "$XDG_CONFIG_HOME/opencode/opencode.json"]
 config_format = "json"
-mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{{env:{env_var}}}"'
-status = "documented"
-notes = "Falls back to opencode.jsonc in the same directory on some versions; not verified here."
+mapping_format = '{file} → provider.{provider}.options.headers["{header}"] = "{env:{env_var}}"'
+interpolates = ["header", "query"]
+supports = ["header", "query"]
+write_mode = "overlay_file"
+overlay_env = "OPENCODE_CONFIG"
+overlay_file = "opencode.json"
+writer = "opencode_json"
+status = "verified"
+notes = """
+OPENCODE_CONFIG names one file, so the session copy is that file alone and no sibling entries are
+needed. Verified with tools/probe-harness.sh opencode (docs/harness-evidence/opencode.json). Some
+versions also read opencode.jsonc; not probed here.
+"""
 
 [[adapter]]
 agent = "hermes"
 tools = ["hermes"]
 label = "hermes"
-mechanism = "unknown"
-config_paths = []
-config_format = "none"
-status = "needs_research"
-notes = "Provider plugin `extra_headers` looks promising; config path unknown."
+mechanism = "config_headers"
+config_paths = ["~/.hermes/config.yaml"]
+config_format = "text"
+mapping_format = 'providers."<id>".extra_headers."{header}" = "{value}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "verified"
+notes = """
+Hermes expands `${VAR}` and `${env:VAR}` recursively in config strings (`_expand_env_vars`,
+hermes_cli/config.py), so one line in the provider entry carries a session's value with nothing
+generated: `providers.<id>.extra_headers."X-AoE-Tags" = "${AOE_LLM_TAGS}"`. The file is YAML and
+aoe installs its own hooks into it, so this row is a reference only: `config_format = "text"` means
+`doctor` checks that the header name and the variable both appear, rather than parsing YAML it
+cannot rewrite. Verified with tools/probe-harness.sh hermes (docs/harness-evidence/hermes.json).
+"""
 
 [[adapter]]
 agent = "gemini"
 tools = ["gemini"]
 label = "gemini"
-mechanism = "unknown"
+mechanism = "custom_headers_env"
 config_paths = ["~/.gemini/settings.json"]
 config_format = "none"
-status = "needs_research"
+mapping_format = 'GEMINI_CLI_CUSTOM_HEADERS="{header}: ${env_var}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "env_only"
+native_env = "GEMINI_CLI_CUSTOM_HEADERS"
+native_format = "{header}: {value}"
+native_sep = ","
+splits_on_commas = true
+aoe_hooks = true
+status = "verified"
+notes = """
+gemini reads its whole header list from `GEMINI_CLI_CUSTOM_HEADERS` (`parseCustomHeaders`,
+@google/gemini-cli 0.66.0), so the value rides the launch environment and nothing is written.
+The parser splits on `,(?=name:)`, which means the default JSON payload — `{"a":1,"b":2}` — is
+addressed as two headers, and the request is then dropped with
+`TypeError: Headers.append: invalid header name` before anything leaves the process. This row is
+therefore marked `splits_on_commas`: `setup --apply` refuses such a target instead of writing one,
+and `{tags_b64}` carries the same JSON in a spelling no parser can split. A comma that is not
+followed by `name:` (`a,b`) is fine and is not refused. Verified with
+tools/probe-harness.sh gemini (docs/harness-evidence/gemini.json).
+"""
+
+[[adapter]]
+agent = "droid"
+tools = ["droid"]
+label = "droid"
+mechanism = "config_headers"
+config_paths = ["~/.factory/settings.json", "~/.factory/config.json"]
+config_format = "text"
+mapping_format = '<file> → customModels[].extraHeaders["{header}"] = "{value}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "documented"
+notes = """
+droid's settings carry `customModels[]` entries with an `extraHeaders` map, and user-level
+settings expand `${VAR}` inside it (`i1()`/`fd()` in the droid 1.2.0 binary; the expansion is
+withheld for project-level sources). So one static line in `~/.factory/settings.json` serves every
+session: `"X-AoE-Tags": "${AOE_HDR_X_AOE_TAGS}"`. `config_format = "text"` because `doctor` only
+checks that the header name and the variable both appear rather than rewriting a file aoe does not
+own. `aoe_hooks = true` is conservative: aoe installs its own hooks for this agent, so a
+per-session config directory would be refused anyway. `tools/probe-harness.sh droid` records
+`blocked-by-auth` (docs/harness-evidence/droid.json): droid validates a Factory account before it
+sends anything, so the parser and the expansion were read out of the binary and no request could be
+observed. That is why the status is `documented`, not `verified` — an account-bound probe can turn
+this row into `verified` without any code change.
+"""
+
+[[adapter]]
+agent = "qwen"
+tools = ["qwen"]
+label = "qwen"
+mechanism = "config_headers"
+config_paths = ["~/.qwen/settings.json"]
+config_format = "text"
+mapping_format = '<file> → modelProviders.<protocol>[].generationConfig.customHeaders["{header}"] = "{value}"'
+interpolates = ["header"]
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "verified"
+notes = """
+qwen's settings carry `modelProviders` keyed by protocol, each entry a model config; a
+`generationConfig.customHeaders` map on the entry reaches the wire (a provider-level
+`customHeaders` is merged into it by `applyProviderCustomHeaders`). `${VAR}` is expanded from the
+environment, so one static line in `~/.qwen/settings.json` serves every session:
+`"X-Aoe-Tags": "${AOE_HDR_X_AOE_TAGS}"`. A `${session_id}` placeholder is dropped unless
+`outboundCorrelation.allowDynamicHeaderValues` is true, which is why the reference is the variable
+and not a runtime placeholder. `aoe hooks` installs qwen hooks, so `write_mode = "none"` — a
+per-session config directory would be refused anyway. Verified with tools/probe-harness.sh qwen
+(docs/harness-evidence/qwen.json).
+"""
 
 [[adapter]]
 agent = "vibe"
 tools = ["vibe"]
 label = "vibe"
-mechanism = "unknown"
-config_paths = ["~/.config/vibe"]
-config_format = "none"
-status = "needs_research"
+mechanism = "config_headers"
+config_paths = ["~/.vibe/config.toml", "$VIBE_HOME/config.toml"]
+config_format = "toml"
+mapping_format = '[[providers]] with name = "<id>" → extra_headers."{header}" = "{value}"'
+interpolates = []
+supports = ["header"]
+write_mode = "overlay_dir"
+overlay_env = "VIBE_HOME"
+overlay_file = "config.toml"
+writer = "vibe_toml"
+status = "verified"
+notes = """
+vibe reads its whole home from `$VIBE_HOME` (`utils/vibe_home.py`) and each `[[providers]]` entry
+carries an `extra_headers` map (`ProviderConfig.extra_headers`), so a session gets its own
+`config.toml` and no value is interpolated: vibe does **not** expand `$NAME` in config strings —
+with `extra_headers = { X-AoE-Tags = "${AOE_LLM_TAGS}" }` the literal `${AOE_LLM_TAGS}` reaches the
+wire. That is why this row is the only writer-backed one besides `pi` and `opencode`: the value
+must be in the file. `interpolates = []` says so, and a `query`/`body` target is skipped with a
+reason by the writer (`vibe_toml`, src/writer.rs). `aoe hooks` installs no vibe hooks, so
+`aoe_hooks` stays false. Verified with tools/probe-harness.sh vibe
+(docs/harness-evidence/vibe.json): `extra_headers` arrived at the sink on both requests.
+"""
 
 [[adapter]]
 agent = "kiro"
 tools = ["kiro"]
 label = "kiro"
-mechanism = "unknown"
-config_paths = []
+mechanism = "none"
+config_paths = ["~/.local/share/kiro-cli"]
 config_format = "none"
-status = "needs_research"
+supports = []
+write_mode = "none"
+aoe_hooks = true
+status = "documented"
+notes = """
+kiro-cli 2.37.1 (`kiro-cli`, `kiro-cli-chat`, `kiro-cli-term` in `~/.local/bin`) has **no place to
+put a tag**: its HTTP goes through the AWS SDK (`aws-smithy-runtime` 1.x interceptors, SigV4
+signing, endpoint resolution in `aws-config`) against Kiro's own endpoints. `strings` over
+`kiro-cli-chat` finds no `customHeaders`/`extraHeaders`/`CUSTOM_HEADERS` key at all, and
+`kiro-cli settings` exposes appearance/behaviour keys, not transport ones. `aoe hooks` does install
+kiro hooks, so the config file is aoe-owned and a per-session copy would be refused anyway.
+Recorded as `mechanism = "none"` with `supports = []` rather than a guess: `setup --apply` refuses
+a target for this agent and `doctor` says the harness has no channel, instead of claiming a
+delivery. Re-check if Kiro ships a provider/base-URL setting.
+"""
 
 [[adapter]]
 agent = "cline"
 tools = ["cline"]
 label = "cline"
-mechanism = "unknown"
-config_paths = []
-config_format = "none"
-status = "needs_research"
+mechanism = "config_headers"
+config_paths = ["~/.cline"]
+config_format = "json"
+mapping_format = '<config dir> → provider entry `headers["{header}"] = "{value}"`'
+interpolates = []
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "documented"
+notes = """
+The Cline SDK (bundled in `cline` 3.0.74, `@cline/core` + `@cline/llms`) accepts a per-provider
+`headers` map — `CoreModelConfig.headers: Record<string, string>` in `types/config.d.ts`, resolved
+into the request through three layers (`stored`, `config`, `session` in
+`llms/dist/providers/request-headers.d.ts`). What is **not** established: whether a config string
+is expanded (no `$VAR` handling found in the bundle) and which file the CLI writes the provider map
+to (`cline --config <dir>` defaults to `~/.cline`, and there is no env var for it — only
+`CLINE_DATA_DIR`, which is local state). So this row is `documented`: the channel exists in the
+SDK, `write_mode = "none"` because the plugin cannot reach a session-scoped copy of `~/.cline`
+without a CLI flag it does not control, and no probe has observed a request carrying a tag yet.
+`@cline/cli`'s `clite` binary crashes with SIGILL on this host, so a probe would have to use the
+`cline` npm 3.x build and a real provider account.
+"""
 
 [[adapter]]
 agent = "openclaw"
 tools = ["openclaw"]
 label = "openclaw"
-mechanism = "unknown"
-config_paths = []
-config_format = "none"
-status = "needs_research"
+mechanism = "config_headers"
+config_paths = ["~/.openclaw/openclaw.json", "$OPENCLAW_CONFIG_PATH"]
+config_format = "json"
+mapping_format = 'models.providers."<id>".headers["{header}"] = "{env_ref}"'
+interpolates = ["header"]
+supports = ["header"]
+env_ref = "${env_var}"
+write_mode = "none"
+status = "verified"
+notes = """
+openclaw resolves `models.providers.<id>` and each provider carries a `headers` map next to
+`baseUrl`/`apiKey`; a custom provider must declare `models` (the CLI refuses the change otherwise:
+"custom model providers must declare models"). The map is expanded per process, so one static line
+serves every session — the probe writes `"X-AoE-Tags": "${AOE_LLM_TAGS}"` and the sink received the
+minted payload, not the placeholder. An **unset** variable is left on the wire verbatim rather than
+emptied (`${AOE_HDR_X_AOE_TAGS}` arrived literally when the hook had not exported it), so a typo is
+visible in the evidence instead of silently sending nothing. `OPENCLAW_STATE_DIR` /
+`OPENCLAW_CONFIG_PATH` / `--profile` would also allow a per-session copy, which is why
+`config_paths` lists the env path second — but no writer is needed while interpolation works.
+"""

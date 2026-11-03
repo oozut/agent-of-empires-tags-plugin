@@ -1,0 +1,55 @@
+{
+  "agent": "codex",
+  "binary": "/var/lib/aoe/.local/bin/codex",
+  "cli": "target/debug/aoe-llm-tags",
+  "session_id": "4b1275487b024512",
+  "overlay": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/sessions/4b1275487b024512/codex",
+  "overlay_entries": {},
+  "overlay_carries": {
+    "header": false,
+    "query": false,
+    "body": false
+  },
+  "requests": 0,
+  "deliveries": [],
+  "delivered": [],
+  "env_payloads": {
+    "AOE_BODY_METADATA": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "4b1275487b024512",
+      "project_path": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/scratch/4b1275487b024512",
+      "session": "S-4b12",
+      "session_id": "4b1275487b024512",
+      "team": "core",
+      "tool": "codex"
+    },
+    "AOE_HDR_X_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "4b1275487b024512",
+      "project_path": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/scratch/4b1275487b024512",
+      "session": "S-4b12",
+      "session_id": "4b1275487b024512",
+      "team": "core",
+      "tool": "codex"
+    },
+    "AOE_QRY_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "4b1275487b024512",
+      "project_path": "/tmp/aoe-session-codex-8kUUCI/home/.config/agent-of-empires/scratch/4b1275487b024512",
+      "session": "S-4b12",
+      "session_id": "4b1275487b024512",
+      "team": "core",
+      "tool": "codex"
+    }
+  },
+  "outcome": "no-request",
+  "aoe_message": "OpenAI Codex v0.166.0",
+  "payload_fields": {},
+  "run_dir": "/tmp/aoe-session-codex-8kUUCI"
+}
