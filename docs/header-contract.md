@@ -60,6 +60,20 @@ Fields are included only when they have a value, and `feature` is written last s
 tag overrides the derived one. A tag whose key is a session field cannot shadow it: the session
 wins and the tag is dropped with a warning.
 
+`feature_tag` — the per-project setting for the feature a session belongs to — is **one of these
+entries**, not a bare word with a key implied elsewhere:
+
+| You write | It means |
+|---|---|
+| `feature_tag = "feature:billing"` | `"feature": "billing"`, the standard entry |
+| `feature_tag = "billing"` | the same entry; the old spelling keeps the implied key |
+| `feature_tag = "epic:checkout"` | `"epic": "checkout"` — the key is the payload field, so there is no `feature` field and `{feature}` reads a `feature:` tag instead |
+| `feature_tag = { key = "epic", value = "checkout" }` | the same pair, for a settings form that stores key and value apart |
+
+Global config, a profile (`profiles/<name>/config.toml`) and a project each hold the same grammar
+and are parsed by the same code, so a value means the same thing wherever it was written. Like a
+tag, it cannot take a session field: `feature_tag = "session:mine"` is dropped with a warning.
+
 ### Targets: where a payload goes, and which slice
 
 A target chooses **where** the payload travels and **what** of it travels there.

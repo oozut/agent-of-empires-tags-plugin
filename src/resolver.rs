@@ -217,7 +217,8 @@ pub struct Settings {
     pub targets: Vec<Target>,
     pub rules: Vec<Rule>,
     pub session_tagging: String,
-    pub feature_tag: String,
+    /// The operator's feature: one standard tag entry, not a second taxonomy.
+    pub feature_tag: Option<Tag>,
     pub warnings: Vec<String>,
 }
 
@@ -228,7 +229,7 @@ impl Default for Settings {
             targets: default_targets(),
             rules: Vec::new(),
             session_tagging: DEFAULT_SESSION_TAGGING.to_string(),
-            feature_tag: String::new(),
+            feature_tag: None,
             warnings: Vec::new(),
         }
     }
@@ -256,21 +257,7 @@ impl Settings {
             tagging = DEFAULT_SESSION_TAGGING.to_string();
         }
 
-        let mut feature_tag = match table.get("feature_tag") {
-            None => String::new(),
-            Some(toml::Value::String(text)) => text.clone(),
-            Some(_) => {
-                warns.push("settings: feature_tag is not a string; ignoring it".to_string());
-                String::new()
-            }
-        };
-        if !feature_tag.is_empty() && !valid_tag(&feature_tag) {
-            warns.push(format!(
-                "settings: feature_tag {feature_tag:?} is not a valid tag \
-                 (starts [a-z0-9], printable, ≤{TAG_MAX_CHARS} chars); ignoring it"
-            ));
-            feature_tag.clear();
-        }
+        let feature_tag = parse_feature_tag(table.get("feature_tag"), &mut warns);
 
         Self {
             tags,
@@ -427,11 +414,142 @@ pub fn parse_tags(raw: &[String]) -> (Vec<Tag>, Vec<String>) {
     (tags, warnings)
 }
 
+/// Fields [`payload`] derives from the session. A tag or a `feature_tag` naming
+/// one of these is dropped rather than allowed to rewrite the session's identity.
+const SESSION_FIELDS: [&str; 8] = [
+    "session",
+    "session_id",
+    "tool",
+    "profile",
+    "group",
+    "project",
+    "project_path",
+    "branch",
+];
+
+/// The operator's feature, spelled as one standard tag entry.
+///
+/// `feature_tag` is a single tag, not a second taxonomy, so it accepts the shapes
+/// a `tags` entry does — plus the bare word older settings files hold:
+///
+/// * `feature:billing` — a normal entry, with any key
+/// * `billing` — the same as `feature:billing` (the key was implied, so it stays implied)
+/// * `{ key = "epic", value = "checkout" }` — an explicit pair, the shape a
+///   per-project settings form stores when it keeps the key and value apart
+/// * `["feature:billing"]` — a one-entry list, the shape a `tags` field has
+///
+/// The result is a [`Tag`], so every level that can set this — the global config,
+/// a profile, a project — is parsed, validated and delivered by the same code as
+/// every other tag.
+pub fn parse_feature_tag(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Option<Tag> {
+    match value? {
+        toml::Value::String(raw) => feature_from_entry(raw, warnings),
+        toml::Value::Array(items) => {
+            let mut parsed: Option<Tag> = None;
+            for item in items {
+                let tag = match item {
+                    toml::Value::String(raw) => feature_from_entry(raw, warnings),
+                    other => feature_from_pair(other, warnings),
+                };
+                if tag.is_none() {
+                    continue;
+                }
+                if parsed.is_some() {
+                    warnings.push(
+                        "settings: feature_tag is a list; only its first entry is used".to_string(),
+                    );
+                    break;
+                }
+                parsed = tag;
+            }
+            parsed
+        }
+        other => feature_from_pair(other, warnings),
+    }
+}
+
+fn feature_from_entry(raw: &str, warnings: &mut Vec<String>) -> Option<Tag> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if !valid_tag(raw) {
+        warnings.push(format!(
+            "settings: feature_tag {raw:?} is not a valid tag \
+             (starts [a-z0-9], printable, ≤{TAG_MAX_CHARS} chars); ignoring it"
+        ));
+        return None;
+    }
+    if raw.contains(':') {
+        return match Tag::parse(raw) {
+            Ok(tag) => Some(tag),
+            Err(message) => {
+                warnings.push(format!("settings: {message}; ignoring feature_tag"));
+                None
+            }
+        };
+    }
+    Some(Tag {
+        key: "feature".to_string(),
+        value: Value::String(raw.to_string()),
+    })
+}
+
+fn feature_from_pair(value: &toml::Value, warnings: &mut Vec<String>) -> Option<Tag> {
+    let table = match value {
+        toml::Value::Table(table) => table,
+        other => {
+            warnings.push(format!(
+                "settings: feature_tag {other:?} is not a tag entry \
+                 (`key:value`, a bare word, or {{ key = …, value = … }}); ignoring it"
+            ));
+            return None;
+        }
+    };
+    let key = table
+        .get("key")
+        .and_then(toml::Value::as_str)
+        .unwrap_or("feature")
+        .trim()
+        .to_string();
+    if !valid_tag(&key) {
+        warnings.push(format!(
+            "settings: feature_tag key {key:?} is not a valid tag key; ignoring it"
+        ));
+        return None;
+    }
+    let Some(raw) = table.get("value") else {
+        // No value is a marker, the same as a bare entry in `tags`.
+        return Some(Tag {
+            key,
+            value: Value::Bool(true),
+        });
+    };
+    match serde_json::to_value(raw) {
+        Ok(value) => Some(Tag { key, value }),
+        Err(err) => {
+            warnings.push(format!(
+                "settings: feature_tag value {raw:?} is not representable ({err}); ignoring it"
+            ));
+            None
+        }
+    }
+}
+
 /// `{feature}` is the operator's feature, not merely the first tag: the setting
 /// wins, else the first `feature:<name>` rule, else nothing.
+///
+/// The setting only answers `{feature}` when it is *the* `feature` entry. A pair
+/// with another key (`epic:checkout`) renames the field rather than leaving the
+/// payload's `feature` field and `{feature}` pointing at different values.
 pub fn feature_of(settings: &Settings, tags: &[Tag]) -> String {
-    if !settings.feature_tag.is_empty() {
-        return settings.feature_tag.clone();
+    if let Some(tag) = &settings.feature_tag {
+        if tag.key == "feature" {
+            return match &tag.value {
+                Value::String(name) => name.clone(),
+                other => other.to_string(),
+            };
+        }
     }
     tags.iter()
         .find_map(|tag| {
@@ -526,13 +644,20 @@ pub fn payload(
         }
         payload.push((tag.key.clone(), tag.value.clone()));
     }
-    // `feature` is derived from the tags, so it is written last: the setting may
-    // override the `feature:<name>` tag, and the tag still is a tag.
-    let feature = feature_of(settings, tags);
-    if !feature.is_empty() {
-        match payload.iter_mut().find(|(key, _)| key == "feature") {
-            Some((_, value)) => *value = Value::String(feature),
-            None => payload.push(("feature".to_string(), Value::String(feature))),
+    // The operator's feature is one more tag, delivered like any other, and
+    // written last so it can override a `feature:<name>` entry from `tags`. It
+    // cannot rewrite a session field, for the same reason a tag cannot.
+    if let Some(tag) = &settings.feature_tag {
+        if SESSION_FIELDS.contains(&tag.key.as_str()) {
+            warnings.push(format!(
+                "settings: feature_tag {:?} names a session field; the field wins, so it is dropped",
+                tag.key
+            ));
+        } else {
+            match payload.iter_mut().find(|(key, _)| *key == tag.key) {
+                Some((_, value)) => *value = tag.value.clone(),
+                None => payload.push((tag.key.clone(), tag.value.clone())),
+            }
         }
     }
     (payload, warnings)
@@ -1635,7 +1760,7 @@ mod tests {
             targets: default_targets(),
             rules: Vec::new(),
             session_tagging: "short".to_string(),
-            feature_tag: String::new(),
+            feature_tag: None,
             warnings: Vec::new(),
         }
     }
@@ -1666,6 +1791,120 @@ mod tests {
         assert!(Tag::parse("team :=core").is_err());
         assert!(Tag::parse("cost:=not json").is_err());
         assert!(Tag::parse(":core").is_err());
+    }
+
+    fn feature_settings(raw: &str) -> Settings {
+        let mut warnings = Vec::new();
+        let tag = parse_feature_tag(Some(&toml::Value::String(raw.to_string())), &mut warnings);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        Settings {
+            tags: Vec::new(),
+            targets: default_targets(),
+            rules: Vec::new(),
+            session_tagging: "short".to_string(),
+            feature_tag: tag,
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_feature_tag_is_an_ordinary_tag_entry() {
+        // The spelling older settings files hold: a bare word means the `feature` key.
+        let bare = Some(Tag {
+            key: "feature".to_string(),
+            value: Value::from("billing"),
+        });
+        assert_eq!(feature_settings("billing").feature_tag, bare);
+        // The standard spelling: a key and a value, exactly like an entry in `tags`.
+        assert_eq!(feature_settings("feature:billing").feature_tag, bare);
+        assert_eq!(
+            feature_settings("feature:=42").feature_tag,
+            Some(Tag {
+                key: "feature".to_string(),
+                value: Value::from(42),
+            })
+        );
+        assert_eq!(
+            feature_settings("epic:checkout").feature_tag,
+            Some(Tag {
+                key: "epic".to_string(),
+                value: Value::from("checkout"),
+            })
+        );
+        assert_eq!(feature_settings("").feature_tag, None);
+    }
+
+    #[test]
+    fn a_feature_tag_may_be_a_stored_pair_or_a_one_entry_list() {
+        let pair: toml::Value = toml::from_str("key = 'epic'\nvalue = 'checkout'\n").unwrap();
+        let mut warnings = Vec::new();
+        assert_eq!(
+            parse_feature_tag(Some(&pair), &mut warnings),
+            Some(Tag {
+                key: "epic".to_string(),
+                value: Value::from("checkout"),
+            })
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // A pair with no value is a marker, like a bare `tags` entry.
+        let marker: toml::Value = toml::from_str("key = 'platform'\n").unwrap();
+        assert_eq!(
+            parse_feature_tag(Some(&marker), &mut warnings),
+            Some(Tag {
+                key: "platform".to_string(),
+                value: Value::Bool(true),
+            })
+        );
+
+        let list = toml::Value::Array(vec![
+            toml::Value::String("feature:billing".into()),
+            toml::Value::String("feature:checkout".into()),
+        ]);
+        let mut warnings = Vec::new();
+        assert_eq!(
+            parse_feature_tag(Some(&list), &mut warnings)
+                .map(|tag| tag.value)
+                .and_then(|value| value.as_str().map(str::to_string)),
+            Some("billing".to_string())
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+
+        // A shape that is not a tag at all is reported, never silently swallowed.
+        let mut warnings = Vec::new();
+        assert_eq!(
+            parse_feature_tag(Some(&toml::Value::Integer(3)), &mut warnings),
+            None
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+    }
+
+    #[test]
+    fn the_feature_entry_travels_like_a_tag_and_keeps_the_features_agreement() {
+        let (tags, _) = parse_tags(&["team:core".into(), "feature:billing".into()]);
+        let (own, warnings) = payload(&feature_settings("feature:checkout"), &facts(), &tags, "");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let object: Value = serde_json::from_str(&payload_json(&own)).unwrap();
+        assert_eq!(object["team"], "core");
+        // The setting wins over the `feature:` tag, in the payload and in `{feature}`.
+        assert_eq!(object["feature"], "checkout");
+
+        // A pair under another key is that field — and `{feature}` keeps reading
+        // the `feature` entry, so the two never disagree.
+        let (epic_payload, warnings) =
+            payload(&feature_settings("epic:checkout"), &facts(), &tags, "");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let object: Value = serde_json::from_str(&payload_json(&epic_payload)).unwrap();
+        assert_eq!(object["epic"], "checkout");
+        assert_eq!(object["feature"], "billing");
+        assert_eq!(
+            feature_of(&feature_settings("epic:checkout"), &tags),
+            "billing"
+        );
+
+        // And it cannot rewrite a session field, for the same reason a tag cannot.
+        let (_, warnings) = payload(&feature_settings("session:mine"), &facts(), &tags, "");
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
     }
 
     #[test]

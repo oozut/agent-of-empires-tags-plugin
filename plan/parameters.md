@@ -57,8 +57,8 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | `session_tagging` | string | `short_id` | `none`, `short_id`, `full_id` | M0 | decided |
 | `session_signature` | string | `none` | `none`, `hmac` | M1 | open (#8) |
 | `signing_key` | string | `""` | ≥16 chars when signature is `hmac` | M1 | open (#8) |
-| `feature_tag` | string | `""` | tag grammar | M1 | decided |
-| `feature_tag` scope | — | `per_project = true` (requires `api_version ≥ 18`) | — | M1 | decided |
+| `feature_tag` | string | `""` | one tag entry: `feature:billing`, a bare `billing` (= `feature:billing`), or a stored pair `{ key = "feature", value = "billing" }` | M1 | decided |
+| `feature_tag` scope | — | `per_project = true` (requires `api_version ≥ 18`) | global, profile and project hold the same entry grammar | M1 | decided |
 
 M0 rule semantics (implemented in `src/resolver.rs`, M0-T02):
 
@@ -94,7 +94,7 @@ template = "{session_id}"
 |---|---|---|---|
 | `{session}` | short id | `S-cf11` | default; `S-` + first 4 of the session id |
 | `{session_id}` | row `id` | `cf11af87da7e4bf0` | high cardinality, opt-in |
-| `{feature}` | matching rules | `review` | first matching rule's tag, else `feature_tag`, else empty |
+| `{feature}` | matching rules | `review` | first matching rule's tag, else `feature_tag` when its key is `feature`, else empty |
 | `{tags}` | all matching rules | `review,fix` | comma-joined, capped |
 | `{tool}` | row `tool` | `pi-proxy` | harness/tool id |
 | `{profile}` | row `profile` | `main` | |

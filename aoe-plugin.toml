@@ -149,6 +149,19 @@ label = "Feature tag"
 type = "string"
 default = ""
 per_project = true
+help = """
+The feature this session belongs to, written as one tag entry — the same grammar as an entry in
+`tags`, so it is a key/value pair and not a bare word with a key implied somewhere else:
+
+* `feature:billing` — a tag entry with the key `feature`
+* `billing` — the older spelling, the same as `feature:billing`
+* `epic:checkout` — another key; the payload then carries `epic` and there is no `feature` field
+
+It is set per project, and a profile or the global config can each hold it too; all levels are
+parsed by the same code, so a value means the same thing wherever it was written. The session
+fields always win: `feature_tag = "session:mine"` is dropped rather than allowed to rewrite the
+session's identity.
+"""
 
 [runtime]
 kind = "command"

@@ -276,6 +276,12 @@ impl Host {
             };
 
             // snapshot_with_table ignores the runner; pass None.
+            //
+            // `feature_tag` is one tag entry, and the project value is parsed by
+            // the same `parse_feature_tag` the global config and a profile go
+            // through — the host may hand it back as a string (`feature:billing`),
+            // a bare word, or a stored `{key, value}` pair, and all three mean
+            // the same entry.
             let mut session_table = table.clone();
             let mut params = serde_json::json!({"key": "feature_tag"});
             if let Some(project_path) = session

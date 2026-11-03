@@ -512,3 +512,58 @@ fn the_m0_headers_key_is_still_read_as_header_targets() {
     run.assert_ok();
     assert_eq!(run.lines(), vec!["AOE_LLM_TAGS=a"]);
 }
+
+#[test]
+fn a_feature_tag_is_a_key_value_entry_at_every_level() {
+    // `feature_tag` is one tag, not a second taxonomy: the global config, a
+    // profile override and a project form all hold the same `key:value` grammar,
+    // and all of them land as an ordinary payload field.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config("feature_tag = 'billing'", ""));
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(
+        run.lines()[0].contains(r#""feature":"billing""#),
+        "{}",
+        run.stdout
+    );
+
+    // A profile override replaces it, and may use the standard spelling.
+    sandbox.write_profile_config(
+        "main",
+        &format!("[plugins.\"{PLUGIN_ID}\".settings]\nfeature_tag = \"feature:checkout\"\n"),
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(
+        run.lines()[0].contains(r#""feature":"checkout""#),
+        "{}",
+        run.stdout
+    );
+
+    // The same pair written with its key and its value apart is the same entry.
+    sandbox.write_profile_config(
+        "main",
+        &format!(
+            "[plugins.\"{PLUGIN_ID}\".settings]\nfeature_tag = {{ key = \"feature\", value = \"reconcile\" }}\n"
+        ),
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(
+        run.lines()[0].contains(r#""feature":"reconcile""#),
+        "{}",
+        run.stdout
+    );
+
+    // A pair under another key is that field, not a second `feature`.
+    sandbox.write_profile_config(
+        "main",
+        &format!("[plugins.\"{PLUGIN_ID}\".settings]\nfeature_tag = \"epic:checkout\"\n"),
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    let payload = &run.lines()[0];
+    assert!(payload.contains(r#""epic":"checkout""#), "{payload}");
+    assert!(!payload.contains(r#""feature":"#), "{payload}");
+}
