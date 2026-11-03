@@ -117,6 +117,28 @@ fn the_editor_page_exists_and_speaks_the_bridge_it_is_given() {
                 "page {id} never calls the {method} bridge method"
             );
         }
+        // The bridge helper takes a message object and a transport. A call site
+        // that passed its transport where the params belong made the page die
+        // with "send is not a function" the moment the document ran, which no
+        // static check of the method *names* would have caught.
+        assert!(
+            body.contains("function request(message, send)"),
+            "page {id} changed the bridge helper's shape: it takes a message object and a \
+             transport, and a third parameter turns every two-argument call into the \
+             \"send is not a function\" crash"
+        );
+        let mut rest = body.as_str();
+        while let Some(start) = rest.find("request(") {
+            let after = &rest[start + "request(".len()..];
+            if !after.starts_with("message") {
+                assert!(
+                    after.trim_start().starts_with('{'),
+                    "page {id} calls request() with something other than a message object: {:?}",
+                    &after[..after.len().min(40)]
+                );
+            }
+            rest = after;
+        }
         // One self-contained file: the host serves only this document.
         for forbidden in ["<script src=", "<link ", "fetch(", "XMLHttpRequest"] {
             assert!(

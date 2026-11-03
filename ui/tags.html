@@ -157,16 +157,23 @@
         settle(data);
       };
 
-      function request(method, params, send) {
+      // One shape for every request: a message object and a transport. The two
+      // call sites below differ only in which end of the channel they post on,
+      // so neither can pass the transport where the params belong.
+      function request(message, send) {
+        // The transport is a parameter, so a call site that forgets it used to
+        // fail as "send is not a function" deep inside the promise. Say it here.
+        if (typeof send !== "function") throw new TypeError("a request needs a transport");
         const id = ++next;
         return new Promise((resolve, reject) => {
           pending.set(id, (reply) =>
             reply.error ? reject(new Error(reply.error.message || reply.error.code)) : resolve(reply.result),
           );
-          send({ aoeBridge: 1, id, method, params });
+          send({ aoeBridge: 1, id, ...message });
         });
       }
-      const call = (method, params) => request(method, params, (m) => port1.postMessage(m));
+      const call = (method, params) =>
+        request({ method, params }, (m) => port1.postMessage(m));
 
       handlers.theme = (data) => {
         for (const [name, value] of Object.entries(data.cssVars || {})) {
@@ -366,7 +373,9 @@
         edit("tags.reset", {});
       };
 
-      request({ method: "ready", params: { nonce: location.hash.slice(1) } }, (m) => parent.postMessage(m, "*", [port2]))
+      request({ method: "ready", params: { nonce: location.hash.slice(1) } }, (m) =>
+        parent.postMessage(m, "*", [port2]),
+      )
         .then(() => refresh())
         .catch((err) => banner(`The bridge did not open: ${err.message || err}`, true));
     </script>

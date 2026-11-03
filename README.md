@@ -138,5 +138,6 @@ Plan (what ships when, and with which values):
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
 | `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane and page payloads — and a click's edit — can be checked without a browser |
+| `tools/check-page.mjs` | Runs the page's script against a stub DOM and a stub dashboard (needs `node`), which is how the bridge handshake is checked: a page can pass every static check and still throw the moment it runs |
 | `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |
 | `tests/` | CLI, resolver and `doctor` tests behind a sandboxed app dir and a fake `aoe`; no aoe and no network needed |
