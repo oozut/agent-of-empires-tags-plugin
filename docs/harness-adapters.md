@@ -135,6 +135,7 @@ Writers (`src/writer.rs`) are per config format, not per vendor:
 | `pi_models` | `providers.<id>.headers`, `models[].samplingParams` | header, body (query refused) |
 | `opencode_json` | `provider.<id>.options.headers`, `.queryParams` | header, query |
 | `codex_toml` | `[model_providers.<id>] http_headers`, `.query_params` | header, query |
+| `vibe_toml` | `[[providers]]` → `extra_headers` on the entry the `[[models]]` name | header (query and body refused) |
 
 Both writers receive the payload, not a string: a `json` target is set as a JSON object where the
 harness takes one (pi's `samplingParams`, opencode's `headers` value stays a string), and a `csv`
@@ -171,6 +172,8 @@ Verified on this host (2026-11, evidence in `docs/harness-evidence/`):
 | `claude` | `ANTHROPIC_CUSTOM_HEADERS` from the hook | header |
 | `codex` | reference in the user's `config.toml` → `env_http_headers` | header (query only outside aoe) |
 | `opencode` | `OPENCODE_CONFIG` → overlay file | header and query parameter |
+| `vibe` | `VIBE_HOME` → overlay dir, `config.toml` | header (`extra_headers`) |
+| `openclaw` | reference in the user's own JSON (`models.providers.*.headers`) | header |
 
 Every value above is the JSON payload object, not a comma list — `docs/header-contract.md`.
 
@@ -190,6 +193,7 @@ harness, starts it, waits for the sink, captures the pane, and stops it. The evi
 
 | `outcome` | Meaning |
 |---|---|
+| `unsupported-by-aoe` | aoe has no launcher for this harness, so there is no session to probe: the harness-level evidence is the whole proof |
 | `delivered` | a request from the launched harness reached the sink carrying the payload |
 | `no-request` | the pane got the payload in its environment, but the harness sent nothing (no credential or endpoint it can read) |
 | `refused-by-aoe` | aoe refused the launch because the hook path moved — a `write_mode` aoe cannot allow |
@@ -197,12 +201,15 @@ harness, starts it, waits for the sink, captures the pane, and stops it. The evi
 
 ## Harness table
 
-Seventeen agents exist in aoe; this table covers the rows that have been researched. Eight are
-verified end to end on this host through the per-session model above — a user-prefix install
-(`~/.local/bin`) is enough, the binaries need not be visible to `aoe agents`. `droid` is
-`documented` rather than `verified`: its parser was read out of the binary and the mapping is
-written the same way, but it validates a Factory account before sending, so no request could be
-observed (`blocked-by-auth` in `docs/harness-evidence/droid.json`).
+Seventeen agents exist in aoe; this table covers the twelve that have been researched, and no row
+is a `needs_research` placeholder any more. Nine are `verified`: a real process sent the payload to
+`tools/header-sink.py`, and a user-prefix install (`~/.local/bin`) is enough — the binaries need
+not be visible to `aoe agents`. Three are `documented`, each for a stated reason: `droid` validates
+a Factory account before sending (`blocked-by-auth`), `cline` exposes the channel in its SDK but
+keeps its config dir behind a `--config` flag with no environment override, and `kiro` has no
+channel at all (its transport is the AWS SDK, so `supports = []`). A `documented` row is not a
+failure: it says exactly where the evidence stops, which is why `setup --apply` refuses a target
+for `kiro` instead of writing a mapping nothing reads.
 
 | Agent | Mechanism | Session scope | Channels under aoe | Discovery |
 |---|---|---|---|---|
@@ -214,10 +221,10 @@ observed (`blocked-by-auth` in `docs/harness-evidence/droid.json`).
 | `gemini` | `custom_headers_env` | `env_only`: `GEMINI_CLI_CUSTOM_HEADERS` (`aoe_hooks`) | header only, and only as `{tags_b64}` | `~/.gemini/settings.json` |
 | `qwen` | `config_headers` | reference in the user's own JSON (`generationConfig.customHeaders`, `aoe_hooks`) | header | `~/.qwen/settings.json` |
 | `droid` | `config_headers` | reference in the user's own JSON (`customModels[].extraHeaders`, `aoe_hooks`) | header | `~/.factory/settings.json` |
-| `vibe` | TBD | TBD | `~/.config/vibe` | needs research |
-| `kiro` | TBD | TBD | agent config JSON | needs research |
-| `cline` | TBD | TBD | VS Code extension storage | needs research |
-| `openclaw` | TBD | TBD | TBD | needs research |
+| `vibe` | `config_headers` | `overlay_dir` via `VIBE_HOME`, `config.toml` (`writer = "vibe_toml"`) | header | `~/.vibe/config.toml`, `$VIBE_HOME` |
+| `openclaw` | `config_headers` | reference in the user's own JSON (`models.providers.*.headers`) | header | `~/.openclaw/openclaw.json`, `$OPENCLAW_CONFIG_PATH` |
+| `kiro` | `none` | nothing to scope: AWS-SDK signed transport, no header setting | none | `~/.local/share/kiro-cli` |
+| `cline` | `config_headers` | `documented`: SDK takes a provider `headers` map, but the CLI's config dir is a flag (`--config`), not env | header | `~/.cline` |
 
 Snippets for the documented rows. They describe the *shape* of the session copy; nothing here is
 pasted into a user config by hand any more (default header shown):
@@ -292,6 +299,27 @@ GEMINI_CLI_CUSTOM_HEADERS="X-Aoe-B64: eyJzZXNzaW9uIjoiUy05ZjNhIiwidGVhbSI6ImNvcm
 // droid, ~/.factory/settings.json — ${VAR} is expanded for user-level sources only
 { "customModels": [{ "model": "<model-id>", "provider": "openai", "baseUrl": "<endpoint>",
     "apiKey": "<key>", "extraHeaders": { "X-AoE-Tags": "${AOE_LLM_TAGS}" } }] }
+```
+
+```toml
+# vibe, ~/.vibe/config.toml — the session copy (VIBE_HOME) holds the value, because vibe does
+# not expand $NAME in config strings: the literal "${AOE_LLM_TAGS}" reaches the wire
+[[providers]]
+name = "<provider-id>"
+api_base = "<endpoint>"
+api_key_env_var = "<KEY_VAR>"
+
+[providers.extra_headers]
+X-AoE-Tags = '{"session":"S-9f3a","team":"core"}'
+```
+
+```jsonc
+// openclaw, ~/.openclaw/openclaw.json — a custom provider must declare models, and the
+// `${VAR}` spelling *is* expanded here (an unset variable is left on the wire verbatim)
+{ "models": { "providers": { "<provider-id>": {
+    "baseUrl": "<endpoint>", "apiKey": "<key>", "api": "openai-completions",
+    "headers": { "X-AoE-Tags": "${AOE_LLM_TAGS}" },
+    "models": [{ "id": "<model-id>", "name": "<Model name>" }] } } } }
 ```
 
 ## What the agent process actually receives

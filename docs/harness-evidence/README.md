@@ -26,6 +26,7 @@ pane carried the payload (`env_payloads`), and an `outcome`:
 | `no-request` | the pane received the payload in its environment, but the harness sent nothing: its config lives in `$HOME`, which aoe overwrites, so the probe cannot point it at the sink (claude's credentials, codex's provider block) |
 | `refused-by-aoe` | aoe refused the launch because the hook path moved — a `write_mode` aoe cannot allow |
 | `request-without-the-tag` | a request arrived without the payload: a real defect |
+| `unsupported-by-aoe` | `aoe agents` has no launcher for this harness, so there is no session to create (openclaw); the harness-level file is the whole proof |
 | `blocked-by-auth` | the channel is configured, but the harness refuses to send without a logged-in account (droid) — recorded, never counted as a pass |
 
 `no-request` is not a pass for the harness; it is the probe stating where its evidence stops.
@@ -58,3 +59,5 @@ carries more than one header.
 | `gemini` | `GEMINI_CLI_CUSTOM_HEADERS` (env only, comma-separated list) | header — as `{tags_b64}`, because its parser splits a JSON payload on commas |
 | `qwen` | reference in its own `settings.json` (`generationConfig.customHeaders`) | header (`${AOE_LLM_TAGS}` expanded by qwen) |
 | `droid` | reference in its own `settings.json` (`customModels[].extraHeaders`) | header (`${AOE_LLM_TAGS}`) — `blocked-by-auth`: no request can be observed without a Factory account |
+| `vibe` | `VIBE_HOME` (overlay dir, `writer = "vibe_toml"`) | header (`extra_headers`, written per session — vibe does not expand `$NAME`) |
+| `openclaw` | reference in its own `openclaw.json` (`models.providers.*.headers`) | header (`${AOE_LLM_TAGS}` expanded per process) — `unsupported-by-aoe`: aoe cannot launch it, so there is no session to probe |

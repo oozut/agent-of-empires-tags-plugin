@@ -209,7 +209,7 @@ fn every_overlay_row_names_a_variable_and_an_implemented_writer() {
                 assert!(
                     matches!(
                         row.writer.as_str(),
-                        "pi_models" | "opencode_json" | "codex_toml"
+                        "pi_models" | "opencode_json" | "codex_toml" | "vibe_toml"
                     ),
                     "{}: writer {:?} is not implemented",
                     row.agent,

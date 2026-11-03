@@ -1,0 +1,94 @@
+{
+  "agent": "vibe",
+  "binary": "/var/lib/aoe/.local/bin/vibe",
+  "cli": "target/debug/aoe-llm-tags",
+  "session_id": "45048ceb3f9842e6",
+  "overlay": "/tmp/aoe-session-vibe-57Lt19/home/.config/agent-of-empires/sessions/45048ceb3f9842e6/vibe",
+  "overlay_entries": {
+    ".env": "symlink",
+    "config.toml": "file",
+    "logs": "file",
+    "trusted_folders.toml": "file",
+    "vibehistory": "file"
+  },
+  "overlay_carries": {
+    "header": true,
+    "query": false,
+    "body": false
+  },
+  "requests": 1,
+  "deliveries": [
+    {
+      "where": "header",
+      "name": "X-AoE-Tags",
+      "payload": {
+        "cost": 1.5,
+        "feature": "billing",
+        "profile": "main",
+        "project": "45048ceb3f9842e6",
+        "project_path": "/tmp/aoe-session-vibe-57Lt19/home/.config/agent-of-empires/scratch/45048ceb3f9842e6",
+        "session": "S-4504",
+        "session_id": "45048ceb3f9842e6",
+        "team": "core",
+        "tool": "vibe"
+      }
+    },
+    {
+      "where": "header",
+      "name": "X-AoE-Flat",
+      "value": "aoe,team:core,feature:billing,cost:1.5,session:S-4504"
+    }
+  ],
+  "delivered": [
+    "header"
+  ],
+  "env_payloads": {
+    "AOE_BODY_METADATA": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "45048ceb3f9842e6",
+      "project_path": "/tmp/aoe-session-vibe-57Lt19/home/.config/agent-of-empires/scratch/45048ceb3f9842e6",
+      "session": "S-4504",
+      "session_id": "45048ceb3f9842e6",
+      "team": "core",
+      "tool": "vibe"
+    },
+    "AOE_HDR_X_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "45048ceb3f9842e6",
+      "project_path": "/tmp/aoe-session-vibe-57Lt19/home/.config/agent-of-empires/scratch/45048ceb3f9842e6",
+      "session": "S-4504",
+      "session_id": "45048ceb3f9842e6",
+      "team": "core",
+      "tool": "vibe"
+    },
+    "AOE_QRY_AOE_TAGS": {
+      "cost": 1.5,
+      "feature": "billing",
+      "profile": "main",
+      "project": "45048ceb3f9842e6",
+      "project_path": "/tmp/aoe-session-vibe-57Lt19/home/.config/agent-of-empires/scratch/45048ceb3f9842e6",
+      "session": "S-4504",
+      "session_id": "45048ceb3f9842e6",
+      "team": "core",
+      "tool": "vibe"
+    }
+  },
+  "outcome": "delivered",
+  "aoe_message": "Couldn't load your connectors: Failed to load connectors (HTTP 401). Their tools",
+  "payload_fields": {
+    "cost": 1.5,
+    "feature": "billing",
+    "profile": "main",
+    "project": "45048ceb3f9842e6",
+    "project_path": "/tmp/aoe-session-vibe-57Lt19/home/.config/agent-of-empires/scratch/45048ceb3f9842e6",
+    "session": "S-4504",
+    "session_id": "45048ceb3f9842e6",
+    "team": "core",
+    "tool": "vibe"
+  },
+  "run_dir": "/tmp/aoe-session-vibe-57Lt19"
+}

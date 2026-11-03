@@ -17,7 +17,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-AGENTS=(pi claude codex opencode hermes gemini qwen droid)
+evidence_dir="$ROOT/docs/harness-evidence"
+AGENTS=(pi claude codex opencode hermes gemini qwen droid vibe openclaw)
 
 die() { printf 'session-probe: %s\n' "$*" >&2; exit 2; }
 note() { printf 'session-probe: %s\n' "$*" >&2; }
@@ -97,6 +98,34 @@ if [[ -z "$bin" ]]; then
     bin="${bin:-$(command -v "$agent" 2>/dev/null || true)}"
 fi
 [[ -n "$bin" && -x "$bin" ]] || die "$agent is not installed; pass --bin <path>"
+
+# An agent aoe cannot launch still deserves an evidence file, not a stack trace.
+record_unsupported_by_aoe() {
+    local agent="$1"
+    python3 - "$agent" "$evidence_dir/session-$agent.json" "$bin" "$cli" <<'PY'
+import json, pathlib, sys
+agent, out, binary, cli = sys.argv[1:5]
+evidence = {
+    "agent": agent,
+    "binary": binary,
+    "cli": cli,
+    "session_id": None,
+    "overlay": None,
+    "overlay_entries": [],
+    "requests": 0,
+    "deliveries": [],
+    "delivered": [],
+    "env_payloads": {},
+    "outcome": "unsupported-by-aoe",
+    "aoe_message": "`aoe agents` does not list this harness, so aoe cannot launch "
+                   "it and there is no session to probe. The delivery proof is "
+                   "docs/harness-evidence/" + agent + ".json (a real process).",
+}
+pathlib.Path(out).write_text(json.dumps(evidence, indent=2) + "\n")
+print(json.dumps({k: evidence[k] for k in ("agent", "requests", "delivered", "outcome")}, indent=2))
+PY
+    note "$agent: unsupported-by-aoe — aoe has no launcher for this harness, so only the harness-level probe applies. Evidence: docs/harness-evidence/session-$agent.json"
+}
 
 work="$(mktemp -d "/tmp/aoe-session-$agent-XXXXXX")"
 export HOME="$work/home"
@@ -232,6 +261,26 @@ kind = "header"
 name = "X-Aoe-Session"
 template = "{session_id}"'
     ;;
+vibe)
+    # vibe's whole home is VIBE_HOME, which the plugin's overlay sets per session;
+    # the source config is the user's own.
+    cmd="$bin -p hi --model probe-model"
+    mkdir -p "$HOME/.vibe"
+    cat >"$HOME/.vibe/config.toml" <<EOF
+[[providers]]
+name = "probe"
+api_base = "$base/v1"
+api_key_env_var = "PROBE_KEY"
+api_style = "openai"
+
+[[models]]
+name = "probe-model"
+provider = "probe"
+EOF
+    # vibe loads $VIBE_HOME/.env itself, which is how a key reaches the pane
+    # without the probe having to export one into aoe's launch environment.
+    printf 'MISTRAL_API_KEY=probe\nPROBE_KEY=probe\n' >"$HOME/.vibe/.env"
+    ;;
 qwen)
     cmd="$bin -m probe-model -p hi"
     mkdir -p "$HOME/.qwen"
@@ -240,6 +289,18 @@ qwen)
   "envKey":"OPENAI_API_KEY","generationConfig":{"customHeaders":{
     "X-Aoe-Tags":"\${AOE_LLM_TAGS}"}}}]},
  "security":{"auth":{"selectedType":"openai"}}}
+EOF
+    ;;
+openclaw)
+    # openclaw reads `models.providers.<id>.headers`, expanding ${VAR} per
+    # process, and points at its state dir through OPENCLAW_STATE_DIR.
+    cmd="$bin agent --local -m hi --model probe/probe-model --json"
+    mkdir -p "$HOME/.openclaw"
+    cat >"$HOME/.openclaw/openclaw.json" <<EOF
+{"models":{"providers":{"probe":{"baseUrl":"$base/v1","apiKey":"probe","api":"openai-completions",
+  "headers":{"X-Aoe-Tags":"\${AOE_LLM_TAGS}"},
+  "models":[{"id":"probe-model","name":"Probe"}]}}},
+ "agents":{"defaults":{"model":"probe/probe-model"}}}
 EOF
     ;;
 droid)
@@ -278,6 +339,8 @@ claude) : ;;
 codex) export PROBE_KEY=probe OPENAI_API_KEY=probe ;;
 gemini) export GEMINI_API_KEY=probe GOOGLE_GEMINI_BASE_URL="$base" GEMINI_CLI_TRUST_WORKSPACE=true ;;
 qwen) export OPENAI_API_KEY=probe QWEN_DIR="$HOME/.qwen" ;;
+vibe) export PROBE_KEY=probe MISTRAL_API_KEY=probe ;;
+openclaw) export OPENCLAW_STATE_DIR="$HOME/.openclaw" ;;
 esac
 
 # aoe refuses to launch a host session until it may write its own agent hooks;
@@ -292,6 +355,14 @@ fi
 # at the sink from outside. Record what the pane actually received instead: that
 # is the channel the plugin uses (the value rides the launch environment).
 cmd="sh -c 'env > \"$work/pane-env.txt\"; exec $cmd'"
+
+# 0. aoe can only launch an agent it knows. A harness aoe does not list (openclaw)
+#    still has a harness-level proof, but a per-session one is impossible: say so
+#    instead of failing later with a tool-inference error.
+if ! "$aoe" agents 2>/dev/null | grep -qE "^ *[✓✗] $agent\b"; then
+    record_unsupported_by_aoe "$agent"
+    exit 0
+fi
 
 # 1. aoe creates the session.
 # `--cmd` infers the tool from the binary name, which is what makes the session
@@ -325,7 +396,6 @@ sleep 1
 overlay="$XDG_CONFIG_HOME/agent-of-empires/sessions/$session_id/$agent"
 "$aoe" session stop "$session_id" >/dev/null 2>&1 || true
 
-evidence_dir="$ROOT/docs/harness-evidence"
 mkdir -p "$evidence_dir"
 status=0
 python3 - "$sink_log" "$evidence_dir/session-$agent.json" "$agent" "$bin" "$cli" \

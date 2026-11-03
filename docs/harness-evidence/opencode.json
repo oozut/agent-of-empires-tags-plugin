@@ -2,13 +2,13 @@
   "agent": "opencode",
   "binary": "/var/lib/aoe/.local/bin/opencode",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-03T08:43:10Z",
+  "checked_at": "2026-11-03T10:58:36Z",
   "exit_code": 0,
   "session_override": {
-    "OPENCODE_CONFIG": "/tmp/aoe-probe-opencode-8jqdmm/home/.config/agent-of-empires/sessions/probe-opencode-1838540/opencode/opencode.json"
+    "OPENCODE_CONFIG": "/tmp/aoe-probe-opencode-FhweCi/home/.config/agent-of-empires/sessions/probe-opencode-2112010/opencode/opencode.json"
   },
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-opencode-8jqdmm/project\",\"session\":\"S-prob\",\"session_id\":\"probe-opencode-1838540\",\"team\":\"core\",\"tool\":\"opencode\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-opencode-FhweCi/project\",\"session\":\"S-prob\",\"session_id\":\"probe-opencode-2112010\",\"team\":\"core\",\"tool\":\"opencode\"}"
   ],
   "requests": 2,
   "deliveries": [
@@ -17,9 +17,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-opencode-8jqdmm/project",
+        "project_path": "/tmp/aoe-probe-opencode-FhweCi/project",
         "session": "S-prob",
-        "session_id": "probe-opencode-1838540",
+        "session_id": "probe-opencode-2112010",
         "team": "core",
         "tool": "opencode"
       },
@@ -30,9 +30,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-opencode-8jqdmm/project",
+        "project_path": "/tmp/aoe-probe-opencode-FhweCi/project",
         "session": "S-prob",
-        "session_id": "probe-opencode-1838540",
+        "session_id": "probe-opencode-2112010",
         "team": "core",
         "tool": "opencode"
       },

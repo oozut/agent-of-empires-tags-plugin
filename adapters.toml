@@ -222,34 +222,100 @@ per-session config directory would be refused anyway. Verified with tools/probe-
 agent = "vibe"
 tools = ["vibe"]
 label = "vibe"
-mechanism = "unknown"
-config_paths = ["~/.config/vibe"]
-config_format = "none"
-status = "needs_research"
+mechanism = "config_headers"
+config_paths = ["~/.vibe/config.toml", "$VIBE_HOME/config.toml"]
+config_format = "toml"
+mapping_format = '[[providers]] with name = "<id>" → extra_headers."{header}" = "{value}"'
+interpolates = []
+supports = ["header"]
+write_mode = "overlay_dir"
+overlay_env = "VIBE_HOME"
+overlay_file = "config.toml"
+writer = "vibe_toml"
+status = "verified"
+notes = """
+vibe reads its whole home from `$VIBE_HOME` (`utils/vibe_home.py`) and each `[[providers]]` entry
+carries an `extra_headers` map (`ProviderConfig.extra_headers`), so a session gets its own
+`config.toml` and no value is interpolated: vibe does **not** expand `$NAME` in config strings —
+with `extra_headers = { X-AoE-Tags = "${AOE_LLM_TAGS}" }` the literal `${AOE_LLM_TAGS}` reaches the
+wire. That is why this row is the only writer-backed one besides `pi` and `opencode`: the value
+must be in the file. `interpolates = []` says so, and a `query`/`body` target is skipped with a
+reason by the writer (`vibe_toml`, src/writer.rs). `aoe hooks` installs no vibe hooks, so
+`aoe_hooks` stays false. Verified with tools/probe-harness.sh vibe
+(docs/harness-evidence/vibe.json): `extra_headers` arrived at the sink on both requests.
+"""
 
 [[adapter]]
 agent = "kiro"
 tools = ["kiro"]
 label = "kiro"
-mechanism = "unknown"
-config_paths = []
+mechanism = "none"
+config_paths = ["~/.local/share/kiro-cli"]
 config_format = "none"
-status = "needs_research"
+supports = []
+write_mode = "none"
+aoe_hooks = true
+status = "documented"
+notes = """
+kiro-cli 2.37.1 (`kiro-cli`, `kiro-cli-chat`, `kiro-cli-term` in `~/.local/bin`) has **no place to
+put a tag**: its HTTP goes through the AWS SDK (`aws-smithy-runtime` 1.x interceptors, SigV4
+signing, endpoint resolution in `aws-config`) against Kiro's own endpoints. `strings` over
+`kiro-cli-chat` finds no `customHeaders`/`extraHeaders`/`CUSTOM_HEADERS` key at all, and
+`kiro-cli settings` exposes appearance/behaviour keys, not transport ones. `aoe hooks` does install
+kiro hooks, so the config file is aoe-owned and a per-session copy would be refused anyway.
+Recorded as `mechanism = "none"` with `supports = []` rather than a guess: `setup --apply` refuses
+a target for this agent and `doctor` says the harness has no channel, instead of claiming a
+delivery. Re-check if Kiro ships a provider/base-URL setting.
+"""
 
 [[adapter]]
 agent = "cline"
 tools = ["cline"]
 label = "cline"
-mechanism = "unknown"
-config_paths = []
-config_format = "none"
-status = "needs_research"
+mechanism = "config_headers"
+config_paths = ["~/.cline"]
+config_format = "json"
+mapping_format = '<config dir> → provider entry `headers["{header}"] = "{value}"`'
+interpolates = []
+supports = ["header"]
+write_mode = "none"
+aoe_hooks = true
+status = "documented"
+notes = """
+The Cline SDK (bundled in `cline` 3.0.74, `@cline/core` + `@cline/llms`) accepts a per-provider
+`headers` map — `CoreModelConfig.headers: Record<string, string>` in `types/config.d.ts`, resolved
+into the request through three layers (`stored`, `config`, `session` in
+`llms/dist/providers/request-headers.d.ts`). What is **not** established: whether a config string
+is expanded (no `$VAR` handling found in the bundle) and which file the CLI writes the provider map
+to (`cline --config <dir>` defaults to `~/.cline`, and there is no env var for it — only
+`CLINE_DATA_DIR`, which is local state). So this row is `documented`: the channel exists in the
+SDK, `write_mode = "none"` because the plugin cannot reach a session-scoped copy of `~/.cline`
+without a CLI flag it does not control, and no probe has observed a request carrying a tag yet.
+`@cline/cli`'s `clite` binary crashes with SIGILL on this host, so a probe would have to use the
+`cline` npm 3.x build and a real provider account.
+"""
 
 [[adapter]]
 agent = "openclaw"
 tools = ["openclaw"]
 label = "openclaw"
-mechanism = "unknown"
-config_paths = []
-config_format = "none"
-status = "needs_research"
+mechanism = "config_headers"
+config_paths = ["~/.openclaw/openclaw.json", "$OPENCLAW_CONFIG_PATH"]
+config_format = "json"
+mapping_format = 'models.providers."<id>".headers["{header}"] = "{env_var}"'
+interpolates = ["header"]
+supports = ["header"]
+env_ref = "${env_var}"
+write_mode = "none"
+status = "verified"
+notes = """
+openclaw resolves `models.providers.<id>` and each provider carries a `headers` map next to
+`baseUrl`/`apiKey`; a custom provider must declare `models` (the CLI refuses the change otherwise:
+"custom model providers must declare models"). The map is expanded per process, so one static line
+serves every session — the probe writes `"X-AoE-Tags": "${AOE_LLM_TAGS}"` and the sink received the
+minted payload, not the placeholder. An **unset** variable is left on the wire verbatim rather than
+emptied (`${AOE_HDR_X_AOE_TAGS}` arrived literally when the hook had not exported it), so a typo is
+visible in the evidence instead of silently sending nothing. `OPENCLAW_STATE_DIR` /
+`OPENCLAW_CONFIG_PATH` / `--profile` would also allow a per-session copy, which is why
+`config_paths` lists the env path second — but no writer is needed while interpolation works.
+"""

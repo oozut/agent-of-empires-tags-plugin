@@ -2,14 +2,14 @@
   "agent": "gemini",
   "binary": "/var/lib/aoe/.local/bin/gemini",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-03T08:43:21Z",
+  "checked_at": "2026-11-03T11:00:41Z",
   "exit_code": 1,
   "session_override": {
-    "GEMINI_CLI_CUSTOM_HEADERS": "X-Aoe-B64: eyJwcm9maWxlIjoibWFpbiIsInByb2plY3QiOiJwcm9qZWN0IiwicHJvamVjdF9wYXRoIjoiL3RtcC9hb2UtcHJvYmUtZ2VtaW5pLVM0S1p6cS9wcm9qZWN0Iiwic2Vzc2lvbiI6IlMtcHJvYiIsInNlc3Npb25faWQiOiJwcm9iZS1nZW1pbmktMTgzOTIxOSIsInRlYW0iOiJjb3JlIiwidG9vbCI6ImdlbWluaSJ9,X-Aoe-Session: probe-gemini-1839219"
+    "GEMINI_CLI_CUSTOM_HEADERS": "X-Aoe-B64: eyJwcm9maWxlIjoibWFpbiIsInByb2plY3QiOiJwcm9qZWN0IiwicHJvamVjdF9wYXRoIjoiL3RtcC9hb2UtcHJvYmUtZ2VtaW5pLW1TN0lWdi9wcm9qZWN0Iiwic2Vzc2lvbiI6IlMtcHJvYiIsInNlc3Npb25faWQiOiJwcm9iZS1nZW1pbmktMjExNjA2NCIsInRlYW0iOiJjb3JlIiwidG9vbCI6ImdlbWluaSJ9,X-Aoe-Session: probe-gemini-2116064"
   },
   "minted_values": [
-    "eyJwcm9maWxlIjoibWFpbiIsInByb2plY3QiOiJwcm9qZWN0IiwicHJvamVjdF9wYXRoIjoiL3RtcC9hb2UtcHJvYmUtZ2VtaW5pLVM0S1p6cS9wcm9qZWN0Iiwic2Vzc2lvbiI6IlMtcHJvYiIsInNlc3Npb25faWQiOiJwcm9iZS1nZW1pbmktMTgzOTIxOSIsInRlYW0iOiJjb3JlIiwidG9vbCI6ImdlbWluaSJ9",
-    "probe-gemini-1839219"
+    "eyJwcm9maWxlIjoibWFpbiIsInByb2plY3QiOiJwcm9qZWN0IiwicHJvamVjdF9wYXRoIjoiL3RtcC9hb2UtcHJvYmUtZ2VtaW5pLW1TN0lWdi9wcm9qZWN0Iiwic2Vzc2lvbiI6IlMtcHJvYiIsInNlc3Npb25faWQiOiJwcm9iZS1nZW1pbmktMjExNjA2NCIsInRlYW0iOiJjb3JlIiwidG9vbCI6ImdlbWluaSJ9",
+    "probe-gemini-2116064"
   ],
   "requests": 9,
   "deliveries": [
@@ -18,9 +18,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -29,7 +29,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -37,9 +37,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -48,7 +48,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -56,9 +56,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -67,7 +67,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -75,9 +75,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -86,7 +86,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -94,9 +94,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -105,7 +105,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -113,9 +113,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -124,7 +124,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -132,9 +132,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -143,7 +143,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -151,9 +151,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -162,7 +162,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     },
     {
@@ -170,9 +170,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-gemini-S4KZzq/project",
+        "project_path": "/tmp/aoe-probe-gemini-mS7IVv/project",
         "session": "S-prob",
-        "session_id": "probe-gemini-1839219",
+        "session_id": "probe-gemini-2116064",
         "team": "core",
         "tool": "gemini"
       },
@@ -181,7 +181,7 @@
     },
     {
       "where": "header",
-      "value": "probe-gemini-1839219",
+      "value": "probe-gemini-2116064",
       "name": "X-Aoe-Session"
     }
   ],

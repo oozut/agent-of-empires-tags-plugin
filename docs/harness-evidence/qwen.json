@@ -2,11 +2,11 @@
   "agent": "qwen",
   "binary": "/var/lib/aoe/.local/bin/qwen",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-03T08:45:03Z",
+  "checked_at": "2026-11-03T11:02:24Z",
   "exit_code": 0,
   "session_override": {},
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-qwen-34GZ7k/project\",\"session\":\"S-prob\",\"session_id\":\"probe-qwen-1842370\",\"team\":\"core\",\"tool\":\"qwen\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-qwen-izok3Q/project\",\"session\":\"S-prob\",\"session_id\":\"probe-qwen-2119184\",\"team\":\"core\",\"tool\":\"qwen\"}"
   ],
   "requests": 2,
   "deliveries": [
@@ -15,9 +15,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-qwen-34GZ7k/project",
+        "project_path": "/tmp/aoe-probe-qwen-izok3Q/project",
         "session": "S-prob",
-        "session_id": "probe-qwen-1842370",
+        "session_id": "probe-qwen-2119184",
         "team": "core",
         "tool": "qwen"
       },
@@ -28,9 +28,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-qwen-34GZ7k/project",
+        "project_path": "/tmp/aoe-probe-qwen-izok3Q/project",
         "session": "S-prob",
-        "session_id": "probe-qwen-1842370",
+        "session_id": "probe-qwen-2119184",
         "team": "core",
         "tool": "qwen"
       },

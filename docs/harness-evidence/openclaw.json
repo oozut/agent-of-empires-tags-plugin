@@ -1,0 +1,29 @@
+{
+  "agent": "openclaw",
+  "binary": "/var/lib/aoe/.local/bin/openclaw",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T11:02:36Z",
+  "exit_code": 0,
+  "session_override": {},
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-openclaw-OQhJfF/project\",\"session\":\"S-prob\",\"session_id\":\"probe-openclaw-2119788\",\"team\":\"core\",\"tool\":\"openclaw\"}"
+  ],
+  "requests": 1,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-openclaw-OQhJfF/project",
+        "session": "S-prob",
+        "session_id": "probe-openclaw-2119788",
+        "team": "core",
+        "tool": "openclaw"
+      },
+      "name": "x-aoe-tags"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

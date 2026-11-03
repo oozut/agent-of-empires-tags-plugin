@@ -60,6 +60,7 @@ pub fn apply(
         ("pi_models", Doc::Json(value)) => pi_models(value, targets, source),
         ("opencode_json", Doc::Json(value)) => opencode_json(value, targets),
         ("codex_toml", Doc::Toml(doc)) => codex_toml(doc, targets),
+        ("vibe_toml", Doc::Toml(doc)) => vibe_toml(doc, targets),
         (other, _) => Err(format!(
             "writer {other:?} is not implemented for this config format; add it to src/writer.rs"
         )),
@@ -291,6 +292,76 @@ fn codex_toml(
     Ok(skipped)
 }
 
+/// vibe `config.toml`: `[[providers]]` entries carry `extra_headers`.
+///
+/// vibe does not expand `$NAME` in config strings (verified: the literal
+/// `${AOE_LLM_TAGS}` reaches the wire), so the per-session copy has to hold the
+/// value itself — which is exactly what an `overlay_dir` row on `VIBE_HOME` is.
+/// The provider the `[[models]]` point at is the one the request uses.
+fn vibe_toml(
+    doc: &mut toml_edit::DocumentMut,
+    targets: &[Resolved],
+) -> Result<Vec<(String, String)>, String> {
+    let mut skipped = Vec::new();
+    let wanted = doc
+        .get("models")
+        .and_then(toml_edit::Item::as_array_of_tables)
+        .and_then(|models| {
+            models.iter().find_map(|model| {
+                model
+                    .get("provider")
+                    .and_then(toml_edit::Item::as_str)
+                    .map(str::to_string)
+            })
+        });
+    let Some(providers) = doc
+        .get_mut("providers")
+        .and_then(toml_edit::Item::as_array_of_tables_mut)
+    else {
+        return Ok(named_skip(
+            targets,
+            "the config has no [[providers]] tables",
+        ));
+    };
+    let mut tables: Vec<&mut toml_edit::Table> = providers.iter_mut().collect();
+    let chosen = match wanted {
+        Some(name) => tables.iter_mut().find(|table| {
+            table
+                .get("name")
+                .and_then(toml_edit::Item::as_str)
+                .is_some_and(|value| value == name)
+        }),
+        None => tables.first_mut(),
+    };
+    let Some(provider) = chosen else {
+        return Ok(named_skip(
+            targets,
+            "the config names no provider the models point at",
+        ));
+    };
+    for item in targets {
+        if item.kind != "header" {
+            skipped.push((
+                item.name.clone(),
+                format!("vibe cannot carry a {} value", item.kind),
+            ));
+            continue;
+        }
+        let table = provider
+            .entry("extra_headers")
+            .or_insert(toml_edit::Item::Table(toml_edit::Table::new()));
+        let Some(table) = table.as_table_like_mut() else {
+            skipped.push((
+                item.name.clone(),
+                "provider extra_headers is not a table".to_string(),
+            ));
+            continue;
+        };
+        table.insert(&item.name, toml_edit::value(item.value.clone()));
+    }
+    Ok(skipped)
+}
+
 fn provider_table<'a>(
     doc: &'a mut toml_edit::DocumentMut,
     name: &str,
@@ -471,5 +542,58 @@ mod tests {
     fn a_json_literal_becomes_a_json_value_and_text_stays_text() {
         assert_eq!(json_value("{\"a\":1}")["a"], 1);
         assert_eq!(json_value("plain"), "plain");
+    }
+
+    #[test]
+    fn vibe_puts_headers_on_the_provider_its_models_point_at() {
+        let raw = r#"# a user comment
+[[providers]]
+name = "mistral"
+api_base = "https://api.mistral.ai/v1"
+
+[[providers]]
+name = "gw"
+api_base = "https://gw.example/v1"
+
+[[models]]
+name = "probe-model"
+provider = "gw"
+"#;
+        let mut doc = Doc::parse("toml", Some(raw)).expect("parses");
+        let skipped = apply(
+            "vibe_toml",
+            &mut doc,
+            &[
+                target("header", "X-AoE-Tags", "{\"team\":\"core\"}"),
+                target("query", "aoe_tags", "x"),
+            ],
+            std::path::Path::new("/nonexistent"),
+        )
+        .expect("writer runs");
+        // The comment survives and the wrong provider is untouched.
+        let text = doc.render().expect("renders");
+        assert!(text.contains("# a user comment"), "{text}");
+        assert_eq!(skipped.len(), 1);
+        assert!(skipped[0].1.contains("cannot carry a query value"));
+        let Doc::Toml(parsed) = &doc else {
+            panic!("toml doc")
+        };
+        let providers = parsed["providers"]
+            .as_array_of_tables()
+            .expect("array of tables");
+        assert!(
+            providers
+                .get(0)
+                .expect("first")
+                .get("extra_headers")
+                .is_none(),
+            "the provider the models do not use stays untouched"
+        );
+        assert_eq!(
+            providers.get(1).expect("second")["extra_headers"]["X-AoE-Tags"]
+                .as_str()
+                .expect("string"),
+            "{\"team\":\"core\"}"
+        );
     }
 }

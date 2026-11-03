@@ -1,0 +1,31 @@
+{
+  "agent": "vibe",
+  "binary": "/var/lib/aoe/.local/bin/vibe",
+  "cli": "target/debug/aoe-llm-tags",
+  "checked_at": "2026-11-03T11:02:30Z",
+  "exit_code": 2,
+  "session_override": {
+    "VIBE_HOME": "/tmp/aoe-probe-vibe-GM4txU/home/.config/agent-of-empires/sessions/probe-vibe-2119534/vibe"
+  },
+  "minted_values": [
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-vibe-GM4txU/project\",\"session\":\"S-prob\",\"session_id\":\"probe-vibe-2119534\",\"team\":\"core\",\"tool\":\"vibe\"}"
+  ],
+  "requests": 1,
+  "deliveries": [
+    {
+      "where": "header",
+      "value": {
+        "profile": "main",
+        "project": "project",
+        "project_path": "/tmp/aoe-probe-vibe-GM4txU/project",
+        "session": "S-prob",
+        "session_id": "probe-vibe-2119534",
+        "team": "core",
+        "tool": "vibe"
+      },
+      "name": "X-AoE-Tags"
+    }
+  ],
+  "delivered": true,
+  "outcome": "delivered"
+}

@@ -257,10 +257,44 @@ fn an_unknown_adapter_names_the_known_ones() {
 
 #[test]
 fn an_unresearched_adapter_is_refused() {
+    // A row nobody has researched is refused, not guessed at. Every shipped row
+    // carries a real mechanism today, so the fixture is the table the CLI reads
+    // from the plugin root.
     let sandbox = Sandbox::new();
-    let run = sandbox.run(&["setup", "--print", "--adapter", "kiro"]);
+    let dir = sandbox.path("plugin");
+    sandbox.write_file(
+        &dir.join("adapters.toml"),
+        r#"[[adapter]]
+agent = "unresearched"
+tools = ["unresearched"]
+label = "unresearched"
+mechanism = "unknown"
+config_format = "none"
+status = "needs_research"
+"#,
+    );
+    let run = sandbox.run_installed(&["setup", "--print", "--adapter", "unresearched"]);
     run.assert_code(1);
     assert!(run.stderr.contains("needs_research"), "{}", run.stderr);
+    assert!(run.stderr.contains("unresearched"), "{}", run.stderr);
+}
+
+#[test]
+fn a_writer_backed_row_points_at_the_session_copy_instead_of_a_line() {
+    // vibe does not expand $NAME in its config, so the only place its value can
+    // live is the copy the hook writes. That is not a failure to map: `setup`
+    // says where the value comes from and prints nothing to paste.
+    let mut sandbox = Sandbox::new();
+    sandbox.session("cf11af87da7e4bf0", "vibe");
+    sandbox.write_file(
+        &sandbox.path("home/.vibe/config.toml"),
+        "[[providers]]\nname = \"gw\"\napi_base = \"http://h/v1\"\n\n[[models]]\nname = \"m\"\nprovider = \"gw\"\n",
+    );
+    let run = sandbox.run(&["setup", "--print", "--adapter", "vibe"]);
+    run.assert_ok();
+    assert!(run.stderr.contains("per-session copy"), "{}", run.stderr);
+    assert!(run.stderr.contains("overlay_dir"), "{}", run.stderr);
+    assert!(!run.stdout.contains("extra_headers"), "{}", run.stdout);
 }
 
 #[test]

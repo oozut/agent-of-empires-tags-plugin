@@ -2,11 +2,11 @@
   "agent": "hermes",
   "binary": "/usr/local/bin/hermes",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-03T08:43:14Z",
-  "exit_code": 0,
+  "checked_at": "2026-11-03T10:58:41Z",
+  "exit_code": 124,
   "session_override": {},
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-hermes-yfb5E9/project\",\"session\":\"S-prob\",\"session_id\":\"probe-hermes-1838800\",\"team\":\"core\",\"tool\":\"hermes\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-hermes-tz7SGo/project\",\"session\":\"S-prob\",\"session_id\":\"probe-hermes-2112216\",\"team\":\"core\",\"tool\":\"hermes\"}"
   ],
   "requests": 4,
   "deliveries": [
@@ -15,9 +15,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-hermes-yfb5E9/project",
+        "project_path": "/tmp/aoe-probe-hermes-tz7SGo/project",
         "session": "S-prob",
-        "session_id": "probe-hermes-1838800",
+        "session_id": "probe-hermes-2112216",
         "team": "core",
         "tool": "hermes"
       },

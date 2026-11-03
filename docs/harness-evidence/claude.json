@@ -2,13 +2,13 @@
   "agent": "claude",
   "binary": "/var/lib/aoe/.local/bin/claude",
   "cli": "target/debug/aoe-llm-tags",
-  "checked_at": "2026-11-03T08:43:01Z",
+  "checked_at": "2026-11-03T10:58:27Z",
   "exit_code": 1,
   "session_override": {
-    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: {\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-UwxXZ5/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-1838017\",\"team\":\"core\",\"tool\":\"claude\"}"
+    "ANTHROPIC_CUSTOM_HEADERS": "X-AoE-Tags: {\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-QA0WlN/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-2111451\",\"team\":\"core\",\"tool\":\"claude\"}"
   },
   "minted_values": [
-    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-UwxXZ5/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-1838017\",\"team\":\"core\",\"tool\":\"claude\"}"
+    "{\"profile\":\"main\",\"project\":\"project\",\"project_path\":\"/tmp/aoe-probe-claude-QA0WlN/project\",\"session\":\"S-prob\",\"session_id\":\"probe-claude-2111451\",\"team\":\"core\",\"tool\":\"claude\"}"
   ],
   "requests": 2,
   "deliveries": [
@@ -17,9 +17,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-claude-UwxXZ5/project",
+        "project_path": "/tmp/aoe-probe-claude-QA0WlN/project",
         "session": "S-prob",
-        "session_id": "probe-claude-1838017",
+        "session_id": "probe-claude-2111451",
         "team": "core",
         "tool": "claude"
       },
@@ -30,9 +30,9 @@
       "value": {
         "profile": "main",
         "project": "project",
-        "project_path": "/tmp/aoe-probe-claude-UwxXZ5/project",
+        "project_path": "/tmp/aoe-probe-claude-QA0WlN/project",
         "session": "S-prob",
-        "session_id": "probe-claude-1838017",
+        "session_id": "probe-claude-2111451",
         "team": "core",
         "tool": "claude"
       },

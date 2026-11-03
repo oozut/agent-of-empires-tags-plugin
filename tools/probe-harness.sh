@@ -20,7 +20,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EVIDENCE="$ROOT/docs/harness-evidence"
-HOST_AGENTS=(pi claude codex opencode hermes gemini qwen droid)
+HOST_AGENTS=(pi claude codex opencode hermes gemini qwen droid vibe openclaw)
 
 die() { printf 'probe: %s\n' "$*" >&2; exit 2; }
 note() { printf 'probe: %s\n' "$*" >&2; }
@@ -196,6 +196,25 @@ EOF
     run=("$bin" -z "hi")
     extra=()
     ;;
+vibe)
+    # vibe takes its whole home from VIBE_HOME, so the fixture provider is the
+    # config the adapter row points at.
+    export VIBE_HOME="$HOME/.vibe"
+    mkdir -p "$VIBE_HOME"
+    cat >"$VIBE_HOME/config.toml" <<EOF
+[[providers]]
+name = "probe"
+api_base = "$base/v1"
+api_key_env_var = "PROBE_KEY"
+api_style = "openai"
+
+[[models]]
+name = "probe-model"
+provider = "probe"
+EOF
+    run=("$bin" -p "hi" --model probe-model)
+    extra=(PROBE_KEY=probe MISTRAL_API_KEY=probe)
+    ;;
 qwen)
     mkdir -p "$HOME/.qwen"
     cat >"$HOME/.qwen/settings.json" <<EOF
@@ -235,6 +254,19 @@ template = "{tags_b64}"
 kind = "header"
 name = "X-Aoe-Session"
 template = "{session_id}"'
+    ;;
+openclaw)
+    # openclaw expands ${VAR} in the provider `headers` map, so one static line
+    # serves every session — no per-session copy needed.
+    mkdir -p "$HOME/.openclaw"
+    cat >"$HOME/.openclaw/openclaw.json" <<EOF
+{"models":{"providers":{"probe":{"baseUrl":"$base/v1","apiKey":"probe","api":"openai-completions",
+  "headers":{"X-Aoe-Tags":"\${AOE_LLM_TAGS}"},
+  "models":[{"id":"probe-model","name":"Probe"}]}}},
+ "agents":{"defaults":{"model":"probe/probe-model"}}}
+EOF
+    run=("$bin" agent --local -m "hi" --model probe/probe-model --json)
+    extra=()
     ;;
 droid)
     # droid validates a Factory account before it sends anything, so this recipe

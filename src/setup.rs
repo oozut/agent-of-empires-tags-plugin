@@ -175,6 +175,20 @@ pub fn build(
             ));
             continue;
         }
+        // A row the hook writes a session copy for needs no static line: the
+        // value is not in the user's file at all, so an empty `delivery_value`
+        // is the design, not a failure to find a path.
+        if !adapters::interpolates(adapter, &item.kind)
+            && adapter.write_mode != adapters::MODE_NONE
+            && adapters::mapping_line(adapter, item, env).is_none()
+        {
+            warnings.push(format!(
+                "adapter {} gets {} from the per-session copy it writes at launch \
+                 (write_mode = {:?}), not from a line in the user's config; nothing to add",
+                adapter.agent, item.name, adapter.write_mode
+            ));
+            continue;
+        }
         let Some(line) = adapters::mapping_line(adapter, item, env) else {
             if !unmappable.contains(&item.name) {
                 unmappable.push(item.name.clone());

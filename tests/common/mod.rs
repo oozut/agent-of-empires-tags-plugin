@@ -194,7 +194,22 @@ impl Sandbox {
     }
 
     pub fn run_with(&self, args: &[&str], extra: &[(&str, &str)]) -> Run {
-        let mut command = std::process::Command::new(CLI);
+        self.run_bin(std::path::Path::new(CLI), args, extra)
+    }
+
+    /// Run this CLI through a copy placed in `<root>/plugin/bin`, so the plugin
+    /// root — and therefore the adapter table it reads — is the one the test
+    /// wrote. `plugin_root()` is the parent of the executable's directory.
+    pub fn run_installed(&self, args: &[&str]) -> Run {
+        let bin = self.root.join("plugin/bin");
+        fs::create_dir_all(&bin).expect("bin");
+        let cli = bin.join("aoe-llm-tags");
+        fs::copy(CLI, &cli).expect("copy the CLI");
+        self.run_bin(&cli, args, &[])
+    }
+
+    fn run_bin(&self, cli: &std::path::Path, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        let mut command = std::process::Command::new(cli);
         command.env_clear().args(args);
         for (key, value) in &self.env {
             command.env(key, value);
