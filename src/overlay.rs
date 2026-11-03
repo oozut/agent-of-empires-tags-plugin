@@ -75,7 +75,7 @@ pub fn session_dir(app_dir: &Path, session_id: &str, agent: &str) -> PathBuf {
 }
 
 /// The path is built from a host-supplied id: keep it one boring segment.
-fn sanitize(segment: &str) -> String {
+pub(crate) fn sanitize(segment: &str) -> String {
     let cleaned: String = segment
         .chars()
         .map(|ch| {

@@ -15,5 +15,7 @@ pub mod overlay;
 pub mod resolver;
 pub mod settings;
 pub mod setup;
+pub mod sha256;
+pub mod substrate;
 pub mod worker;
 pub mod writer;

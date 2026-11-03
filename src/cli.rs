@@ -81,6 +81,18 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+    /// say what is actually on this machine, one verdict per substrate
+    #[command(
+        about = "Classify the wiring: wired, detected-not-wired, sandbox-stale, unknown or \
+                 unsupported — per harness, the user's config, this session's copy and leftovers."
+    )]
+    Classify {
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
     /// check the wiring; exit 1 if anything would silently send nothing
     #[command(about = "One line per check, with the absolute paths it looked at.")]
     Doctor {
@@ -167,6 +179,7 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             json,
             flags,
         } => setup_cmd(print, dry_run, apply, yes, undo, all, json, &flags, env),
+        Command::Classify { json, flags } => classify_cmd(json, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
@@ -300,6 +313,49 @@ fn setup_cmd(
             EXIT_OK
         }
     }
+}
+
+/// What is on this machine, per substrate. Exit 0 unless a row cannot deliver at
+/// all: a missing config is a fact to report, not a broken install.
+fn classify_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {
+    let snap = resolver::snapshot(&args.flags(env), env, None);
+    warn_all(&snap.warnings);
+    let (adapters, _) = crate::adapters::load(None);
+    let adapter = if args.adapter.is_some() {
+        args.adapter
+            .as_deref()
+            .and_then(|name| crate::adapters::find(&adapters, name))
+    } else {
+        crate::adapters::match_tool(&adapters, &snap.facts.tool)
+    };
+    let live = crate::substrate::live_sessions(env);
+    let mut cache = crate::substrate::Cache::load(&crate::settings::app_dir(env));
+    let findings = crate::substrate::classify(
+        adapter,
+        &snap.settings.targets,
+        env,
+        &snap.facts.id,
+        &live,
+        &mut cache,
+    );
+    cache.save();
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&crate::substrate::as_json(&findings)).unwrap_or_default()
+        );
+    } else {
+        for line in crate::substrate::format_lines(&findings) {
+            println!("{line}");
+        }
+    }
+    if findings
+        .iter()
+        .any(|finding| finding.verdict == crate::substrate::UNSUPPORTED)
+    {
+        return EXIT_FAIL;
+    }
+    EXIT_OK
 }
 
 fn doctor_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {

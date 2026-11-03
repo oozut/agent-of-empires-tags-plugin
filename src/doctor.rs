@@ -143,6 +143,32 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
     }
     checks.push(check_values(&snap));
 
+    // What is actually on this machine, not what the row would do: the five
+    // verdicts of plan/parameters.md, from the files themselves (`src/substrate.rs`).
+    let live = crate::substrate::live_sessions(env);
+    let mut cache = crate::substrate::Cache::load(&app_dir);
+    let findings = crate::substrate::classify(
+        adapter,
+        &snap.settings.targets,
+        env,
+        &snap.facts.id,
+        &live,
+        &mut cache,
+    );
+    cache.save();
+    for finding in &findings {
+        checks.push(Check {
+            name: format!("substrate {}", finding.scope),
+            status: finding.status().to_string(),
+            detail: format!(
+                "{}: {}{}",
+                finding.verdict,
+                finding.detail,
+                if finding.cached { " (cached)" } else { "" }
+            ),
+        });
+    }
+
     match snap
         .raw
         .get("last_verified")
@@ -749,7 +775,7 @@ fn check_values(snap: &Snapshot) -> Check {
 // --- helpers ----------------------------------------------------------------
 
 /// Is `header` mapped here? Returns (found, matched provider notes, all ids).
-fn scan_file(
+pub(crate) fn scan_file(
     adapter: &Adapter,
     path: &Path,
     header: &str,

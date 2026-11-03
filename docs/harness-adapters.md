@@ -159,6 +159,45 @@ A new harness is a row plus, at most, one small writer. `tests/overlay.rs` refus
 claims `overlay_*` without an `overlay_env` and an implemented writer, so the table cannot drift
 into lying about a capability.
 
+### Verdicts: what is actually there
+
+`doctor` used to print the *plan* — what a row would do with this machine — which reads as
+`wired` on a machine where nothing is wired at all. `classify` (and one `substrate` line per
+scope in `doctor`) reports what was found, under the five verdicts `plan/parameters.md` fixes:
+
+| verdict | means | `doctor` |
+|---|---|---|
+| `wired` | the file exists and every enabled target is in it | ok |
+| `detected-not-wired` | the harness config exists, our mapping is missing (some or all) | warn |
+| `sandbox-stale` | a generated copy exists for a session `aoe list` does not have | warn |
+| `unknown` | nothing to inspect: no adapter row, or no config at any known path | skip |
+| `unsupported` | the row can neither write a copy nor be referenced (no channel) | fail |
+
+Four substrates are checked per session: the **harness** (can this row deliver at all — a
+`write_mode = "none"` row still passes when it interpolates, because the reference channel is a
+real channel), the **user's own config** (present, and carrying our line or not), this
+**session's copy** (built at launch, pointed at by the override variable), and leftovers
+(`sandbox-stale`).
+
+Two rules keep the verdicts honest:
+
+- **Pessimistic on ignorance.** `unknown` when a check cannot be performed: an unreadable file,
+  an `aoe list` that did not answer, a harness with no row. `sandbox-stale` is only claimed when
+  the host proved a session gone — an empty live list means the query failed, not that every
+  copy is stale.
+- **Cached by path + sha256** (`<app dir>/cache/substrates.json`). The digest is the key, so a
+  hand-edited config is re-scanned rather than trusted — which is also how drift shows up as
+  `detected-not-wired` instead of a stale `wired`.
+
+```
+aoe-llm-tags classify                 # this session's harness, from $AOE_TOOL
+aoe-llm-tags classify --adapter codex # one row, whatever the environment says
+aoe-llm-tags classify --json          # findings + `worst`, the pessimistic badge verdict
+```
+
+`classify` exits 0 for a missing or unwired config (a fact to report) and 1 only for
+`unsupported` (a session that cannot carry the tag at all).
+
 ### Verification, portably
 
 ```

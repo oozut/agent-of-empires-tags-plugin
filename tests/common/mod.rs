@@ -150,7 +150,10 @@ impl Sandbox {
         self.write_executable(
             path,
             &format!(
-                "#!/bin/sh\ncase \"$1\" in\n  session) echo '{session_json}' ;;\n  list) echo '[]' ;;\n  *) echo '{{}}' ;;\nesac\n"
+                // `list` answers with the same row in an array, the way the host does: the
+                // substrate check needs a live-id set, and an empty list would mean "aoe did
+                // not answer" rather than "no sessions".
+                "#!/bin/sh\ncase \"$1\" in\n  session) echo '{session_json}' ;;\n  list) echo '[{session_json}]' ;;\n  *) echo '{{}}' ;;\nesac\n"
             ),
         );
     }
