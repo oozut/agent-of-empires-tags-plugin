@@ -156,8 +156,8 @@ aoe app directory — this host's value is in `reference-deployment.md`):
 
 ```toml
 [host_hooks]
-before_session = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE"']
-before_start   = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE"']
+before_session = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE" || true']
+before_start   = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE" || true']
 ```
 
 The number of enabled headers does **not** change these lines: one command prints all of them.
@@ -174,6 +174,10 @@ Why each part:
   row is for.
 - Single quotes around the whole command, double quotes around each expansion: aoe puts the
   string through `$SHELL -c` verbatim.
+- `|| true` — the uninstall guarantee. `aoe plugin uninstall` deletes the plugin tree but not the
+  pasted `[host_hooks]` lines, and a non-zero hook exit aborts session creation
+  (`plan/parameters.md` §6), so a stale line would otherwise 127 every launch. The hook already
+  exits 0 on its own failures; this covers the binary no longer being there to run.
 
 Placement and merge semantics:
 

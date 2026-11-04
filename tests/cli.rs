@@ -407,6 +407,62 @@ fn hook_cli_is_the_installed_binary() {
 }
 
 #[test]
+fn a_stale_hook_line_is_inert_once_the_payload_is_gone() {
+    // `aoe plugin uninstall` removes the plugin tree but cannot remove the
+    // `[host_hooks]` lines a user pasted, and aoe aborts session creation when a
+    // hook exits non-zero. The line therefore has to be a no-op — not the 127 the
+    // shell returns for a missing binary — after the plugin is gone.
+    let sandbox = Sandbox::new();
+    let command = sandbox.hook_command();
+    let cli = sandbox.path("plugin/bin/aoe-llm-tags");
+    assert!(cli.is_file());
+    std::fs::remove_file(&cli).expect("uninstall the CLI");
+
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&command)
+        .env_clear()
+        .envs(&sandbox.env)
+        .current_dir(&sandbox.root)
+        .output()
+        .expect("run the installed hook line");
+    assert!(
+        out.status.success(),
+        "stale hook line exited {:?}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "stale hook line printed {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn undo_all_removes_the_overlays_and_names_what_is_left() {
+    // `--all` is the first step of an uninstall: the copies this plugin built go
+    // away, and the two files it never edits are named so they really get cleaned.
+    let sandbox = Sandbox::new();
+    sandbox.pi_models(&[("X-AoE-Tags", "$AOE_LLM_TAGS")]);
+    let command = sandbox.hook_command();
+    sandbox.write_config(&settings_config(
+        "",
+        &format!("before_session = ['{command}']\nbefore_start = ['{command}']\n"),
+    ));
+    let overlay = sandbox.path("config/agent-of-empires/sessions/cf11af87da7e4bf0/pi");
+    std::fs::create_dir_all(&overlay).expect("overlay dir");
+    std::fs::write(overlay.join("models.json"), "{}").expect("overlay file");
+
+    let run = sandbox.run(&["setup", "--undo", "--all"]);
+    run.assert_ok();
+    assert!(!overlay.exists(), "the overlay survived --undo --all");
+    run.assert_contains("removed 1 session config(s)");
+    run.assert_contains("[host_hooks] before_session, before_start");
+    run.assert_contains("$AOE_*");
+}
+
+#[test]
 fn static_tags_come_first_and_rules_add_to_them() {
     // The tag set is listed once; rules only extend it.
     let sandbox = Sandbox::new();

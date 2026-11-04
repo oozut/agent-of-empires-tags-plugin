@@ -124,12 +124,31 @@ is in `docs/reference-deployment.md` §Proof runs.
 
 ```sh
 aoe plugin update dev.oozut.llm-tags --yes     # rebuild (or re-download), restart the worker
-aoe plugin disable dev.oozut.llm-tags          # contributions off; hook lines stay, so remove those
-aoe plugin uninstall dev.oozut.llm-tags        # removes files and the grant; remove the hook lines
+aoe plugin disable dev.oozut.llm-tags          # contributions off; the pasted lines stay
 ```
 
-The hook lines are ordinary `[host_hooks]` entries in your config: the plugin cannot add or remove
-them, so turning the plugin off is two edits, not one.
+The hook lines and the mapping line live in files this plugin does not own, so it never adds or
+removes them. Removing it cleanly is therefore three steps, in this order:
+
+1. Delete the per-session copies it built, and let it name what is left:
+
+   ```sh
+   "<install>/bin/aoe-llm-tags" setup --undo --all
+   ```
+
+   It prints the `[host_hooks]` entry — and the harness mapping, when that file still has one —
+   with the absolute path of the file to edit.
+2. Delete those by hand: the `[host_hooks]` entry (both `before_session` and `before_start`), and
+   the `X-AoE-*` entry under the provider's `headers` in the harness config it names. For `pi`
+   that is `~/.pi/agent/models.json` **and every config a wrapper generates from it** —
+   `scripts/pi-onecli.sh` (installed as `pi-proxy`) copies the `litellm` provider, headers
+   included, into `~/.config/onecli/pi_cli/pi-agent/models.json` on every run, so clean the
+   source and let the wrapper regenerate.
+3. `aoe plugin uninstall dev.oozut.llm-tags`.
+
+A leftover hook line is a no-op rather than a failure: the installed command ends `|| true`, and
+the hook itself exits 0 on every error. A leftover **mapping** is not harmless — nothing mints the
+variable any more, so the harness fails on its first request instead of sending no header.
 
 ## When something is wrong
 
@@ -140,6 +159,7 @@ them, so turning the plugin off is two edits, not one.
 | Install fails with "ships the reserved build-output directory `.aoe-build`" | a local checkout has build artifacts in it; build with `CARGO_TARGET_DIR` set outside the tree |
 | Install fails with "no cargo found" | source installs build from source; install Rust ≥ 1.89, or use the release form |
 | `doctor`: command path moved | the plugin was uninstalled/renamed — regenerate the hook lines with `setup --print` |
+| Requests fail with `Failed to resolve provider … header … from environment variable: AOE_LLM_TAGS` | a mapping survived with no hook behind it (both hooks were removed) — delete the `X-AoE-*` entries from the harness config named in "Updating, disabling, removing" |
 | `doctor`: no hook line | profile `[host_hooks]` replaced the global one, or the key is misspelt |
 | `doctor`: mapping missing | paste the mapping line into the file it names; for `pi` keep a non-empty `models` list |
 | `env` shows nothing in a session | the session started before you edited the config — restart it; values are launch-time |
