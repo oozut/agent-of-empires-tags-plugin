@@ -112,12 +112,28 @@ enum Command {
         /// clear the literal token
         #[arg(long = "clear-token")]
         clear_token: bool,
+        /// add the standard git tags as a sample (vcs, branch, commit, tag)
+        #[arg(long = "git")]
+        git: bool,
         /// forget every edit this session has
         #[arg(long = "reset")]
         reset: bool,
         /// show this session's edits and what it would send now (the default)
         #[arg(long = "show")]
         show: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
+    /// list every reference a template or a tag value may use
+    #[command(
+        about = "List the {references} this build understands — session fields, tag shapes and \
+                 git facts — with this session's value for each. The editor's dropdown is fed \
+                 from the same list."
+    )]
+    References {
         /// machine-readable output
         #[arg(long)]
         json: bool,
@@ -216,6 +232,7 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             unset,
             token,
             clear_token,
+            git,
             reset,
             show,
             json,
@@ -225,12 +242,14 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             unset,
             token,
             clear_token,
+            git,
             reset,
             show,
             json,
             &flags,
             env,
         ),
+        Command::References { json, flags } => references_cmd(json, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
@@ -287,6 +306,7 @@ fn tag_cmd(
     unset: Option<String>,
     token: Option<String>,
     clear_token: bool,
+    git: bool,
     reset: bool,
     show: bool,
     json: bool,
@@ -296,7 +316,7 @@ fn tag_cmd(
     let flags = args.flags(env);
     let app_dir = crate::settings::app_dir(env);
     let mut session = flags.session.clone();
-    let write = set.is_some() || unset.is_some() || token.is_some() || clear_token || reset;
+    let write = set.is_some() || unset.is_some() || token.is_some() || clear_token || git || reset;
     if write && session.is_empty() {
         // The session row is authoritative when there is one; a write into a
         // guess would land in a file no launch reads.
@@ -327,6 +347,11 @@ fn tag_cmd(
         if let Some(key) = unset.as_deref() {
             failure = crate::session_tags::unset_tag(&app_dir, &session, key).err();
         }
+    }
+    if failure.is_none() && git {
+        // The sample set, written through the same per-session file: a user who
+        // wants standard git information does not hand-write four references.
+        failure = crate::session_tags::apply_preset(&app_dir, &session, "git").err();
     }
     if failure.is_none() && (token.is_some() || clear_token) {
         let value = token.as_deref().unwrap_or_default();
@@ -387,6 +412,96 @@ fn tag_cmd(
         let _ = writeln!(stdout, "  {} = {}", item.env_var, item.value);
     }
     let _ = stdout.flush();
+    EXIT_OK
+}
+
+/// Every reference this build understands, with this session's value for each.
+///
+/// The editor's dropdown is fed from the same catalogue, so the two cannot list
+/// different references. Git facts are resolved here on purpose: a listing that
+/// shows `{git.branch}` but never what it would render is a promise without a
+/// value behind it.
+fn references_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {
+    let flags = args.flags(env);
+    let snap = resolver::snapshot(&flags, env, None);
+    warn_all(&snap.warnings);
+    let (tags, _) = resolver::parse_tags(&snap.settings.tags);
+    let (payload, _) = resolver::payload(&snap.settings, &snap.facts, &tags, &snap.facts.branch);
+    let git_names: Vec<&str> = crate::gitinfo::REFERENCES
+        .iter()
+        .map(|item| item.name)
+        .collect();
+    let (git_fields, git_warnings) = crate::gitinfo::resolve(
+        &snap.facts.path,
+        &git_names,
+        None,
+        env,
+        resolver::DEFAULT_TIMEOUT,
+    );
+    warn_all(&git_warnings);
+    let fields = resolver::build_fields(
+        &snap.settings,
+        &snap.facts,
+        &tags,
+        &payload,
+        &snap.facts.branch,
+        &git_fields,
+    );
+    let catalog = resolver::reference_catalog();
+    if json {
+        let rows: Vec<serde_json::Value> = catalog
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "name": item.name,
+                    "reference": format!("{{{}}}", item.name),
+                    "group": item.group,
+                    "description": item.description,
+                    "sample": fields.get(item.name).cloned().unwrap_or_default(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({
+                "session": snap.facts.id,
+                "project": snap.facts.path,
+                "references": rows,
+            })
+        );
+        return EXIT_OK;
+    }
+    println!("References — write one as {{name}} in a target template or a tag value:");
+    for item in &catalog {
+        let sample = fields
+            .get(item.name)
+            .map(String::as_str)
+            .unwrap_or_default();
+        // A sample is one glance, not the value: `{payload_json}` would otherwise
+        // push every description off the screen.
+        let (sample, cut) = resolver::clamp_bytes(sample, 27);
+        let sample = if cut {
+            format!("{sample}\u{2026}")
+        } else {
+            sample
+        };
+        println!(
+            "  {:<16} {:<28} {}",
+            format!("{{{}}}", item.name),
+            sample,
+            item.description
+        );
+    }
+    for (id, tags) in crate::session_tags::PRESETS {
+        let flag = match id {
+            "git" => "--git".to_string(),
+            other => format!("--{other}"),
+        };
+        println!("\n{id} preset — `{PROG} tag {flag}` writes:");
+        for entry in tags {
+            println!("  {entry}");
+        }
+    }
     EXIT_OK
 }
 

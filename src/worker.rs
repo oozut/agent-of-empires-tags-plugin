@@ -166,6 +166,23 @@ impl Host {
                 crate::session_tags::set_token(&app_dir, session, token)
             }
             "token.clear" => crate::session_tags::set_token(&app_dir, session, ""),
+            // A tick box: one action writes (or removes) the whole sample set,
+            // through the same per-session file every other edit lands in.
+            "tag.preset" => {
+                let preset = params
+                    .get("preset")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("git");
+                let applied = params
+                    .get("applied")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(true);
+                if applied {
+                    crate::session_tags::apply_preset(&app_dir, session, preset)
+                } else {
+                    crate::session_tags::remove_preset(&app_dir, session, preset)
+                }
+            }
             _ => crate::session_tags::reset(&app_dir, session).map(|()| Default::default()),
         };
         if let Err(err) = result {
@@ -494,6 +511,32 @@ impl Host {
             }));
         }
 
+        // The page's dropdown is fed from the same catalogue the `references`
+        // verb prints, so a reference can never be insertable-but-unresolvable.
+        let references: Vec<serde_json::Value> = resolver::reference_catalog()
+            .iter()
+            .map(|item| {
+                serde_json::json!({
+                    "name": item.name,
+                    "reference": format!("{{{}}}", item.name),
+                    "group": item.group,
+                    "description": item.description,
+                })
+            })
+            .collect();
+        let presets: Vec<serde_json::Value> = crate::session_tags::PRESETS
+            .iter()
+            .map(|(id, tags)| {
+                serde_json::json!({
+                    "id": id,
+                    "label": match *id {
+                        "git" => "Add standard git information",
+                        other => other,
+                    },
+                    "tags": tags,
+                })
+            })
+            .collect();
         let _ = self.call_host(
             "ui.state.set",
             serde_json::json!({
@@ -501,6 +544,8 @@ impl Host {
                 "id": "tags",
                 "payload": {
                     "sessions": page_sessions,
+                    "references": references,
+                    "presets": presets,
                     "page": EDITOR_PAGE,
                 }
             }),
@@ -511,9 +556,10 @@ impl Host {
 /// The worker methods a pane or page may fire. The host forwards a block's
 /// `method` verbatim, so these are whole names — not the trailing segment that
 /// names a host command (`plugin.<id>.status`).
-pub const EDITS: [&str; 5] = [
+pub const EDITS: [&str; 6] = [
     "tag.set",
     "tag.remove",
+    "tag.preset",
     "token.set",
     "token.clear",
     "tags.reset",

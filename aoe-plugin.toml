@@ -45,6 +45,14 @@ A tag is a key and a value, and it is delivered as a JSON object, so a consumer 
 Keys start with a letter or digit and are at most 96 characters. The payload always
 carries the session fields too: `session`, `session_id`, `tool`, `profile`, `group`,
 `project`, `project_path`, `branch` and `feature` when they have a value.
+
+A value may be a reference, so a tag carries a fact instead of a word:
+`git.branch:{git.branch}` puts the branch in the tag set itself, and a consumer reads
+`tags["git.branch"]` without a template of its own. References are the session fields
+above and the git facts (`git.branch`, `git.commit`, `git.sha`, `git.tag`,
+`git.describe`, `git.subject`, `git.author`, `git.dirty`, `git.remote`, `git.repo`,
+`git.root`); they are read from the session's checkout only when a tag or a template
+names one. `aoe-llm-tags references` lists every reference with this session's value.
 """
 
 [[settings]]
@@ -62,8 +70,9 @@ one object, `csv` sends the flat `team:core,feature:billing` list an older consu
 `template` overrides the format for one target and picks the slice itself: `{tags}` for the
 comma-joined list, `{tags_json}` for the tags alone as JSON, `{payload_json}` for the full
 object, `{tags_b64}` for that object base64url-encoded, or a single field such as `{feature}`,
-`{session}`, `{session_id}`, `{group}`, `{project}`, `{tool}`. `{tags_b64}` is what a harness that
-splits its header list on commas (gemini) needs: same bytes, no splittable comma.
+`{session}`, `{session_id}`, `{group}`, `{project}`, `{tool}`, `{git.branch}`,
+`{git.commit}`. `{tags_b64}` is what a harness that splits its header list on commas (gemini)
+needs: same bytes, no splittable comma.
 
 Some harnesses only expand `$NAME` in headers (pi, claude, codex): a `query`/`body` target
 there needs `literal` — the value written as-is — instead of an environment reference.

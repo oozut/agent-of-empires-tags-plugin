@@ -142,6 +142,7 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
         }
     }
     checks.push(check_values(&snap));
+    checks.push(check_git(&snap, env));
 
     // What is actually on this machine, not what the row would do: the five
     // verdicts of plan/parameters.md, from the files themselves (`src/substrate.rs`).
@@ -422,6 +423,47 @@ fn check_adapter(
         name: "harness adapter".to_string(),
         status: OK.to_string(),
         detail,
+    }
+}
+
+/// A `{git.*}` reference needs a binary. Report it only when something names one:
+/// an install that sends no git fact should not be told about git at all, and a
+/// missing binary renders the reference empty, which reads as "no branch" rather
+/// than "no git".
+fn check_git(snap: &Snapshot, env: &Env) -> Check {
+    let (tags, _) = crate::resolver::parse_tags(&snap.settings.tags);
+    let names = crate::resolver::wanted_git_references(&snap.settings, &tags);
+    if names.is_empty() {
+        return Check {
+            name: "git references".to_string(),
+            status: SKIP.to_string(),
+            detail: "no target template or tag value names a {git.*} reference".to_string(),
+        };
+    }
+    let source = if env.non_empty("AOE_GIT_BIN").is_some() {
+        "from AOE_GIT_BIN"
+    } else {
+        "from PATH"
+    };
+    let wanted = names
+        .iter()
+        .map(|name| format!("{{{name}}}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    match crate::gitinfo::git_available(env) {
+        Some(bin) => Check {
+            name: "git references".to_string(),
+            status: OK.to_string(),
+            detail: format!("{bin} ({source}) reads {wanted}"),
+        },
+        None => Check {
+            name: "git references".to_string(),
+            status: FAIL.to_string(),
+            detail: format!(
+                "this session's settings name {wanted} but no `git` is on PATH and \
+                 AOE_GIT_BIN is empty; they render empty"
+            ),
+        },
     }
 }
 

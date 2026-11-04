@@ -432,6 +432,124 @@ const SESSION_FIELDS: [&str; 8] = [
     "branch",
 ];
 
+/// The sample "standard git information" set: what a consumer usually wants in
+/// order to attribute a request to a revision.
+///
+/// It is ordinary tag grammar — four entries with `{git.xxx}` references as
+/// values — so it needs no new setting, and a user can drop or edit any entry
+/// afterwards. Ticking "Add standard git information" in the editor and
+/// `aoe-llm-tags tag --git` write exactly this list, from this one constant.
+pub const GIT_PRESET: [&str; 4] = [
+    "vcs:git",
+    "git.branch:{git.branch}",
+    "git.commit:{git.commit}",
+    "git.tag:{git.tag}",
+];
+
+/// One entry in the reference catalogue the editor's dropdown and the
+/// `references` verb list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Reference {
+    /// Without braces: `session` is written `{session}`.
+    pub name: &'static str,
+    /// The heading the dropdown groups it under.
+    pub group: &'static str,
+    /// One line, in the settings' voice.
+    pub description: &'static str,
+}
+
+/// The session and tag-shape references. The git ones come from
+/// [`crate::gitinfo::REFERENCES`], so there is one source for each.
+pub const SESSION_REFERENCES: [Reference; 15] = [
+    Reference {
+        name: "session",
+        group: "Session",
+        description: "Short session id (`S-9f3a`), or the full id when `session_tagging` says so.",
+    },
+    Reference {
+        name: "session_id",
+        group: "Session",
+        description: "Full session id.",
+    },
+    Reference {
+        name: "feature",
+        group: "Session",
+        description: "The operator's feature: a per-project `feature_tag`, or a `feature:` tag.",
+    },
+    Reference {
+        name: "tool",
+        group: "Session",
+        description: "The harness the session runs (pi, claude, codex, opencode).",
+    },
+    Reference {
+        name: "profile",
+        group: "Session",
+        description: "The aoe profile the session was launched with.",
+    },
+    Reference {
+        name: "group",
+        group: "Session",
+        description: "The session's group name, as written.",
+    },
+    Reference {
+        name: "group_slug",
+        group: "Session",
+        description: "The group name slugged for use as a dimension.",
+    },
+    Reference {
+        name: "project",
+        group: "Session",
+        description: "The project path (the payload's `project` is its slug).",
+    },
+    Reference {
+        name: "project_slug",
+        group: "Session",
+        description: "The project directory name, slugged: `lithuanians`.",
+    },
+    Reference {
+        name: "branch",
+        group: "Session",
+        description:
+            "The branch the session manager reports; `{git.branch}` reads it from git itself.",
+    },
+    Reference {
+        name: "tags",
+        group: "Tags",
+        description: "The tag set as a flat list: `team:core,feature:billing`.",
+    },
+    Reference {
+        name: "tags_csv",
+        group: "Tags",
+        description: "The same flat list, under the name older templates use.",
+    },
+    Reference {
+        name: "tags_json",
+        group: "Tags",
+        description: "The tags alone, as one JSON object.",
+    },
+    Reference {
+        name: "payload_json",
+        group: "Tags",
+        description: "The whole payload — session fields and tags — as JSON.",
+    },
+    Reference {
+        name: "tags_b64",
+        group: "Tags",
+        description: "The payload, base64url-encoded, for a harness that splits on commas.",
+    },
+];
+
+/// Everything a template or a tag value may name, session fields first, then git.
+pub fn reference_catalog() -> Vec<Reference> {
+    let mut all = SESSION_REFERENCES.to_vec();
+    all.extend(crate::gitinfo::REFERENCES.iter().map(|item| Reference {
+        name: item.name,
+        group: "Git",
+        description: item.description,
+    }));
+    all
+}
+
 /// The operator's feature, spelled as one standard tag entry.
 ///
 /// `feature_tag` is a single tag, not a second taxonomy, so it accepts the shapes
@@ -607,6 +725,89 @@ pub fn base64url(input: &str) -> String {
     out
 }
 
+/// Fields that are *built from* the tags, so a tag value cannot reference them
+/// without asking for a value that does not exist yet. `feature` is among them
+/// because a `feature:` tag is one of the two things it can come from.
+const TAG_DERIVED_FIELDS: [&str; 6] = [
+    "feature",
+    "tags",
+    "tags_csv",
+    "tags_json",
+    "payload_json",
+    "tags_b64",
+];
+
+/// Expand `{reference}` inside a tag's value, recursively for JSON values.
+///
+/// A tag is a key and a value, and the value may be a reference:
+/// `git.branch:{git.branch}` makes the branch part of the tag set itself, so a
+/// JSON consumer reads `tags["git.branch"]` instead of the operator writing a
+/// template for one target. The session fields and the git facts are available;
+/// the tag-derived fields are not, and saying so is better than an empty tag that
+/// looks like a real answer.
+fn expand_tag_value(
+    value: &Value,
+    fields: &BTreeMap<String, String>,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Value {
+    match value {
+        Value::String(text) => {
+            let (rendered, missing) = render_template(text, fields);
+            for name in missing {
+                if TAG_DERIVED_FIELDS.contains(&name.as_str()) {
+                    warnings.push(format!(
+                        "settings: tag {key:?} cannot reference {{{name}}}: that field is \
+                         built from the tags themselves; it renders empty"
+                    ));
+                } else {
+                    warnings.push(format!(
+                        "settings: tag {key:?} uses unknown reference {{{name}}}; it renders empty"
+                    ));
+                }
+            }
+            Value::String(rendered)
+        }
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .map(|item| expand_tag_value(item, fields, key, warnings))
+                .collect(),
+        ),
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(name, item)| (name.clone(), expand_tag_value(item, fields, key, warnings)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// The git references this launch names: enabled target templates, the tag values
+/// and the feature tag, each once. Empty means no `git` process is worth starting.
+pub fn wanted_git_references(settings: &Settings, tags: &[Tag]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for header in enabled_targets(settings) {
+        note_git_references(referenced_names(&header.template), &mut names);
+    }
+    for tag in tags {
+        note_git_references(referenced_names_in_value(&tag.value), &mut names);
+    }
+    if let Some(tag) = &settings.feature_tag {
+        note_git_references(referenced_names_in_value(&tag.value), &mut names);
+    }
+    names
+}
+
+/// Collect the git references a template or a tag value names, once each.
+fn note_git_references(names: Vec<String>, into: &mut Vec<String>) {
+    for name in names {
+        if crate::gitinfo::is_reference(&name) && !into.contains(&name) {
+            into.push(name);
+        }
+    }
+}
+
 /// Build what a consumer receives: the session fields every target needs, then
 /// the tags. Tags with the same key as a field are reported and dropped rather
 /// than allowed to rewrite the session's identity.
@@ -759,19 +960,26 @@ pub fn is_executable(path: &Path) -> bool {
     }
 }
 
-/// Run one read-only `aoe` command and parse its JSON. Never blocks long.
-pub fn aoe_json(args: &[String], env: &Env, timeout: Duration) -> Result<Value, AoeError> {
-    let bin = aoe_bin(env);
-    let verb = args.first().cloned().unwrap_or_default();
-
-    let mut command = std::process::Command::new(&bin);
+/// Run one read-only subprocess and return its stdout as text. Never blocks long.
+///
+/// Shared by the `aoe` query and the `git` facts: both are read-only lookups the
+/// launch can survive without, so both are bounded the same way and both report
+/// a failure as [`AoeError`] rather than panicking. `verb` is only the label a
+/// warning prints (`aoe session show`, `git rev-parse`).
+pub fn run_text(
+    bin: &str,
+    verb: &str,
+    args: &[String],
+    timeout: Duration,
+) -> Result<String, AoeError> {
+    let mut command = std::process::Command::new(bin);
     command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
     let mut child = command.spawn().map_err(|source| AoeError::Spawn {
-        bin: bin.clone(),
+        bin: bin.to_string(),
         source,
     })?;
 
@@ -825,14 +1033,14 @@ pub fn aoe_json(args: &[String], env: &Env, timeout: Duration) -> Result<Value, 
         (Ok(status), timed_out, out_buf, err_buf)
     });
     let status = status.map_err(|source| AoeError::Spawn {
-        bin: bin.clone(),
+        bin: bin.to_string(),
         source,
     })?;
 
     if timed_out || status.is_none() {
         return Err(AoeError::TimedOut {
-            bin,
-            verb,
+            bin: bin.to_string(),
+            verb: verb.to_string(),
             timeout: timeout.as_secs_f64(),
         });
     }
@@ -843,8 +1051,8 @@ pub fn aoe_json(args: &[String], env: &Env, timeout: Duration) -> Result<Value, 
             .collect::<Vec<_>>()
             .join(" ");
         return Err(AoeError::Failed {
-            bin,
-            verb,
+            bin: bin.to_string(),
+            verb: verb.to_string(),
             code: status.code().unwrap_or(-1),
             detail: if detail.is_empty() {
                 String::new()
@@ -853,7 +1061,15 @@ pub fn aoe_json(args: &[String], env: &Env, timeout: Duration) -> Result<Value, 
             },
         });
     }
-    serde_json::from_slice(&out_buf).map_err(|err| AoeError::InvalidJson {
+    Ok(String::from_utf8_lossy(&out_buf).into_owned())
+}
+
+/// Run one read-only `aoe` command and parse its JSON. Never blocks long.
+pub fn aoe_json(args: &[String], env: &Env, timeout: Duration) -> Result<Value, AoeError> {
+    let bin = aoe_bin(env);
+    let verb = args.first().cloned().unwrap_or_default();
+    let text = run_text(&bin, &verb, args, timeout)?;
+    serde_json::from_str(&text).map_err(|err| AoeError::InvalidJson {
         bin,
         verb,
         detail: err.to_string(),
@@ -1174,26 +1390,19 @@ pub fn rule_matches(rule: &Rule, facts: &SessionFacts, slugged_project: &str) ->
     }
 }
 
-pub fn build_fields(
+/// The fields that describe the session alone: no tag and no payload depends on
+/// them, so they are what a **tag value** may reference (`git.branch:{git.branch}`).
+pub fn base_fields(
     settings: &Settings,
     facts: &SessionFacts,
-    tags: &[Tag],
-    payload: &Payload,
     branch: &str,
 ) -> BTreeMap<String, String> {
     let mut fields = BTreeMap::new();
-    let csv: Vec<String> = tags.iter().map(Tag::csv).collect();
     fields.insert(
         "session".to_string(),
         short_id(&facts.id, &settings.session_tagging),
     );
     fields.insert("session_id".to_string(), facts.id.clone());
-    fields.insert("feature".to_string(), feature_of(settings, tags));
-    fields.insert("tags".to_string(), csv.join(","));
-    fields.insert("tags_csv".to_string(), csv.join(","));
-    fields.insert("tags_json".to_string(), tags_json(tags));
-    fields.insert("payload_json".to_string(), payload_json(payload));
-    fields.insert("tags_b64".to_string(), base64url(&payload_json(payload)));
     fields.insert(
         "tool".to_string(),
         if facts.tool.is_empty() {
@@ -1209,6 +1418,100 @@ pub fn build_fields(
     fields.insert("project_slug".to_string(), project_slug(&facts.path));
     fields.insert("branch".to_string(), branch.to_string());
     fields
+}
+
+/// Every field a template may name: the session's own, the tag/payload shapes and
+/// the `{git.xxx}` references resolved for this launch.
+pub fn build_fields(
+    settings: &Settings,
+    facts: &SessionFacts,
+    tags: &[Tag],
+    payload: &Payload,
+    branch: &str,
+    git: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut fields = base_fields(settings, facts, branch);
+    let csv: Vec<String> = tags.iter().map(Tag::csv).collect();
+    fields.insert("feature".to_string(), feature_of(settings, tags));
+    fields.insert("tags".to_string(), csv.join(","));
+    fields.insert("tags_csv".to_string(), csv.join(","));
+    fields.insert("tags_json".to_string(), tags_json(tags));
+    fields.insert("payload_json".to_string(), payload_json(payload));
+    fields.insert("tags_b64".to_string(), base64url(&payload_json(payload)));
+    for (name, value) in git {
+        fields.insert(name.clone(), value.clone());
+    }
+    fields
+}
+
+/// A template field name: lower snake case, or a dotted reference (`git.branch`).
+///
+/// The dot is the only punctuation allowed, so `{team:core}` and `{1,2}` are left
+/// as literal text rather than half-parsed.
+pub fn is_field_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '.')
+}
+
+/// Every well-formed `{name}` in `text`, once each and in order.
+///
+/// This is how the resolver learns which `{git.xxx}` facts to read: nothing is
+/// resolved speculatively, and a template that names no git fact starts no
+/// subprocess. It uses the same grammar as [`render_template`], so a name that
+/// would not be substituted is not collected either.
+pub fn referenced_names(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let bytes = text.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'{' {
+            let step = text[index..].chars().next().map_or(1, char::len_utf8);
+            index += step;
+            continue;
+        }
+        let Some(close) = text[index..].find('}') else {
+            break;
+        };
+        let name = &text[index + 1..index + close];
+        if is_field_name(name) && !names.iter().any(|seen| seen == name) {
+            names.push(name.to_string());
+        }
+        index += close + 1;
+    }
+    names
+}
+
+/// The `{name}` references inside a tag's value, including nested JSON values, so
+/// `meta:={"branch":"{git.branch}"}` is discovered the same way `key:{git.branch}` is.
+pub fn referenced_names_in_value(value: &Value) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let mut collect = |text: &str| {
+        for name in referenced_names(text) {
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    };
+    fn walk<F: FnMut(&str)>(value: &Value, collect: &mut F) {
+        match value {
+            Value::String(text) => collect(text),
+            Value::Array(items) => {
+                for item in items {
+                    walk(item, collect);
+                }
+            }
+            Value::Object(map) => {
+                for item in map.values() {
+                    walk(item, collect);
+                }
+            }
+            _ => {}
+        }
+    }
+    walk(value, &mut collect);
+    names
 }
 
 /// Substitute `{field}`; unknown fields render empty and are reported.
@@ -1230,12 +1533,7 @@ pub fn render_template(template: &str, fields: &BTreeMap<String, String>) -> (St
             continue;
         };
         let name = &template[index + 1..index + close];
-        // Field names are lower_snake: `tags_b64` has digits and is still a field.
-        let is_field = !name.is_empty()
-            && name
-                .chars()
-                .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_');
-        if !is_field {
+        if !is_field_name(name) {
             out.push('{');
             index += 1;
             continue;
@@ -1368,12 +1666,37 @@ pub fn render_headers(
     }
     facts.branch = branch.clone();
 
-    let tags = matched_tags(settings, facts);
-    let (tags, tag_warnings) = parse_tags(&tags);
+    let matched = matched_tags(settings, facts);
+    let (mut tags, tag_warnings) = parse_tags(&matched);
     warnings.extend(tag_warnings);
-    let (payload, payload_warnings) = payload(settings, facts, &tags, &branch);
+
+    // Which git facts does this launch name? Templates, tag values and the
+    // feature tag are scanned together, so `git.branch:{git.branch}` reads git
+    // once and a launch that mentions no git fact starts no subprocess at all.
+    let git_names = wanted_git_references(settings, &tags);
+    let wanted: Vec<&str> = git_names.iter().map(String::as_str).collect();
+    let (git_fields, git_warnings) = if wanted.is_empty() {
+        (BTreeMap::new(), Vec::new())
+    } else {
+        crate::gitinfo::resolve(&facts.path, &wanted, None, env, timeout)
+    };
+    warnings.extend(git_warnings);
+
+    // Expand tag values before the payload exists: a tag carries the value it
+    // names, so `{tags_json}` and a JSON consumer see `main`, not `{git.branch}`.
+    let mut expandable = base_fields(settings, facts, &branch);
+    expandable.extend(git_fields.clone());
+    for tag in &mut tags {
+        tag.value = expand_tag_value(&tag.value, &expandable, &tag.key, &mut warnings);
+    }
+    let mut settings = settings.clone();
+    if let Some(tag) = &mut settings.feature_tag {
+        tag.value = expand_tag_value(&tag.value, &expandable, &tag.key, &mut warnings);
+    }
+
+    let (payload, payload_warnings) = payload(&settings, facts, &tags, &branch);
     warnings.extend(payload_warnings);
-    let fields = build_fields(settings, facts, &tags, &payload, &branch);
+    let fields = build_fields(&settings, facts, &tags, &payload, &branch, &git_fields);
     let configured_token = settings.token.clone();
 
     let mut resolved = Vec::new();
@@ -1959,7 +2282,14 @@ mod tests {
     fn the_default_target_sends_the_json_object_and_csv_stays_flat() {
         let (tags, _) = parse_tags(&["team:core".into()]);
         let (payload, _) = payload(&settings(&[]), &facts(), &tags, "");
-        let fields = build_fields(&settings(&[]), &facts(), &tags, &payload, "");
+        let fields = build_fields(
+            &settings(&[]),
+            &facts(),
+            &tags,
+            &payload,
+            "",
+            &BTreeMap::new(),
+        );
         let json_target = &default_targets()[0];
         assert!(json_target.renders_payload());
         let (value, missing) = target_value(json_target, &payload, &fields);
@@ -1982,7 +2312,14 @@ mod tests {
     fn a_template_can_ask_for_the_payload_as_json() {
         let (tags, _) = parse_tags(&["team:core".into(), "weight:=2".into()]);
         let (payload, _) = payload(&settings(&[]), &facts(), &tags, "");
-        let fields = build_fields(&settings(&[]), &facts(), &tags, &payload, "");
+        let fields = build_fields(
+            &settings(&[]),
+            &facts(),
+            &tags,
+            &payload,
+            "",
+            &BTreeMap::new(),
+        );
         let target = Target::new("X-Both", "{payload_json}", "AOE_HDR_X_BOTH");
         let (value, _) = target_value(&target, &payload, &fields);
         let object: Value = serde_json::from_str(&value).unwrap();

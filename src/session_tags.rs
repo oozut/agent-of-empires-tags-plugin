@@ -56,6 +56,41 @@ impl Overrides {
     }
 }
 
+/// The sample tag sets a user can apply in one step.
+///
+/// A preset is ordinary tag grammar, spelled once in the resolver and applied
+/// here, so the editor's tick box, the pane's action and `tag --git` all write the
+/// same entries — and a user can still edit or drop any of them afterwards.
+pub const PRESETS: [(&str, &[&str]); 1] = [("git", &crate::resolver::GIT_PRESET)];
+
+/// The entries of a preset, or `None` for an unknown id.
+pub fn preset(id: &str) -> Option<&'static [&'static str]> {
+    PRESETS
+        .iter()
+        .find(|(name, _)| *name == id)
+        .map(|(_, tags)| *tags)
+}
+
+/// Add every entry of a preset, key by key, exactly as `set_tag` would.
+pub fn apply_preset(app_dir: &Path, session_id: &str, id: &str) -> Result<Overrides, String> {
+    let entries = preset(id).ok_or_else(|| format!("unknown preset {id:?}"))?;
+    for entry in entries {
+        set_tag(app_dir, session_id, entry)?;
+    }
+    Ok(load(app_dir, session_id).0)
+}
+
+/// Remove every key a preset sets. Unticking the box is one action, not four.
+pub fn remove_preset(app_dir: &Path, session_id: &str, id: &str) -> Result<Overrides, String> {
+    let entries = preset(id).ok_or_else(|| format!("unknown preset {id:?}"))?;
+    for entry in entries {
+        if let Ok(tag) = Tag::parse(entry) {
+            unset_tag(app_dir, session_id, &tag.key)?;
+        }
+    }
+    Ok(load(app_dir, session_id).0)
+}
+
 /// `<app dir>/sessions/<session id>/overrides.toml`.
 pub fn path(app_dir: &Path, session_id: &str) -> PathBuf {
     app_dir
@@ -423,6 +458,33 @@ mod tests {
         assert!(!path(&app, session).exists());
         let (edits, _) = load(&app, session);
         assert!(edits.is_empty());
+        let _ = std::fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn the_git_preset_writes_the_standard_entries_and_unticking_clears_them() {
+        let app = temp();
+        let session = "cf11af87da7e4bf0";
+        let edits = apply_preset(&app, session, "git").expect("apply");
+        assert_eq!(edits.tags, crate::resolver::GIT_PRESET.to_vec());
+        // Ordinary tag grammar, so every entry parses and carries a reference value.
+        for raw in &edits.tags {
+            let tag = Tag::parse(raw).unwrap_or_else(|err| panic!("{raw}: {err}"));
+            assert!(!tag.key.is_empty());
+        }
+        assert!(load(&app, session).0.unset.is_empty());
+
+        let edits = remove_preset(&app, session, "git").expect("remove");
+        assert!(edits.tags.is_empty(), "{edits:?}");
+        assert_eq!(edits.unset.len(), crate::resolver::GIT_PRESET.len());
+        // The file is gone only when nothing else remains: the tombstones are edits.
+        assert!(path(&app, session).exists());
+        let mut configured = settings(&[]);
+        apply(&mut configured, &app, session);
+        assert!(configured.tags.is_empty(), "{:?}", configured.tags);
+
+        let unknown = apply_preset(&app, session, "nope").expect_err("refused");
+        assert!(unknown.contains("unknown preset"), "{unknown}");
         let _ = std::fs::remove_dir_all(&app);
     }
 

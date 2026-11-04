@@ -529,3 +529,59 @@ fn the_plugin_id_is_configuration_not_a_check_name() {
     let run = sandbox.doctor(&[]);
     assert!(run.stdout.contains(PLUGIN_ID) || !run.stdout.contains("dev.oozut"));
 }
+
+// --- git references ---------------------------------------------------------
+
+#[test]
+fn git_is_not_asked_about_when_nothing_names_a_reference() {
+    let (sandbox, _) = wired();
+    let report = report(&sandbox);
+    assert_eq!(
+        check(&report, "git references").status,
+        llm_tags::doctor::SKIP
+    );
+}
+
+#[test]
+fn a_named_git_reference_needs_the_binary_and_the_check_names_it() {
+    let mut sandbox = Sandbox::new();
+    Wire {
+        settings: r#"tags = ["git.branch:{git.branch}"]"#,
+        ..Wire::default()
+    }
+    .apply(&mut sandbox);
+    // An empty directory on PATH: `git` is not found, and AOE_GIT_BIN is unset.
+    let empty = sandbox.path("empty-bin");
+    std::fs::create_dir_all(&empty).expect("empty bin");
+    sandbox
+        .env
+        .insert("PATH".to_string(), empty.display().to_string());
+
+    let report = report(&sandbox);
+    let git = check(&report, "git references");
+    assert_eq!(git.status, llm_tags::doctor::FAIL, "{}", git.detail);
+    assert!(git.detail.contains("{git.branch}"), "{}", git.detail);
+    assert!(git.detail.contains("render empty"), "{}", git.detail);
+    assert!(!report.ok());
+}
+
+#[test]
+fn an_injected_git_binary_is_reported_where_it_came_from() {
+    let mut sandbox = Sandbox::new();
+    Wire {
+        settings: r#"tags = ["git.branch:{git.branch}"]"#,
+        ..Wire::default()
+    }
+    .apply(&mut sandbox);
+    let git = sandbox.path("bin/fake-git");
+    sandbox.write_executable(&git, "#!/bin/sh\nexit 0\n");
+    sandbox
+        .env
+        .insert("AOE_GIT_BIN".to_string(), git.display().to_string());
+
+    let report = report(&sandbox);
+    let check = check(&report, "git references");
+    assert_eq!(check.status, llm_tags::doctor::OK, "{}", check.detail);
+    assert!(check.detail.contains("AOE_GIT_BIN"), "{}", check.detail);
+    assert!(check.detail.contains("{git.branch}"), "{}", check.detail);
+}

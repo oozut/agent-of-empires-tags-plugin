@@ -11,6 +11,7 @@ pub mod adapters;
 pub mod cli;
 pub mod doctor;
 pub mod env;
+pub mod gitinfo;
 pub mod overlay;
 pub mod resolver;
 pub mod session_tags;
