@@ -143,6 +143,16 @@ fn setup_lines(sandbox: &Sandbox) -> Vec<String> {
     run.lines().iter().map(|line| line.to_string()).collect()
 }
 
+/// The value half of a printed mapping line, unescaped as the file needs it.
+fn mapping_value(line: &str) -> String {
+    let quoted = line.rsplit_once(" = ").expect("a value half").1;
+    let escaped = quoted
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("a quoted value");
+    serde_json::from_str::<String>(&format!("\"{escaped}\"")).expect("a JSON string")
+}
+
 #[test]
 fn setup_prints_two_hook_lines_and_one_mapping_line() {
     let sandbox = Sandbox::new();
@@ -151,7 +161,7 @@ fn setup_prints_two_hook_lines_and_one_mapping_line() {
     assert!(lines[0].starts_with("before_session = '"));
     assert!(lines[1].starts_with("before_start = '"));
     assert!(
-        lines[2].contains(r#"headers["X-AoE-Tags"] = "$AOE_LLM_TAGS""#),
+        lines[2].contains(r#"headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\";"#),
         "{lines:?}"
     );
 }
@@ -205,9 +215,9 @@ fn one_mapping_line_per_enabled_header() {
     sandbox.write_config(&settings_config(common::TWO_HEADERS, ""));
     let lines = setup_lines(&sandbox);
     assert_eq!(lines.len(), 4, "{lines:?}");
-    assert!(lines[2].contains(r#""X-AoE-Tags""#) && lines[2].contains(r#""$AOE_LLM_TAGS""#));
+    assert!(lines[2].contains(r#""X-AoE-Tags""#) && lines[2].contains(r"${AOE_LLM_TAGS-}"));
     assert!(
-        lines[3].contains(r#""X-AoE-Session""#) && lines[3].contains(r#""$AOE_HDR_X_AOE_SESSION""#)
+        lines[3].contains(r#""X-AoE-Session""#) && lines[3].contains(r"${AOE_HDR_X_AOE_SESSION-}")
     );
 }
 
@@ -404,6 +414,106 @@ fn hook_cli_is_the_installed_binary() {
     assert_eq!(Path::new(&argv[1]).file_name().unwrap(), "aoe-llm-tags");
     assert!(Path::new(&argv[1]).is_file(), "{argv:?}");
     let _ = (SESSION_JSON, CLI);
+}
+
+#[test]
+fn a_stale_hook_line_is_inert_once_the_payload_is_gone() {
+    // `aoe plugin uninstall` removes the plugin tree but cannot remove the
+    // `[host_hooks]` lines a user pasted, and aoe aborts session creation when a
+    // hook exits non-zero. The line therefore has to be a no-op — not the 127 the
+    // shell returns for a missing binary — after the plugin is gone.
+    let sandbox = Sandbox::new();
+    let command = sandbox.hook_command();
+    let cli = sandbox.path("plugin/bin/aoe-llm-tags");
+    assert!(cli.is_file());
+    std::fs::remove_file(&cli).expect("uninstall the CLI");
+
+    let out = std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(&command)
+        .env_clear()
+        .envs(&sandbox.env)
+        .current_dir(&sandbox.root)
+        .output()
+        .expect("run the installed hook line");
+    assert!(
+        out.status.success(),
+        "stale hook line exited {:?}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "stale hook line printed {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn the_pi_mapping_still_resolves_once_the_payload_is_gone() {
+    // pi fails the whole request when a provider header names a variable it
+    // cannot resolve, so a bare `$AOE_LLM_TAGS` mapping left behind by
+    // `aoe plugin uninstall` breaks every launch that has no hook behind it. The
+    // shipped value is a command instead: the hook's value while the plugin is
+    // installed, the empty payload once it is not — so the standard uninstall is
+    // enough, with no hand-edit of a file this plugin does not own.
+    let sandbox = Sandbox::new();
+    let lines = setup_lines(&sandbox);
+    let value = mapping_value(&lines[2]);
+    assert!(value.starts_with('!'), "not a command: {value}");
+    let command = value.trim_start_matches('!');
+
+    let run = |minted: Option<&str>| {
+        let mut sh = std::process::Command::new("/bin/sh");
+        sh.arg("-c").arg(command).env_clear().envs(&sandbox.env);
+        match minted {
+            Some(value) => sh.env("AOE_LLM_TAGS", value),
+            None => sh.env_remove("AOE_LLM_TAGS"),
+        };
+        sh.output().expect("run the installed mapping value")
+    };
+
+    let gone = run(None);
+    assert!(gone.status.success(), "{:?}", gone.status);
+    assert_eq!(
+        String::from_utf8_lossy(&gone.stdout).trim(),
+        "{}",
+        "a leftover mapping has to carry a value pi can resolve"
+    );
+
+    // A target whose template renders nothing exports an empty variable, which a
+    // command value would otherwise read as "no output" — pi fails that too.
+    let empty = run(Some(""));
+    assert_eq!(String::from_utf8_lossy(&empty.stdout).trim(), "{}");
+
+    let minted = run(Some(r#"{"session":"S-cf11","team":"core"}"#));
+    assert_eq!(
+        String::from_utf8_lossy(&minted.stdout).trim(),
+        r#"{"session":"S-cf11","team":"core"}"#
+    );
+}
+
+#[test]
+fn undo_all_removes_the_overlays_and_names_what_is_left() {
+    // `--all` is the first step of an uninstall: the copies this plugin built go
+    // away, and the two files it never edits are named so they really get cleaned.
+    let sandbox = Sandbox::new();
+    sandbox.pi_models(&[("X-AoE-Tags", "$AOE_LLM_TAGS")]);
+    let command = sandbox.hook_command();
+    sandbox.write_config(&settings_config(
+        "",
+        &format!("before_session = ['{command}']\nbefore_start = ['{command}']\n"),
+    ));
+    let overlay = sandbox.path("config/agent-of-empires/sessions/cf11af87da7e4bf0/pi");
+    std::fs::create_dir_all(&overlay).expect("overlay dir");
+    std::fs::write(overlay.join("models.json"), "{}").expect("overlay file");
+
+    let run = sandbox.run(&["setup", "--undo", "--all"]);
+    run.assert_ok();
+    assert!(!overlay.exists(), "the overlay survived --undo --all");
+    run.assert_contains("removed 1 session config(s)");
+    run.assert_contains("[host_hooks] before_session, before_start");
+    run.assert_contains("$AOE_*");
 }
 
 #[test]

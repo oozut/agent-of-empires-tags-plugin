@@ -35,6 +35,16 @@ pub struct Adapter {
     pub interpolates: Vec<String>,
     /// How this harness spells an env reference: `{env_var}` is substituted.
     pub env_ref: String,
+    /// What a mapping carries once the variable behind it is gone.
+    ///
+    /// Some harnesses fail the whole request when a header names a variable they
+    /// cannot resolve (pi: `resolveHeadersOrThrow`). A mapping the user pasted
+    /// survives the plugin, so a bare `$VAR` there breaks every launch once the
+    /// hook is gone — including launches the plugin never sees, like a harness
+    /// started by hand. When this is set, the shipped value is a command that
+    /// prints the variable when it exists and this payload otherwise, so a
+    /// leftover mapping degrades to "nothing known" instead of failing.
+    pub guard_fallback: String,
     /// Delivery kinds this harness can actually carry (`header`, `query`, `body`).
     pub supports: Vec<String>,
     /// How the harness is pointed at a per-session config: `env_only`,
@@ -187,6 +197,7 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         mapping_format: text("mapping_format"),
         interpolates: list("interpolates"),
         env_ref: or_default(text("env_ref"), "${env_var}"),
+        guard_fallback: text("guard_fallback"),
         write_mode: or_default(text("write_mode"), "none"),
         overlay_env: text("overlay_env"),
         overlay_file: text("overlay_file"),
@@ -406,7 +417,10 @@ pub fn comma_refusal(adapter: &Adapter, name: &str, value: &str) -> Option<Strin
 /// an env reference where the harness expands it, else the literal.
 pub fn delivery_value(adapter: &Adapter, target: &Target, kind: &str) -> Option<String> {
     if interpolates(adapter, kind) {
-        return Some(env_reference(adapter, &target.env_var));
+        if adapter.guard_fallback.is_empty() {
+            return Some(env_reference(adapter, &target.env_var));
+        }
+        return Some(guarded_reference(adapter, target));
     }
     if target.literal.is_empty() {
         return None;
@@ -429,6 +443,29 @@ pub fn env_reference(adapter: &Adapter, env_var: &str) -> String {
         .replace("{env_var}", env_var)
 }
 
+/// A value that keeps working when the variable behind it stops existing.
+///
+/// The harness runs this as a command every time it resolves the value, so the
+/// variable still wins while the hook mints it; once the plugin is gone the
+/// command is all that is left and it prints `guard_fallback`. It is a command
+/// rather than `$VAR` because no shell-free form can stay non-empty when the
+/// variable is missing, and a harness that resolves headers strictly reads
+/// "missing" as "fail the request" rather than "send no header".
+///
+/// `${VAR-}` and `printf` are shell builtins, so the command needs nothing from
+/// the image it runs in (a sandbox may have no `printenv`, and a missing binary
+/// would turn the guard into the very failure it exists to prevent). `[ -n "$v" ]`
+/// also covers set-but-empty, which is what a target whose template renders
+/// nothing exports — a command that printed nothing is a failure to the harness
+/// again.
+pub fn guarded_reference(adapter: &Adapter, target: &Target) -> String {
+    let name = &target.env_var;
+    format!(
+        "!v=\"${{{name}-}}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}",
+        adapter.guard_fallback
+    )
+}
+
 /// One printable mapping line for one header (`None` when the row has no format).
 pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<String> {
     let (path, _) = config_path(adapter, env);
@@ -446,6 +483,14 @@ pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<Str
         return None;
     }
     let value = delivery_value(adapter, target, &target.kind)?;
+    // The line shows the value inside a quoted string in the file the user edits:
+    // a JSON row needs the quotes of a command value escaped, so what is printed
+    // is what can be pasted.
+    let value = if adapter.config_format == "json" {
+        json_escape(&value)
+    } else {
+        value
+    };
     let template = match target.kind.as_str() {
         "query" => "{file} → {provider} baseUrl query \"{param}\" = \"{value}\"",
         "body" => "{file} → {provider} models[].samplingParams.\"{param}\" = {value}",
@@ -461,6 +506,22 @@ pub fn mapping_line(adapter: &Adapter, target: &Target, env: &Env) -> Option<Str
             .replace("{value}", &value)
             .replace("{provider}", &provider),
     )
+}
+
+/// Escape the characters that cannot appear raw inside a JSON string.
+pub fn json_escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 /// The provider entry to name in a printed line, when the config already says.

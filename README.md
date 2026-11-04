@@ -93,7 +93,9 @@ capability to add request headers, with the per-session value coming from the en
 launch:
 
 1. the harness has a one-time static mapping from a header name to an environment variable
-   (or reads a header variable directly);
+   (or reads a header variable directly — for a harness that *fails* a request over a variable it
+   cannot resolve, the printed value is a command that falls back to an empty payload, so the line
+   survives the plugin being uninstalled);
 2. `[host_hooks]` in **both** keys mints those variables per launch, with `AOE_SESSION_ID` in
    scope;
 3. the plugin resolves which values belong to the session, so users edit templates and rules in

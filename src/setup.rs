@@ -90,6 +90,14 @@ pub fn cli_path(root: Option<&Path>) -> PathBuf {
 /// Every `AOE_*` value the hook reads is passed explicitly, so the command works
 /// in the reduced environment structured host sessions get, and `AOE_BIN` pins
 /// the binary the plugin resolved instead of whatever `PATH` happens to hold.
+///
+/// The trailing `|| true` is what makes an uninstall safe. `aoe plugin uninstall`
+/// removes the payload and the `[plugins]` record, but it cannot remove the
+/// `[host_hooks]` lines a user pasted — and aoe aborts session creation when a
+/// hook exits non-zero (`run_env_minting_hooks`), so the stale line would fail
+/// every launch with 127 (the shell cannot find the binary). The hook itself
+/// already exits 0 on every failure; this covers the case where it is not there
+/// to run at all. Diagnostics still go to stderr.
 pub fn hook_command(cli: &Path, aoe: &str) -> String {
     format!(
         "AOE_BIN=\"{aoe}\" \"{}\" hook \
@@ -98,7 +106,7 @@ pub fn hook_command(cli: &Path, aoe: &str) -> String {
          --tool \"$AOE_TOOL\" \
          --project \"$AOE_PROJECT_PATH\" \
          --group \"$AOE_GROUP_PATH\" \
-         --title \"$AOE_SESSION_TITLE\"",
+         --title \"$AOE_SESSION_TITLE\" || true",
         cli.display()
     )
 }
@@ -381,7 +389,9 @@ pub fn overlay_for(
 /// Remove this session's artifact (or every session's with `--all`).
 ///
 /// The user's config was never edited, so there is nothing to restore: undoing a
-/// session's tagging is deleting the copy this plugin built for it.
+/// session's tagging is deleting the copy this plugin built for it. `--all` is
+/// the first step of an uninstall, so it also names what a user still has to
+/// delete by hand (see [`report_left_to_the_user`]).
 pub fn undo_cmd(flags: &Flags, env: &Env, all: bool) -> i32 {
     let app_dir = settings::app_dir(env);
     if all {
@@ -396,6 +406,7 @@ pub fn undo_cmd(flags: &Flags, env: &Env, all: bool) -> i32 {
             "removed {removed} session config(s) from {}",
             app_dir.join("sessions").display()
         );
+        report_left_to_the_user(flags, env);
         return crate::cli::EXIT_OK;
     }
     if flags.session.is_empty() {
@@ -420,6 +431,71 @@ pub fn undo_cmd(flags: &Flags, env: &Env, all: bool) -> i32 {
     println!("removed the session config for {}", flags.session);
     crate::cli::EXIT_OK
 }
+
+/// What `--undo --all` cannot remove, printed so an uninstall is not silent.
+///
+/// The plugin never edits files it does not own: the `[host_hooks]` lines and
+/// the harness mapping are pasted by the user, so deleting them is the user's
+/// edit. Naming them matters because a leftover mapping with no hook behind it
+/// fails at request time — the harness cannot resolve `$AOE_LLM_TAGS` because
+/// nothing mints it any more — rather than quietly sending nothing.
+pub fn report_left_to_the_user(flags: &Flags, env: &Env) {
+    let app_dir = settings::app_dir(env);
+    let config = settings::load_config(&flags.profile, Some(&app_dir), env);
+    let mut left: Vec<String> = Vec::new();
+
+    let hooks: Vec<&str> = HOOK_KEYS
+        .iter()
+        .copied()
+        .filter(|key| {
+            settings::host_hook_entries(&config.table, key)
+                .iter()
+                .any(|entry| entry.contains(CLI_NAME))
+        })
+        .collect();
+    if !hooks.is_empty() {
+        let files: Vec<String> = config
+            .present
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect();
+        left.push(format!(
+            "[host_hooks] {} — the `{CLI_NAME}` line(s) in {}",
+            hooks.join(", "),
+            files.join(" or ")
+        ));
+    }
+
+    let (rows, _) = adapters::load(None);
+    let adapter =
+        adapters::find(&rows, &flags.adapter).or_else(|| adapters::match_tool(&rows, &flags.tool));
+    if let Some(adapter) = adapter {
+        let (path, _) = adapters::config_path(adapter, env);
+        if let Some(path) = path.filter(|path| path.is_file()) {
+            let mentions_ours = std::fs::read_to_string(&path)
+                .map(|text| text.contains(ENV_PREFIX))
+                .unwrap_or(false);
+            if mentions_ours {
+                left.push(format!(
+                    "the `{ENV_PREFIX}*` mapping(s) in {} (and any copy another wrapper \
+                     generates from that provider)",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    if left.is_empty() {
+        return;
+    }
+    println!("the plugin never edits files it does not own; delete these by hand:");
+    for item in left {
+        println!("  - {item}");
+    }
+}
+
+/// The prefix every variable this plugin mints carries.
+const ENV_PREFIX: &str = "$AOE_";
 
 /// Set (or replace) one query parameter, keeping the rest of the URL intact.
 pub fn set_query_param(base: &str, name: &str, value: &str) -> String {
@@ -477,6 +553,8 @@ mod tests {
     fn hook_command_pins_aoe_and_passes_every_variable() {
         let command = hook_command(Path::new("/p/bin/aoe-llm-tags"), "/usr/local/bin/aoe");
         assert!(command.starts_with("AOE_BIN=\"/usr/local/bin/aoe\" \"/p/bin/aoe-llm-tags\" hook"));
+        // An unremoved hook line must be inert once the payload is gone.
+        assert!(command.ends_with(" || true"), "{command}");
         for variable in [
             "AOE_SESSION_ID",
             "AOE_PROFILE",

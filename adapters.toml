@@ -25,8 +25,14 @@ mechanism = "config_headers"
 config_env = "PI_CODING_AGENT_DIR"
 config_paths = ["~/.pi/agent/models.json", "$PI_CODING_AGENT_DIR/models.json"]
 config_format = "json"
-mapping_format = '{file} → providers.{provider}.headers["{header}"] = "${env_var}"'
+mapping_format = '{file} → providers.{provider}.headers["{header}"] = "{value}"'
 interpolates = ["header"]
+# pi resolves a provider header strictly: a `$VAR` it cannot resolve fails the
+# request (`resolveHeadersOrThrow`), it does not send an empty header. A mapping
+# the user pasted outlives the plugin, so the shipped value is a command that
+# falls back to the empty payload — the same shape the CLI renders when it knows
+# nothing — instead of breaking every launch that has no hook behind it.
+guard_fallback = "{}"
 supports = ["header", "body"]
 write_mode = "overlay_dir"
 overlay_env = "PI_CODING_AGENT_DIR"
@@ -45,6 +51,14 @@ for a config that is not a session copy.
 The provider entry must keep a non-empty `models` list: this host's pi-proxy discards a
 headers-only entry and rebuilds the provider from scratch, taking `headers` with it. The first
 mapping_format is the shipped one; the second is the command variant.
+
+The shipped value is guarded (`guard_fallback`), because pi treats an unresolvable header as a
+failed request: `!v="${AOE_LLM_TAGS-}"; [ -n "$v" ] && printf %s "$v" || printf %s {}`
+carries the hook's value while the plugin is installed, and the empty payload once it is gone —
+which is what makes `aoe plugin uninstall` alone leave a working machine (`docs/install.md`). A
+wrapper that copies the provider dict (this host's pi-proxy) copies the guarded value too, so the
+guarantee survives config regeneration. The price is one `sh` per header resolution, because pi
+executes command values uncached.
 """
 
 [[adapter]]

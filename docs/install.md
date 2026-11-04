@@ -45,8 +45,15 @@ It prints exactly three kinds of line and nothing else:
 ```
 before_session = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" …'
 before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" …'
-<harness config> → providers.<id>.headers["X-AoE-Tags"] = "$AOE_LLM_TAGS"
+<harness config> → providers.<id>.headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}"
 ```
+
+The mapping value is a **command**, not `$AOE_LLM_TAGS`, for a harness that fails a request over a
+header it cannot resolve (`pi`: `resolveHeadersOrThrow`). The command prints the variable while
+the hook mints it and `{}` once the plugin is gone, so the line survives an uninstall instead of
+breaking the first launch — including a launch the plugin never sees, from a plain shell. Rows
+without such a `guard_fallback` keep the plain env reference. Paste the printed value as-is:
+for a JSON config the quotes inside a command value are already escaped.
 
 1. Put both `before_*` lines under `[host_hooks]` in `<app_dir>/config.toml`. Both keys, the same
    string: `before_session` covers host sessions, `before_start` covers sandboxed ones. If the
@@ -54,7 +61,8 @@ before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook
    the profile file too, or only there.
 2. Add the mapping line(s) to the harness config named, one line per enabled header, leaving the
    rest of that file alone. For `pi` that means `~/.pi/agent/models.json`,
-   `providers.<id>.headers["X-AoE-Tags"] = "$AOE_LLM_TAGS"`, and the provider entry must keep a
+   `providers.<id>.headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\"; …"` (copy the value the
+   printer emitted, escapes included), and the provider entry must keep a
    non-empty `models` list or the wrapper drops the whole entry, headers included. The value is a
    JSON object (`{"session":"S-cf11","team":"core"}`), so the consumer parses it rather than
    splitting a comma list; `setup --print` also shows a `csv` target for a consumer that still
@@ -78,7 +86,7 @@ Expect `0 failed` and one line per check, each naming the absolute path it looke
 
 ```
   [ok  ] before_session hook    AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook …
-  [ok  ] mapping X-AoE-Tags     ~/.pi/agent/models.json → litellm (value: $AOE_LLM_TAGS, models: 1)
+  [ok  ] mapping X-AoE-Tags     ~/.pi/agent/models.json → litellm (value: !v=\"${AOE_LLM_TAGS-}\"; …, models: 1)
   [ok  ] value rendering        X-AoE-Tags=AOE_LLM_TAGS={"session":"S-cf11","feature":"","team":"core"}
   [skip] last verification      consumer read-back is out of scope for this build; prove arrival …
 ```
@@ -108,7 +116,8 @@ The plugin ships a fixture that records headers, so "it is sent" can be a file a
 
 ```sh
 python3 tools/header-sink.py 8787 /tmp/tag-sink.jsonl --reset &
-# point a harness at http://127.0.0.1:8787/v1 with headers {"X-AoE-Tags": "$AOE_LLM_TAGS"},
+# point a harness at http://127.0.0.1:8787/v1 with headers
+# {"X-AoE-Tags": "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}"},
 # send one request, then:
 grep -o '"x-aoe-tags": "[^"]*"' /tmp/tag-sink.jsonl
 ```
@@ -124,12 +133,38 @@ is in `docs/reference-deployment.md` §Proof runs.
 
 ```sh
 aoe plugin update dev.oozut.llm-tags --yes     # rebuild (or re-download), restart the worker
-aoe plugin disable dev.oozut.llm-tags          # contributions off; hook lines stay, so remove those
-aoe plugin uninstall dev.oozut.llm-tags        # removes files and the grant; remove the hook lines
+aoe plugin disable dev.oozut.llm-tags          # contributions off; the pasted lines stay
 ```
 
-The hook lines are ordinary `[host_hooks]` entries in your config: the plugin cannot add or remove
-them, so turning the plugin off is two edits, not one.
+The hook lines and the mapping line live in files this plugin does not own, so it never adds or
+removes them. Removing it cleanly is therefore three steps, in this order:
+
+1. Delete the per-session copies it built, and let it name what is left:
+
+   ```sh
+   "<install>/bin/aoe-llm-tags" setup --undo --all
+   ```
+
+   It prints the `[host_hooks]` entry — and the harness mapping, when that file still has one —
+   with the absolute path of the file to edit.
+2. Delete those by hand: the `[host_hooks]` entry (both `before_session` and `before_start`), and
+   the `X-AoE-*` entry under the provider's `headers` in the harness config it names. For `pi`
+   that is `~/.pi/agent/models.json` **and every config a wrapper generates from it** —
+   `scripts/pi-onecli.sh` (installed as `pi-proxy`) copies the `litellm` provider, headers
+   included, into `~/.config/onecli/pi_cli/pi-agent/models.json` on every run, so clean the
+   source and let the wrapper regenerate.
+3. `aoe plugin uninstall dev.oozut.llm-tags`.
+
+A leftover hook line is a no-op rather than a failure: the installed command ends `|| true`, and
+the hook itself exits 0 on every error. A leftover **mapping** is a no-op too, as long as it is
+the printed command value (`guard_fallback`): nothing mints the variable any more, so the command
+falls through to the empty payload `{}` and the harness sends a header it can parse. Both leftovers
+are therefore inert on their own — the hand edits above are tidying, not a repair.
+
+The one leftover that still breaks launches is a **bare** `$AOE_LLM_TAGS` mapping, which is the
+pre-guard spelling of the line. `aoe-llm-tags doctor` names it as a warning while the plugin is
+still installed (`mapping X-AoE-Tags … still maps it to a bare "$AOE_LLM_TAGS"`); replace that
+value with the current `setup --print` line and the hazard is gone for good.
 
 ## When something is wrong
 
@@ -140,6 +175,8 @@ them, so turning the plugin off is two edits, not one.
 | Install fails with "ships the reserved build-output directory `.aoe-build`" | a local checkout has build artifacts in it; build with `CARGO_TARGET_DIR` set outside the tree |
 | Install fails with "no cargo found" | source installs build from source; install Rust ≥ 1.89, or use the release form |
 | `doctor`: command path moved | the plugin was uninstalled/renamed — regenerate the hook lines with `setup --print` |
+| Requests fail with `Failed to resolve provider … header … from environment variable: AOE_LLM_TAGS` | the mapping is the bare `$VAR` spelling and no hook minted it (both hooks removed, or a launch outside aoe). Paste the `setup --print` value over it — the guarded command falls back to `{}` — or delete the `X-AoE-*` entries per "Updating, disabling, removing" |
+| `doctor`: mapping is `warn` with "still maps it to a bare" | the mapping predates `guard_fallback`; paste the current `setup --print` value over it |
 | `doctor`: no hook line | profile `[host_hooks]` replaced the global one, or the key is misspelt |
 | `doctor`: mapping missing | paste the mapping line into the file it names; for `pi` keep a non-empty `models` list |
 | `env` shows nothing in a session | the session started before you edited the config — restart it; values are launch-time |

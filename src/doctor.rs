@@ -651,6 +651,33 @@ fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) ->
         },
         Ok((found, notes, known)) => {
             if overlay {
+                // The session copy is ours, the user's copy is not. A harness that
+                // fails the whole request over a header it cannot resolve must not
+                // keep a bare `$VAR` there: that line outlives the plugin, so it is
+                // exactly what breaks the first launch after an uninstall.
+                let leftover = if adapter.guard_fallback.is_empty() {
+                    None
+                } else {
+                    let bare = format!("${}", item.env_var);
+                    mapped_values(adapter, &path, &item.header)
+                        .into_iter()
+                        .find(|value| value.contains(&bare))
+                };
+                if let Some(value) = leftover {
+                    return Check {
+                        name,
+                        status: WARN.to_string(),
+                        detail: format!(
+                            "{}, but {} still maps it to a bare {value:?}: {} fails the whole \
+                             request when that variable is unset, and the line outlives \
+                             `aoe plugin uninstall`. Replace it with the value from \
+                             `aoe-llm-tags setup --print`",
+                            crate::overlay::verdict(adapter),
+                            path.display(),
+                            adapter.agent
+                        ),
+                    };
+                }
                 Check {
                     name,
                     status: OK.to_string(),
@@ -819,6 +846,24 @@ pub(crate) fn scan_file(
         notes.push(detail + ")");
     }
     Ok((found, notes, known))
+}
+
+/// What a file carries for `header`, one value per provider entry that has it.
+pub(crate) fn mapped_values(adapter: &Adapter, path: &Path, header: &str) -> Vec<String> {
+    let Ok(data) = adapters::read_config(adapter, path) else {
+        return Vec::new();
+    };
+    let wanted = header.to_lowercase();
+    adapters::providers(adapter, &data)
+        .iter()
+        .filter_map(|provider| {
+            provider
+                .headers
+                .iter()
+                .find(|(key, _)| key.to_lowercase() == wanted)
+                .map(|(_, value)| value.clone())
+        })
+        .collect()
 }
 
 fn resolve_adapter<'a>(flags: &Flags, tool: &str, adapters: &'a [Adapter]) -> Option<&'a Adapter> {

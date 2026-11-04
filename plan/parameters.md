@@ -143,7 +143,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `setup --print` | hook lines + mapping lines, writes nothing | M0 |
 | `setup <agent> --dry-run` | diff only | M2 |
 | `setup <agent> --yes` | apply with backup | M2 (open #5) |
-| `setup <agent> --undo` | restore the backup / remove the marker block | M2 |
+| `setup <agent> --undo` | restore the backup / remove the marker block; `--undo --all` is the pre-uninstall step (removes every session copy and names the lines only the user can delete) | M2 |
 | `tag --set K:V` / `--unset K` / `--token V` / `--clear-token` / `--reset` / `--json` | this session's own tags and literal token; writes `sessions/<id>/overrides.toml` and nothing else (implemented, M2) | M2 |
 | `overrides.toml` `tags` / `unset` / `token` | a session's edits, in the same tag grammar as `tags`; applied inside `snapshot`, so every verb and the UI share one answer | M2 |
 | `verify [--window 24h]` | one request, then look for the header consumer-side — **roadmap-gated** (`plan/roadmap.md` §1): not in M0–M2 | roadmap |
@@ -159,6 +159,8 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Session-row query timeout | 2 s | hook must never block a launch |
 | Launch budget | 2 s total across every subprocess (row query + optional `aoe list` for `{branch}`) | one slow `aoe` delays a launch once, never twice |
 | Fallback on timeout/error | hook environment, exit 0 | a non-zero hook exit aborts the session |
+| Hook line guard | the installed command ends `|| true` | `aoe plugin uninstall` cannot remove the pasted `[host_hooks]` lines; without the guard a stale line exits 127 and aborts every launch, with the guard it is a no-op |
+| Mapping guard | for a strict harness the printed value is a command: `!v="${VAR-}"; [ -n "$v" ] && printf %s "$v" \|\| printf %s {}` | the mapping lives in a file the plugin does not own, so it outlives an uninstall; a bare `$VAR` there makes the harness fail its first request, this value sends `{}` instead |
 | Doctor output | absolute paths always | hook debugging without paths is the expensive failure |
 
 ## 8. Adapter data (`adapters.toml`)
@@ -171,6 +173,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `interpolates` | `header`, `query`, `body` — where this harness expands `$NAME` | a `body` target elsewhere needs `literal` |
 | `supports` | kinds the harness can carry at all; default `["header"]` | pi: `["header","body"]` (verified); no query channel |
 | `env_ref` | template for an env reference, default `${env_var}` | opencode uses `{{env:{env_var}}}` |
+| `guard_fallback` | payload a leftover mapping carries, or absent | present only for a harness that fails the request over an unresolvable header (pi); `{value}` becomes the guarded command instead of the plain reference |
 | `config_env` | env var name or absent | directory override |
 | `config_paths[]` | ordered paths, first hit wins | must not include a regenerated dir |
 | `config_format` | `json`, `toml`, `yaml`, `none` | |
