@@ -360,6 +360,7 @@ mod tests {
         let _ = Env::current();
         Settings {
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
             session_tagging: "short".to_string(),

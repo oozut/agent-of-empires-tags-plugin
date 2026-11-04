@@ -31,6 +31,13 @@ facts (`{git.commit}`, `{git.tag}`, `{git.dirty}`, …) are read lazily from the
 only when a template or a tag names one.
 `format = "csv"` and `template` remain for a consumer that wants the flat list or one field.
 
+A repository can declare its own tags in a JSON file: with `tags_file = ".aoe-tags.json"`, every
+top-level pair in `<project>/.aoe-tags.json` becomes a tag, with JSON types preserved
+(`{"cost": 1.5}` → `"cost": 1.5`). The file's keys win over a same-key `tags` entry, and a
+per-session edit still wins over both. Unlike the other settings this file lives with the code,
+so a checkout carries its own attribution; a missing or malformed file is a `doctor` warning,
+not a failed launch.
+
 `setup --apply` no longer edits any user config: a value rides the launch environment, or the
 hook builds this session's own copy of the harness's config under the plugin's app dir and exports
 the variable that points the harness at it. Verified end to end on this host for `pi` (header

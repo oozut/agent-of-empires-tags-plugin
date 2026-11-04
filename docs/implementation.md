@@ -125,6 +125,14 @@ delivered nowhere. `headers` is still accepted as the M0 name for a header targe
 `src/settings.rs` reproduces that merge, so the hook and the settings UI agree about a
 value; a file that cannot be parsed is a warning and is ignored (profile → global → defaults).
 
+`tags_file` is the one setting whose value is a path. It is read at launch from
+`<project path>/<value>` (relative, and it must stay inside the project), and every top-level
+pair of that JSON object becomes a tag with its JSON type intact. The file's entries come first
+and replace a `settings.tags` entry with the same key; `session_tags::apply` still runs after,
+so a session's own edit wins over the file. The merged list still passes through `matched_tags`'s
+five-tag cap, and a missing or malformed file is a warning in `snapshot.warnings` — `doctor`
+prints it instead of failing the launch.
+
 Rule evaluation (M1 grows this; M0 needs only `project` and `manual`). Rendering is per header,
 so the default tag format is just the default template. The pipeline in `src/resolver.rs`, in
 order: `SessionFacts` (row wins, hook env is the fallback) → `matched_tags` (every matching rule
@@ -262,6 +270,12 @@ signing_key = ""                    # operator-supplied; the same value at the c
 
 # the tag set, added once; each tag is `key:value`, `key:=json`, or a bare marker
 tags = ["team:core", "feature:billing", "cost:=1.5"]
+
+# optional: a JSON object inside the session's project, merged as tags. The path is
+# relative to the project root and must stay inside it. Each top-level pair keeps its
+# JSON type (`1.5` is a number, not the string "1.5"); the file's keys come first and
+# replace a `tags` entry with the same key. A session edit still wins over both.
+# tags_file = ".aoe-tags.json"
 
 # default rows, spelled out; omitting the whole [[targets]] block uses the code default
 # (one JSON-payload header X-AoE-Tags on AOE_LLM_TAGS). The older `[[headers]]` key with

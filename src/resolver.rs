@@ -26,6 +26,9 @@ pub const TAG_CAP: usize = 5;
 /// A tag carries a whole `key:=value` pair now, so the ceiling is the string in
 /// settings, not the delivered value (`VALUE_MAX_BYTES` still clamps that).
 pub const TAG_MAX_CHARS: usize = 96;
+/// A `tags_file` is a small declaration, not a data dump; the cap keeps a hook
+/// from reading a repository file it has no business reading.
+pub const TAGS_FILE_MAX_BYTES: u64 = 64 * 1024;
 pub const VALUE_MAX_BYTES: usize = 800;
 pub const SHORT_ID_PREFIX: &str = "S-";
 pub const SHORT_ID_CHARS: usize = 4;
@@ -213,6 +216,10 @@ pub fn default_targets() -> Vec<Target> {
 pub struct Settings {
     /// Tags every session carries, before any rule matches.
     pub tags: Vec<String>,
+    /// A JSON file inside the session's project whose key/value pairs become
+    /// tags; empty means "no file". The pair set is merged into `tags` when the
+    /// snapshot is built, because only then is the project path known.
+    pub tags_file: String,
     /// Where the tag set is delivered.
     pub targets: Vec<Target>,
     pub rules: Vec<Rule>,
@@ -229,6 +236,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             tags: Vec::new(),
+            tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
             session_tagging: DEFAULT_SESSION_TAGGING.to_string(),
@@ -243,6 +251,7 @@ impl Settings {
     pub fn from_table(table: &toml::Table, warnings: Vec<String>) -> Self {
         let mut warns = warnings;
         let tags = parse_static_tags(table.get("tags"), &mut warns);
+        let tags_file = parse_tags_file(table.get("tags_file"), &mut warns);
         let targets = parse_targets(table, &mut warns);
         let rules = parse_rules(table.get("rules"), &mut warns);
 
@@ -265,6 +274,7 @@ impl Settings {
 
         Self {
             tags,
+            tags_file,
             targets,
             rules,
             session_tagging: tagging,
@@ -400,6 +410,21 @@ impl Tag {
             other => format!("{}:{other}", self.key),
         }
     }
+
+    /// The settings spelling of this same tag, so a value read from a JSON file
+    /// can travel through the code that parses settings tags without losing its
+    /// type: `team:core`, `platform` for a `true` marker, `cost:=1.5` otherwise.
+    /// A string that starts with `=` takes the JSON form, because the plain form
+    /// would read back as an `:=` entry and fail to parse.
+    pub fn entry(&self) -> String {
+        match &self.value {
+            Value::String(text) if !text.starts_with('=') => {
+                format!("{}:{text}", self.key)
+            }
+            Value::Bool(true) => self.key.clone(),
+            other => format!("{}:={other}", self.key),
+        }
+    }
 }
 
 /// The JSON object every target can carry: session fields first, then tags.
@@ -415,6 +440,118 @@ pub fn parse_tags(raw: &[String]) -> (Vec<Tag>, Vec<String>) {
             Ok(tag) => tags.push(tag),
             Err(message) => warnings.push(format!("settings: {message}; dropping it")),
         }
+    }
+    (tags, warnings)
+}
+
+/// Read the JSON tags file a settings `tags_file` names, inside the session's
+/// project. Every top-level key/value pair becomes a tag, with its JSON type
+/// kept (`{"cost": 1.5}` is `cost:=1.5`, not the string `"1.5"`).
+///
+/// Failure is a warning and no tags, never an error: a hook that fails is worse
+/// than a tag that is not applied, and `doctor` surfaces the warning.
+pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let configured = configured.trim();
+    if configured.is_empty() {
+        return (Vec::new(), warnings);
+    }
+    if project_path.trim().is_empty() {
+        warnings.push(format!(
+            "settings: tags_file {configured:?} is set, but this session has no project path; \
+             no tags loaded"
+        ));
+        return (Vec::new(), warnings);
+    }
+
+    let relative = Path::new(configured);
+    let escapes = relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        });
+    if escapes {
+        warnings.push(format!(
+            "settings: tags_file {configured:?} must be a relative path inside the project \
+             ({project_path}); ignoring it"
+        ));
+        return (Vec::new(), warnings);
+    }
+
+    let path = Path::new(project_path).join(relative);
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.len() > TAGS_FILE_MAX_BYTES => {
+            warnings.push(format!(
+                "settings: tags_file {} is larger than {TAGS_FILE_MAX_BYTES} bytes; no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            warnings.push(format!(
+                "settings: tags_file {} does not exist in {}; no tags loaded",
+                configured,
+                Path::new(project_path).display()
+            ));
+            return (Vec::new(), warnings);
+        }
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: cannot be read ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    }
+
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: cannot be read ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    let value = match serde_json::from_str::<Value>(&raw) {
+        Ok(value) => value,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {} is not valid JSON ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    let Some(map) = value.as_object() else {
+        warnings.push(format!(
+            "settings: tags_file {} must be a JSON object of key/value pairs; no tags loaded",
+            path.display()
+        ));
+        return (Vec::new(), warnings);
+    };
+
+    let mut tags = Vec::new();
+    for (key, value) in map {
+        let readable = valid_tag(key) && !key.contains(':') && !key.contains('=');
+        if !readable {
+            warnings.push(format!(
+                "settings: tags_file {} key {key:?} is not a valid tag key \
+                 (starts [a-z0-9], printable, no `:` or `=`, ≤{TAG_MAX_CHARS} chars); skipping it",
+                path.display()
+            ));
+            continue;
+        }
+        tags.push(Tag {
+            key: key.clone(),
+            value: value.clone(),
+        });
     }
     (tags, warnings)
 }
@@ -1619,6 +1756,11 @@ pub fn snapshot_with_table(
     let mut warnings = session_warnings;
     warnings.extend(raw_warnings.iter().cloned());
     let mut configured = Settings::from_table(&raw_table, warnings);
+    // A repo declares its own tags in a JSON file named by `tags_file`. They are
+    // merged before the session's edits, so a session can still replace or drop
+    // one, and they sit in front of the settings `tags` because the repository is
+    // the more specific declaration.
+    apply_tags_file(&mut configured, &facts.path);
     // A session's own edits (the UI page and the `tag` command write them) are
     // applied here, once, so the hook, `status`, `doctor` and the worker all see
     // the same tags. They live in the session's directory, never the config.
@@ -1965,6 +2107,71 @@ fn parse_static_tags(value: Option<&toml::Value>, warnings: &mut Vec<String>) ->
     tags
 }
 
+/// Merge the project's JSON tags file into `settings.tags`, if one is configured.
+///
+/// The file's keys win over a settings tag with the same key (the repo is more
+/// specific than the global list), and the file's pairs come first so they get
+/// the bounded budget before a global tag does. Session edits are applied later
+/// and therefore still win. A warning, never an error: see [`load_tags_file`].
+fn apply_tags_file(settings: &mut Settings, project_path: &str) {
+    if settings.tags_file.is_empty() {
+        return;
+    }
+    let (file_tags, warnings) = load_tags_file(project_path, &settings.tags_file);
+    settings.warnings.extend(warnings);
+    if file_tags.is_empty() {
+        return;
+    }
+    let file_keys: Vec<String> = file_tags.iter().map(|tag| tag.key.clone()).collect();
+    settings.tags.retain(|raw| match Tag::parse(raw) {
+        Ok(tag) => !file_keys.contains(&tag.key),
+        Err(_) => true,
+    });
+    let mut merged: Vec<String> = file_tags.iter().map(Tag::entry).collect();
+    merged.append(&mut settings.tags);
+    settings.tags = merged;
+    if settings.tags.len() > TAG_CAP {
+        let dropped: Vec<&str> = settings
+            .tags
+            .iter()
+            .skip(TAG_CAP)
+            .map(String::as_str)
+            .collect();
+        let shown = dropped
+            .iter()
+            .take(5)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = dropped.len().saturating_sub(5);
+        settings.warnings.push(format!(
+            "settings: {} tags are configured (tags and tags_file) but a header carries at \
+             most {TAG_CAP}; dropped {shown}{}",
+            settings.tags.len(),
+            if more > 0 {
+                format!(", +{more} more")
+            } else {
+                String::new()
+            }
+        ));
+    }
+}
+
+/// A `tags_file` value: one repo-relative path, or nothing. Anything else is a
+/// warning and no file, the way every other settings field degrades.
+fn parse_tags_file(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    match value.as_str() {
+        Some(path) => path.trim().to_string(),
+        None => {
+            warnings.push("settings: tags_file is not a path string; ignoring it".to_string());
+            String::new()
+        }
+    }
+}
+
 /// The variable the hook exports for one target: the row's own `env_var`, else
 /// the per-kind spelling (`AOE_HDR_`, `AOE_QRY_`, `AOE_BODY_`). One definition so
 /// the hook, the overlay writer and `doctor` can never disagree.
@@ -2104,6 +2311,7 @@ mod tests {
     fn settings(tags: &[&str]) -> Settings {
         Settings {
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
             session_tagging: "short".to_string(),
@@ -2125,6 +2333,27 @@ mod tests {
         }
     }
 
+    struct TempDir {
+        path: PathBuf,
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    fn tempdir() -> TempDir {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("llm-tags-resolver-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).unwrap();
+        TempDir { path }
+    }
+
     #[test]
     fn a_tag_is_a_key_and_a_value_not_a_word() {
         assert_eq!(Tag::parse("team:core").unwrap().value, Value::from("core"));
@@ -2141,12 +2370,145 @@ mod tests {
         assert!(Tag::parse(":core").is_err());
     }
 
+    #[test]
+    fn a_tags_file_entry_keeps_its_json_type_round_tripping_settings() {
+        for raw in [
+            "team:core",
+            "platform",
+            "cost:=1.5",
+            "ported:=true",
+            "matrix:=[1,2]",
+            "meta:={\"k\":1}",
+        ] {
+            let tag = Tag::parse(raw).unwrap();
+            let entry = tag.entry();
+            assert_eq!(Tag::parse(&entry).unwrap(), tag, "{raw:?} -> {entry:?}");
+        }
+        // A string that starts with `=` takes the JSON form, or it would read
+        // back as a broken `:=` entry.
+        let odd = Tag {
+            key: "note".to_string(),
+            value: Value::from("=x"),
+        };
+        assert_eq!(Tag::parse(&odd.entry()).unwrap(), odd);
+    }
+
+    #[test]
+    fn a_tags_file_turns_every_top_level_pair_into_a_typed_tag() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.path.join("tags.json"),
+            r#"{"team":"core","cost":1.5,"ported":true,"matrix":[1,2],"meta":{"k":1},"note":null}"#,
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let pairs: BTreeMap<String, Value> =
+            tags.into_iter().map(|tag| (tag.key, tag.value)).collect();
+        assert_eq!(
+            pairs,
+            BTreeMap::from([
+                ("cost".to_string(), Value::from(1.5)),
+                ("matrix".to_string(), serde_json::json!([1, 2])),
+                ("meta".to_string(), serde_json::json!({"k": 1})),
+                ("note".to_string(), Value::Null),
+                ("ported".to_string(), Value::Bool(true)),
+                ("team".to_string(), Value::from("core")),
+            ])
+        );
+    }
+
+    #[test]
+    fn a_tags_file_must_stay_inside_the_project() {
+        let dir = tempdir();
+        for configured in ["/etc/tags.json", "../tags.json", "sub/../../tags.json"] {
+            let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), configured);
+            assert!(tags.is_empty(), "{configured:?} loaded tags");
+            assert!(
+                warnings[0].contains("inside the project"),
+                "{configured:?}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_broken_tags_file_is_a_warning_not_an_error() {
+        let dir = tempdir();
+        let project = dir.path.to_str().unwrap();
+        let (tags, warnings) = load_tags_file(project, "missing.json");
+        assert!(tags.is_empty());
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("does not exist")),
+            "{warnings:?}"
+        );
+
+        std::fs::write(dir.path.join("bad.json"), "{").unwrap();
+        let (_, warnings) = load_tags_file(project, "bad.json");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not valid JSON")),
+            "{warnings:?}"
+        );
+
+        std::fs::write(dir.path.join("list.json"), "[1,2]").unwrap();
+        let (_, warnings) = load_tags_file(project, "list.json");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("JSON object")),
+            "{warnings:?}"
+        );
+
+        std::fs::write(
+            dir.path.join("keys.json"),
+            r#"{"Team":"x","bad key":"y","ok":"z"}"#,
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(project, "keys.json");
+        assert_eq!(tags.len(), 1, "{tags:?}");
+        assert_eq!(tags[0].key, "ok");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn the_repo_tags_file_wins_over_a_same_key_settings_tag() {
+        let dir = tempdir();
+        std::fs::write(dir.path.join("tags.json"), r#"{"team":"repo","cost":1.5}"#).unwrap();
+        let table: toml::Table =
+            "tags = [\"team:global\", \"feature:billing\"]\ntags_file = \"tags.json\""
+                .parse()
+                .unwrap();
+        let env = Env::new([("HOME", dir.path.to_str().unwrap())]);
+        let facts = SessionFacts {
+            id: String::new(),
+            path: dir.path.display().to_string(),
+            ..facts()
+        };
+        let snap = snapshot_with_table(&Flags::default(), &env, None, Some(table), Some(facts));
+        assert!(snap.warnings.is_empty(), "{:?}", snap.warnings);
+        // File tags come first and replace the same key; the settings tag that
+        // does not collide is still carried after them. (The JSON object is a
+        // sorted map, so its pairs arrive in key order.)
+        assert_eq!(
+            snap.settings.tags,
+            vec!["cost:=1.5", "team:repo", "feature:billing"]
+        );
+        let payload: Value = serde_json::from_str(&snap.resolved[0].value).unwrap();
+        assert_eq!(payload["team"], "repo");
+        assert_eq!(payload["cost"], 1.5);
+        assert_eq!(payload["feature"], "billing");
+    }
+
     fn feature_settings(raw: &str) -> Settings {
         let mut warnings = Vec::new();
         let tag = parse_feature_tag(Some(&toml::Value::String(raw.to_string())), &mut warnings);
         assert!(warnings.is_empty(), "{warnings:?}");
         Settings {
             tags: Vec::new(),
+            tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
             session_tagging: "short".to_string(),

@@ -152,6 +152,18 @@ Rules that keep the contract honest:
   payload, and it stays typed all the way to the consumer; a `csv` target flattens it back to
   text, because a comma list has no types.
 
+### A repository's own tags
+
+`tags_file` names a JSON object that lives inside the session's project: the path is relative to
+the project root and cannot leave it. Every top-level pair is one tag with its JSON type intact
+(`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the same grammar as a
+settings tag; a key that does not is skipped with a warning rather than rewritten.
+
+The repo file is the more specific declaration: its entries come first and replace a `tags`
+entry with the same key, while a per-session edit still wins over both. It shares the five-tag
+budget, is read at launch, and is configuration rather than a fourth delivery channel — a
+missing or malformed file is a warning `doctor` prints, never a failed launch.
+
 ## Who reads it
 
 The same header serves four families of consumer, and the design has to be usable by all of them

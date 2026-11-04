@@ -56,6 +56,35 @@ names one. `aoe-llm-tags references` lists every reference with this session's v
 """
 
 [[settings]]
+key = "tags_file"
+label = "JSON tags file inside the project"
+type = "string"
+default = ""
+help = """
+A JSON file inside each session's project whose top-level key/value pairs become tags, so a
+repository can declare its own tags and every checkout gets them without a config edit.
+
+The path is relative to the project root (`/w/core`), not the aoe config directory, and it
+cannot leave the project (`..` and absolute paths are refused with a warning). The file is a
+single JSON object; each pair is a tag, with its JSON type kept:
+
+```json
+{"team": "core", "cost": 1.5, "ported": true, "matrix": [1, 2]}
+```
+
+becomes `team:core`, `cost:=1.5`, `ported:=true` and `matrix:=[1,2]`. Keys follow the tag
+grammar (start with a letter or digit, no `:` or `=`, at most 96 characters); a key that does
+not is skipped with a warning. Values can be any JSON value, including a string that starts
+with `=`.
+
+The repo file is the more specific declaration: its entries come first and replace a `tags`
+entry with the same key, while a per-session edit still wins over both. Like every tag, the
+file's pairs share the five-tag budget of a header. The file is read at launch, so an edit
+applies to the next session, and a missing or malformed file is a warning in `doctor` rather
+than a failed launch.
+"""
+
+[[settings]]
 key = "targets"
 label = "Where the tags are delivered"
 type = "object_list"

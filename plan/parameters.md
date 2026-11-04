@@ -41,6 +41,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | Key | Type | Default | Allowed | Milestone | Status |
 |---|---|---|---|---|---|
 | `tags` | `string_list` | `[]` | lowercase tags, ≤48 chars, deduped, cap 8 | M2 | proposed |
+| `tags_file` | `string` | `""` | project-relative path to a JSON object; top-level pairs become typed tags, keys follow the tag grammar; the file wins a same-key `tags` entry, a session edit wins over both; shares the 5-tag budget | M2 | decided |
 | `targets` | `object_list`, item key `name` | 2 rows below | 0–8 rows | M2 (manifest); `headers` still read | proposed |
 | `targets[].kind` | `select` | `header` | `header`, `query`, `body` | M2 | proposed |
 | `targets[].name` | string | `X-AoE-Tags` | HTTP field-name grammar, or a param name | M0 as `header` | decided |
