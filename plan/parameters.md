@@ -160,6 +160,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Launch budget | 2 s total across every subprocess (row query + optional `aoe list` for `{branch}`) | one slow `aoe` delays a launch once, never twice |
 | Fallback on timeout/error | hook environment, exit 0 | a non-zero hook exit aborts the session |
 | Hook line guard | the installed command ends `|| true` | `aoe plugin uninstall` cannot remove the pasted `[host_hooks]` lines; without the guard a stale line exits 127 and aborts every launch, with the guard it is a no-op |
+| Mapping guard | for a strict harness the printed value is a command: `!v="${VAR-}"; [ -n "$v" ] && printf %s "$v" \|\| printf %s {}` | the mapping lives in a file the plugin does not own, so it outlives an uninstall; a bare `$VAR` there makes the harness fail its first request, this value sends `{}` instead |
 | Doctor output | absolute paths always | hook debugging without paths is the expensive failure |
 
 ## 8. Adapter data (`adapters.toml`)
@@ -172,6 +173,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `interpolates` | `header`, `query`, `body` — where this harness expands `$NAME` | a `body` target elsewhere needs `literal` |
 | `supports` | kinds the harness can carry at all; default `["header"]` | pi: `["header","body"]` (verified); no query channel |
 | `env_ref` | template for an env reference, default `${env_var}` | opencode uses `{{env:{env_var}}}` |
+| `guard_fallback` | payload a leftover mapping carries, or absent | present only for a harness that fails the request over an unresolvable header (pi); `{value}` becomes the guarded command instead of the plain reference |
 | `config_env` | env var name or absent | directory override |
 | `config_paths[]` | ordered paths, first hit wins | must not include a regenerated dir |
 | `config_format` | `json`, `toml`, `yaml`, `none` | |

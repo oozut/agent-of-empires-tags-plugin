@@ -143,6 +143,16 @@ fn setup_lines(sandbox: &Sandbox) -> Vec<String> {
     run.lines().iter().map(|line| line.to_string()).collect()
 }
 
+/// The value half of a printed mapping line, unescaped as the file needs it.
+fn mapping_value(line: &str) -> String {
+    let quoted = line.rsplit_once(" = ").expect("a value half").1;
+    let escaped = quoted
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .expect("a quoted value");
+    serde_json::from_str::<String>(&format!("\"{escaped}\"")).expect("a JSON string")
+}
+
 #[test]
 fn setup_prints_two_hook_lines_and_one_mapping_line() {
     let sandbox = Sandbox::new();
@@ -151,7 +161,7 @@ fn setup_prints_two_hook_lines_and_one_mapping_line() {
     assert!(lines[0].starts_with("before_session = '"));
     assert!(lines[1].starts_with("before_start = '"));
     assert!(
-        lines[2].contains(r#"headers["X-AoE-Tags"] = "$AOE_LLM_TAGS""#),
+        lines[2].contains(r#"headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\";"#),
         "{lines:?}"
     );
 }
@@ -205,9 +215,9 @@ fn one_mapping_line_per_enabled_header() {
     sandbox.write_config(&settings_config(common::TWO_HEADERS, ""));
     let lines = setup_lines(&sandbox);
     assert_eq!(lines.len(), 4, "{lines:?}");
-    assert!(lines[2].contains(r#""X-AoE-Tags""#) && lines[2].contains(r#""$AOE_LLM_TAGS""#));
+    assert!(lines[2].contains(r#""X-AoE-Tags""#) && lines[2].contains(r"${AOE_LLM_TAGS-}"));
     assert!(
-        lines[3].contains(r#""X-AoE-Session""#) && lines[3].contains(r#""$AOE_HDR_X_AOE_SESSION""#)
+        lines[3].contains(r#""X-AoE-Session""#) && lines[3].contains(r"${AOE_HDR_X_AOE_SESSION-}")
     );
 }
 
@@ -436,6 +446,50 @@ fn a_stale_hook_line_is_inert_once_the_payload_is_gone() {
         out.stdout.is_empty(),
         "stale hook line printed {:?}",
         String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn the_pi_mapping_still_resolves_once_the_payload_is_gone() {
+    // pi fails the whole request when a provider header names a variable it
+    // cannot resolve, so a bare `$AOE_LLM_TAGS` mapping left behind by
+    // `aoe plugin uninstall` breaks every launch that has no hook behind it. The
+    // shipped value is a command instead: the hook's value while the plugin is
+    // installed, the empty payload once it is not — so the standard uninstall is
+    // enough, with no hand-edit of a file this plugin does not own.
+    let sandbox = Sandbox::new();
+    let lines = setup_lines(&sandbox);
+    let value = mapping_value(&lines[2]);
+    assert!(value.starts_with('!'), "not a command: {value}");
+    let command = value.trim_start_matches('!');
+
+    let run = |minted: Option<&str>| {
+        let mut sh = std::process::Command::new("/bin/sh");
+        sh.arg("-c").arg(command).env_clear().envs(&sandbox.env);
+        match minted {
+            Some(value) => sh.env("AOE_LLM_TAGS", value),
+            None => sh.env_remove("AOE_LLM_TAGS"),
+        };
+        sh.output().expect("run the installed mapping value")
+    };
+
+    let gone = run(None);
+    assert!(gone.status.success(), "{:?}", gone.status);
+    assert_eq!(
+        String::from_utf8_lossy(&gone.stdout).trim(),
+        "{}",
+        "a leftover mapping has to carry a value pi can resolve"
+    );
+
+    // A target whose template renders nothing exports an empty variable, which a
+    // command value would otherwise read as "no output" — pi fails that too.
+    let empty = run(Some(""));
+    assert_eq!(String::from_utf8_lossy(&empty.stdout).trim(), "{}");
+
+    let minted = run(Some(r#"{"session":"S-cf11","team":"core"}"#));
+    assert_eq!(
+        String::from_utf8_lossy(&minted.stdout).trim(),
+        r#"{"session":"S-cf11","team":"core"}"#
     );
 }
 

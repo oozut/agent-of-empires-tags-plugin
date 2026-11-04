@@ -9,6 +9,14 @@ use std::path::{Path, PathBuf};
 
 use common::{settings_config, Sandbox, PLUGIN_ID};
 
+// What `aoe-llm-tags setup --print` tells a pi user to paste: a command, so the
+// value survives the plugin's removal (`guard_fallback`). A bare `$VAR` here is
+// the pre-guard spelling, and doctor has to name that as a hazard.
+const GUARDED_TAGS: &str =
+    "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}";
+const GUARDED_SESSION: &str =
+    "!v=\"${AOE_HDR_X_AOE_SESSION-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}";
+
 /// A broken install is described by one of these, then applied.
 struct Wire {
     before_session: bool,
@@ -219,8 +227,8 @@ fn a_second_header_gets_its_own_mapping_check() {
     let wire = Wire {
         settings: common::TWO_HEADERS,
         headers: Some(vec![
-            ("X-AoE-Tags", "$AOE_LLM_TAGS"),
-            ("X-AoE-Session", "$AOE_HDR_X_AOE_SESSION"),
+            ("X-AoE-Tags", GUARDED_TAGS),
+            ("X-AoE-Session", GUARDED_SESSION),
         ]),
         ..Wire::default()
     };
@@ -231,6 +239,32 @@ fn a_second_header_gets_its_own_mapping_check() {
         check(&report, "mapping X-AoE-Session").status,
         llm_tags::doctor::OK
     );
+}
+
+#[test]
+fn a_bare_variable_in_the_users_own_config_is_a_hazard() {
+    // The session copy is regenerated on every launch, so a bare `$VAR` in the
+    // user's file is invisible until the plugin is gone — and then pi refuses the
+    // whole request. Name it while there is still a plugin to print the fix.
+    let (sandbox, _) = wired();
+    let report = report(&sandbox);
+    let check = check(&report, "mapping X-AoE-Tags");
+    assert_eq!(check.status, llm_tags::doctor::WARN, "{}", check.detail);
+    assert!(check.detail.contains("$AOE_LLM_TAGS"), "{}", check.detail);
+    assert!(check.detail.contains("setup --print"), "{}", check.detail);
+    assert!(report.ok(), "a hazard is not a broken install");
+}
+
+#[test]
+fn a_guarded_mapping_is_not_a_warning() {
+    let (mut sandbox, _) = wired();
+    Wire {
+        headers: Some(vec![("X-AoE-Tags", GUARDED_TAGS)]),
+        ..Wire::default()
+    }
+    .apply(&mut sandbox);
+    let check = check(&report(&sandbox), "mapping X-AoE-Tags").clone();
+    assert_eq!(check.status, llm_tags::doctor::OK, "{}", check.detail);
 }
 
 #[test]

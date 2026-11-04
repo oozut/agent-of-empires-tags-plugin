@@ -82,7 +82,7 @@ consumer leg (that the far side keeps it) is still open — see open decision #4
 | Launch a session with the hook lines installed | `aoe add --scratch -t tag-sink-probe --tool pi --launch` | session `1fb406b7cbdc43c1`, title `tag-sink-probe`, tool `pi` |
 | Read what the hook minted, from the launched agent's own environment | `tr '\0' '\n' < /proc/<pane-child-pid>/environ \| grep ^AOE_LLM_TAGS` | `AOE_LLM_TAGS=aoe,feature:,session:S-1fb4` |
 | Start the fixture | `python3 tools/header-sink.py 8787 /tmp/tag-sink.jsonl --reset` | `header-sink listening on 127.0.0.1:8787` |
-| Point a harness at the sink | `/tmp/sink-agent/models.json`: provider `sink`, `baseUrl http://127.0.0.1:8787/v1`, `headers {"X-AoE-Tags": "$AOE_LLM_TAGS"}`, one model `sink` | — |
+| Point a harness at the sink | `/tmp/sink-agent/models.json`: provider `sink`, `baseUrl http://127.0.0.1:8787/v1`, `headers {"X-AoE-Tags": "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}"}`, one model `sink` | — |
 | Send one request | `env -i HOME=/var/lib/aoe PATH=/usr/bin:/bin PI_CODING_AGENT_DIR=/tmp/sink-agent AOE_LLM_TAGS="$V" /usr/bin/pi --print --model sink/sink ping` | `ok` |
 | Read the far side | `grep -o '"x-aoe-tags": "[^"]*"' /tmp/tag-sink.jsonl` | exactly one line: `"x-aoe-tags": "aoe,feature:,session:S-1fb4"` |
 
@@ -112,6 +112,26 @@ Same fixture, both headers enabled in `[plugins."dev.oozut.llm-tags".settings]` 
 
 Two headers cost exactly three edits and no code: one more `[[…settings.headers]]` row, one more
 mapping line, one more `env` variable. That is the contract's "the set is data" claim, tested.
+
+## Proof run (guard leg, uninstall contract, 2026-11-05)
+
+Same fixture, three launches of the same config, to show what a leftover mapping does once the
+hook is gone. `AOE_LLM_TAGS` stands in for "a hook minted it"; its absence is exactly the state
+after `aoe plugin uninstall` (the hook line stays inert, nothing exports the variable).
+
+| Mapping value | Variable present | Variable absent |
+|---|---|---|
+| `$AOE_LLM_TAGS` (pre-guard) | sends the payload | **fails**: `API key auth failed for provider sink: Failed to resolve provider "sink" header "X-AoE-Tags" from environment variable: AOE_LLM_TAGS` |
+| `!v="${AOE_LLM_TAGS-}"; [ -n "$v" ] && printf %s "$v" || printf %s {}` (shipped) | sends the payload | sends `{}`, request succeeds |
+
+Evidence: `/tmp/tag-sink-guard.jsonl` (two `x-aoe-tags` records, `{"session":"S-cf11","team":"core"}`
+then `{}`), both launches `env -i HOME=/var/lib/aoe PATH=/usr/bin:/bin
+PI_CODING_AGENT_DIR=/tmp/guard-agent /usr/bin/pi --print --model sink/sink ping` → `ok`. The same
+command value was checked for the set-but-empty case (`AOE_LLM_TAGS=` → `{}`), which a plain
+`$(printenv …) ||` would have turned back into the failure pi reports for an empty command result.
+The value needs no binary beyond the shell (`${VAR-}`, `[`, `printf` are builtins) — checked in
+`ghcr.io/agent-of-empires/aoe-sandbox:latest` as well, where a missing `printenv` would have made
+the guard fail exactly where the sandbox leg delivers its header.
 
 ## Proof run (M0-T08 sandbox leg, 2026-10-29)
 

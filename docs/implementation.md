@@ -71,7 +71,7 @@ Verified in `/var/lib/aoe/agent-of-empires-worktrees/koreans`; treat these as th
 | Plugin settings are an opaque `toml::Table` under `[plugins."<id>".settings]`, kept even while the plugin is disabled | `src/session/config/mod.rs` (`settings: toml::Table`) | M0 can hand-write settings before any UI exists; they will not be pruned. |
 | `aoe session show <id> -p <profile> --json` → `id,title,path,group,tool,command,status,state,profile` (≈130 ms). `aoe list --json` adds `worktree`, `workspace_repos` | `/usr/local/bin/aoe` | The manager call. No daemon needed; it reads the store. |
 | Install extracts into `<app_dir>/plugins/<id>/` after `remove_dir_all`, and `.aoe-build/` is excluded from the tree hash | `src/plugin/install.rs`, `docs/plugin-api.md` | Hook path is stable across upgrades; a brief window has no files. Build artifacts go to `.aoe-build/` only. |
-| pi resolves header values like `apiKey`: `$NAME`, `${NAME}`, `!command`; command results are cached for the process lifetime | `/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resolve-config-value.js` | Map the header to `$AOE_LLM_TAGS` (or `$AOE_HDR_…`). The `!` form is a fallback, not a live mode. |
+| pi resolves header values like `apiKey`: `$NAME`, `${NAME}`, `!command`; command results are cached for the process lifetime. It **fails the request** when a header's variable cannot be resolved (`resolveHeadersOrThrow`) instead of sending nothing | `/usr/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/resolve-config-value.js` | A mapping this plugin printed lives in a file it does not own, so it survives an uninstall. `$AOE_LLM_TAGS` there is a live fault the moment no hook mints it; the shipped value is a `!command` that falls back to `{}` (`guard_fallback`, `harness-adapters.md`). |
 | A harness may be started by a wrapper/launcher that regenerates its config and forces an upstream; the wrapper's source file, not the env-var directory, is then the editable one | this deployment: `/usr/local/bin/pi-proxy` `gen_overlay` — details in `reference-deployment.md` | Resolve "the file the harness reads" per adapter, and treat a regenerated directory as un-writable. Never infer the source path from an env var being set. |
 | Sandbox: pi's `agent/models.json` is on the copy list, seeded into `sandbox-v2/<id>` at container creation and never re-synced | `src/session/config/container_config.rs` (`tool_name: "pi"`) | The mapping must exist before the first container start. |
 
@@ -179,6 +179,16 @@ Why each part:
   (`plan/parameters.md` §6), so a stale line would otherwise 127 every launch. The hook already
   exits 0 on its own failures; this covers the binary no longer being there to run.
 
+The other half of that guarantee is the printed mapping line's *value*: the `[host_hooks]` line is
+the plugin's, the mapping is the user's, and `uninstall` touches neither. For a harness that fails a
+request over an unresolvable header (pi), a bare `$VAR` there is therefore a fault that outlives the
+plugin; the row's `guard_fallback` makes the shipped value a command that prints the variable while
+it exists and `{}` after (`harness-adapters.md` §Adapter data format). Together the two guards mean
+`aoe plugin uninstall` alone leaves a machine that still launches sessions and still completes
+requests — the hand edits in `install.md` §Updating, disabling, removing are tidying, and `doctor`
+warns about a mapping that predates the guard so it can be replaced while the plugin is still there
+to print the new line.
+
 Placement and merge semantics:
 
 - Global file: `<app_dir>/config.toml` (this host's `[host_hooks]` is currently empty). Applies
@@ -282,7 +292,9 @@ For this deployment's pi (`providers.litellm.headers`, and the entry needs at le
 ```jsonc
 // ~/.pi/agent/models.json — merge into the existing provider entry, never replace the file
 { "providers": { "litellm": {
-    "headers": { "X-AoE-Tags": "$AOE_LLM_TAGS", "X-AoE-Session": "$AOE_HDR_X_AOE_SESSION" },
+    "headers": {
+      "X-AoE-Tags": "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}",
+      "X-AoE-Session": "!v=\"${AOE_HDR_X_AOE_SESSION-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}" },
     "models": [{ "id": "deepseek-v4-flash", "name": "DeepSeek V4 Flash" }] } } }
 ```
 
@@ -364,7 +376,8 @@ Procedure — two separate legs, because the mechanism and the record are differ
 python3 tools/header-sink.py 8787 /tmp/tag-sink.jsonl &                 # sink
 mkdir -p /tmp/sink-agent && cat > /tmp/sink-agent/models.json <<'JSON'
 { "providers": { "sink": { "baseUrl": "http://127.0.0.1:8787/v1", "api": "openai-completions",
-                           "apiKey": "sink", "headers": { "X-AoE-Tags": "$AOE_LLM_TAGS" },
+                           "apiKey": "sink",
+                           "headers": { "X-AoE-Tags": "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}" },
                            "models": [{ "id": "sink", "name": "Sink" }] } } }
 JSON
 # inside an aoe session (terminal view), with the proxy env vars unset:

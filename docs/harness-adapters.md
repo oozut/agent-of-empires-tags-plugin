@@ -42,6 +42,8 @@ agent = "pi"
 label = "pi"
 mechanism = "config_headers"          # pi also accepts command_headers; see table
 interpolates = ["header"]           # delivery points that expand `$NAME`
+guard_fallback = "{}"               # payload a leftover mapping carries; only for a harness
+                                    # that fails the request on an unresolvable header
 supports = ["header", "body"]       # delivery kinds it can carry; `[]` = none (not "default")
 aoe_hooks = false                   # true when aoe installs its own hooks into this config
 config_env = "PI_CODING_AGENT_DIR"  # directory override the harness itself honours
@@ -73,6 +75,28 @@ the row does not interpolate. `env_ref` defaults to `${env_var}`, which now real
 `$NAME` writes `"$"` before it and codex writes `env_ref = "{env_var}"`. A reference that silently
 lost its braces (`$NAME` in a JSON value) is a mapping the harness reads as a literal string, so the
 spelling is part of the row, not a rendering detail.
+
+`guard_fallback` is the row's answer to "what does this mapping carry once the plugin is gone?".
+For a harness that resolves a header strictly — pi throws `Failed to resolve … header … from
+environment variable` instead of sending nothing — a bare `$VAR` mapping is a permanent fault: the
+line lives in a file this plugin does not own, so it outlives an uninstall and breaks the first
+launch that has no hook behind it, including a launch from a plain shell. With `guard_fallback`
+set, `{value}` becomes
+
+```
+!v="${AOE_LLM_TAGS-}"; [ -n "$v" ] && printf %s "$v" || printf %s {}
+```
+
+which prints the hook's value while it exists and the fallback (`{}`, the same shape the CLI emits
+when it knows nothing) afterwards. A command is the only form that survives both halves of that:
+no shell-free spelling stays non-empty when the variable is missing, and `[ -n "$v" ]` also covers
+set-but-empty, which a command reading nothing would turn back into a failure. The price is one
+`sh` per value resolution (pi caches command results per process). Rows without `guard_fallback`
+(hermes, qwen, codex, opencode, …) send the plain `env_ref`, because their harnesses treat an
+unresolved reference as an empty header, not as a failed request.
+
+For a JSON row the printed line escapes `"` inside `{value}`, so the command can be pasted into
+`models.json` exactly as printed.
 
 `splits_on_commas` is a *refusal*, not a hint: gemini's `parseCustomHeaders` splits its variable on
 `,(?=\s*[^,:]+:)`, so a JSON payload `{"a":1,"b":2}` becomes two headers and the request is dropped
@@ -315,7 +339,16 @@ pasted into a user config by hand any more (default header shown):
 
 ```jsonc
 // pi, ~/.pi/agent/models.json — merge into the provider entry the harness actually uses;
-// keep the existing models list (see the launcher note below)
+// keep the existing models list (see the launcher note below). This is the value
+// `setup --print` gives, quotes escaped as JSON needs them.
+{ "providers": { "<provider-id>": {
+    "headers": { "X-AoE-Tags": "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}" },
+    "models": [{ "id": "<model-id>", "name": "<Model name>" }] } } }
+```
+
+```jsonc
+// pi, pre-guard spelling: works only while a hook mints the variable, and pi fails
+// the whole request when it does not. `doctor` warns about it for that reason.
 { "providers": { "<provider-id>": {
     "headers": { "X-AoE-Tags": "$AOE_LLM_TAGS" },
     "models": [{ "id": "<model-id>", "name": "<Model name>" }] } } }
