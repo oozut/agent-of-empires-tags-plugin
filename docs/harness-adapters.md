@@ -169,6 +169,10 @@ Properties that follow, and that the tests pin down:
   duplicated, because that is where the tag has to live. Every other entry of the user's config
   dir — `auth.json`, the session store, caches, backups — is linked, not copied, so a session's
   directory never becomes a second copy of the user's credentials.
+- **What is copied is private.** That one file carries what the harness needs to authenticate, a
+  provider `apiKey` included, so it is written `0600` inside a `0700` directory whatever mode the
+  file it came from had. Nothing is stripped: a harness that cannot authenticate cannot launch, and
+  the mode is the guarantee instead. A `0644` source becomes a `0600` copy.
 - **The shape is preserved before it is modified.** The copy starts as a parse of the user's
   file; the TOML writer edits the document so the user's comments survive.
 

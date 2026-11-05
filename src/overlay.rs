@@ -239,14 +239,16 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
     // that is where the tag has to live. Everything else in the session dir is
     // a link to the user's entry, so no other content is duplicated.
     let text = doc.render()?;
-    std::fs::create_dir_all(&dir)
+    // `0700`: the copy below can carry a provider key, so the directory it lives
+    // in is this user's alone (see [`crate::private`]).
+    crate::private::create_dir(&dir)
         .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
     if adapter.write_mode == MODE_OVERLAY_DIR {
         if let Some(source_dir) = &source_dir {
             link_siblings(source_dir, &dir, &file_name)?;
         }
     }
-    write_atomic(&generated, &text)
+    crate::private::write_atomic(&generated, &text)
         .map_err(|err| format!("{} could not be written: {err}", generated.display()))?;
 
     Ok(Overlay {
@@ -318,12 +320,6 @@ fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result
 
 /// Write via a temp file in the same directory, then rename: a hook that dies
 /// mid-write cannot leave a half config for a harness to read.
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("aoe-llm-tags.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
-}
-
 /// Remove a session copy this launch will not use: it would carry nothing, or
 /// the file it is built from is gone. A copy that is not used is not left on
 /// disk either.

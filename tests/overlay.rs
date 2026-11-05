@@ -233,6 +233,61 @@ fn the_session_copy_is_one_file_and_links_for_everything_else() {
         );
     }
     assert!(linked.contains(&"sessions".to_string()), "{linked:?}");
+
+    // Private, because the one copied file carries whatever a provider needs to
+    // authenticate: the directory and the copy are this user's alone, whatever
+    // mode the file they were built from had.
+    let mode = |path: &Path| -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&dir), 0o700, "the session dir is private");
+    assert_eq!(mode(&dir.join("models.json")), 0o600, "the copy is private");
+}
+
+#[test]
+fn a_source_config_that_is_world_readable_is_still_copied_privately() {
+    let sandbox = Sandbox::new();
+    sandbox.write_pi_models(
+        r#"{"providers":{"litellm":{"baseUrl":"http://h/v1","apiKey":"sk-live","models":[{"id":"m1"}]}}}"#,
+    );
+    let source = sandbox.pi_models_path();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    }
+
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    let dir = PathBuf::from(emitted(&run.lines(), "PI_CODING_AGENT_DIR").expect("override"));
+    let copy = dir.join("models.json");
+    // The key is in there because the harness has to authenticate; the mode is
+    // what keeps it from being read by another account.
+    assert!(std::fs::read_to_string(&copy)
+        .expect("copy")
+        .contains("sk-live"));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&copy)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+        "the copy does not inherit 0644 from the source"
+    );
+    assert_eq!(
+        std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
 }
 
 #[test]

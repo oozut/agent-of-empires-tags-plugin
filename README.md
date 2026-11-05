@@ -10,7 +10,8 @@ request, including a sandboxed leg via podman) still holds; M2 changed *what* tr
 
 Editing a tag is a **per-session** operation, in the UI and on the command line: the session pane
 and the **LLM Tags** page list every tag with where it came from, let you add, replace or drop one,
-and let you write a literal token for that session — and every write lands in
+and let you write a literal token for that session (never read back into the page: the surfaces say
+*that* one is set, not what it says) — and every write lands in
 `<app dir>/sessions/<session id>/overrides.toml`. The global settings are read by the plugin and
 never rewritten, so two sessions can carry different tags at the same time with no rule and no
 config edit between them. The same edit from a shell:
@@ -53,7 +54,7 @@ duplicated; a launch with nothing to deliver creates nothing at all. Verified en
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 222 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 233 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -77,7 +78,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 222 tests, no network (needs `git` for tests/git_real.rs)
+cargo test --locked                  # 233 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 
@@ -157,6 +158,7 @@ Plan (what ships when, and with which values):
 | `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
 | `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the page that writes them; the only writer, and it never touches the settings |
 | `src/settings.rs` | Where the settings live and how a profile overrides them (arrays replace, objects recurse) |
+| `src/private.rs` | What the plugin writes is the user's alone: `0700` directories and `0600` files, because a session copy and a session file can each carry a secret |
 | `src/adapters.rs`, `adapters.toml` | Per-harness header mechanism, as data; the file is embedded, so an install without it still works |
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |

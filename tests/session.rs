@@ -107,6 +107,30 @@ fn the_token_override_stands_in_for_the_payload() {
 }
 
 #[test]
+fn the_session_file_holding_a_token_is_private() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .run(&["tag", "--session", "cf11af87da7e4bf0", "--token", "sk-live"])
+        .assert_ok();
+    let path = overrides_path(&sandbox, "cf11af87da7e4bf0");
+    let body = std::fs::read_to_string(&path).expect("overrides.toml");
+    assert!(body.contains("sk-live"), "{body}");
+
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &std::path::Path| -> u32 {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    // The token is in this file, so neither it nor its directory is readable by
+    // another account on the machine.
+    assert_eq!(mode(&path), 0o600, "{}", path.display());
+    assert_eq!(mode(path.parent().expect("dir")), 0o700);
+}
+
+#[test]
 fn a_target_with_a_template_keeps_it_and_ignores_the_token() {
     let sandbox = Sandbox::new();
     sandbox.write_config(&common::settings_config(common::TWO_HEADERS, ""));

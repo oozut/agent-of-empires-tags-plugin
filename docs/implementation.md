@@ -473,6 +473,13 @@ unused copy from an earlier launch is removed. Only the harness config file is c
 everything else in a session dir is a symlink to the user's own entry. Undo is
 `rm -rf` of the copy — there is no backup to restore because the original is never modified.
 
+Both writers (`src/private.rs`) keep what they write to the user: the session directory is `0700`
+and every file the plugin creates is `0600`, because the one copied file can carry a provider key
+the harness needs to authenticate and `overrides.toml` can carry the session's literal token. The
+mode is re-applied on every write, so a directory left open by an older build is tightened too; a
+session file is written through a `create_new` temporary, which also means a link planted at that
+name cannot redirect the write.
+
 ## Step 9 — M3 page (roadmap-gated)
 
 > Do not start this before a consumer is named again: every number on the page comes from the

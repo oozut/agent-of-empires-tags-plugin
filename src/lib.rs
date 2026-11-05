@@ -13,6 +13,7 @@ pub mod doctor;
 pub mod env;
 pub mod gitinfo;
 pub mod overlay;
+pub mod private;
 pub mod resolver;
 pub mod session_tags;
 pub mod settings;
