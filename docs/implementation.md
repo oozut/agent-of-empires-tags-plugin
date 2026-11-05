@@ -130,22 +130,24 @@ value; a file that cannot be parsed is a warning and is ignored (profile → glo
 pair of that JSON object becomes a tag with its JSON type intact. The file's entries come first
 and replace a `settings.tags` entry with the same key; `session_tags::apply` still runs after
 and puts a session's own edit in front of everything. That gives one priority order — a session
-edit, then the repo file, then `settings.tags`, then a rule hit — and `matched_tags` spends the
-five-tag budget in exactly that order. A rule only adds a key the set does not already have, so
-a rule with the same key as a session edit, a file entry or a static tag cannot rewrite its
-value. A missing or malformed file is a warning in `snapshot.warnings`; `doctor` prints it
-instead of failing the launch.
+edit, then the repo file, then `settings.tags`, then a rule hit. `matched_tags` spends the
+five-tag budget on the inherited tags in that order and adds the session's edits on top:
+`settings.manual_tag_count` says how many leading entries are exempt, so a manual tag is never
+dropped by the cap. A rule only adds a key the set does not already have, so a rule with the same
+key as a session edit, a file entry or a static tag cannot rewrite its value. A missing or
+malformed file is a warning in `snapshot.warnings`; `doctor` prints it instead of failing the
+launch.
 
 Rule evaluation (M1 grows this; M0 needs only `project` and `manual`). Rendering is per header,
 so the default tag format is just the default template. The pipeline in `src/resolver.rs`, in
 order: `SessionFacts` (row wins, hook env is the fallback) → `matched_tags` (every matching rule
-contributes, in list order, deduped, capped at 5) → the git facts a template or a tag value names
-(`wanted_git_references` → `src/gitinfo.rs`, nothing is run when nothing names one) →
-`expand_tag_value` for each tag, so a tag carries the branch rather than the reference →
-`build_fields` → `render_template` per enabled header (`clamp_bytes` at 800) → `hook_lines`
-(`NAME=value`, NAME is the env var) or `render_headers` (header → value, for `doctor` and the
-worker). One catalogue (`reference_catalog`) feeds both the `references` verb and the editor's
-dropdown, so the UI cannot offer a reference the renderer does not know.
+contributes, in list order, deduped, inherited capped at 5; session edits are exempt) → the git
+facts a template or a tag value names (`wanted_git_references` → `src/gitinfo.rs`, nothing is run
+when nothing names one) → `expand_tag_value` for each tag, so a tag carries the branch rather than
+the reference → `build_fields` → `render_template` per enabled header (`clamp_bytes` at 800) →
+`hook_lines` (`NAME=value`, NAME is the env var) or `render_headers` (header → value, for `doctor`
+and the worker). One catalogue (`reference_catalog`) feeds both the `references` verb and the
+editor's dropdown, so the UI cannot offer a reference the renderer does not know.
 
 Default header set shipped in code, overridable by settings:
 

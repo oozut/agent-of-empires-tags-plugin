@@ -40,9 +40,9 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 
 | Key | Type | Default | Allowed | Milestone | Status |
 |---|---|---|---|---|---|
-| `tags` | `string_list` | `[]` | lowercase tags, ≤48 chars, deduped, cap 8 | M2 | proposed |
-| `tags_file` | `string` | `""` | project-relative path to a JSON object; top-level pairs become typed tags, keys follow the tag grammar; the file wins a same-key `tags` entry, a session edit wins over both; shares the 5-tag budget | M2 | decided |
-| Tag source priority | session edit → `tags_file` → `tags` → rule hit | | the same order spends the 5-tag budget, so a tag typed for one session is never displaced by a repo-wide or global one; a rule only adds a missing key | M2 | decided |
+| `tags` | `string_list` | `[]` | tag grammar (key ≤96 chars), deduped; shares the 5-tag inherited budget | M2 | decided |
+| `tags_file` | `string` | `""` | project-relative path to a JSON object; top-level pairs become typed tags, keys follow the tag grammar; the file wins a same-key `tags` entry, a session edit wins over both; shares the 5-tag inherited budget | M2 | decided |
+| Tag source priority | session edit → `tags_file` → `tags` → rule hit | | the inherited tags spend the 5-tag budget in this order; a session edit is added on top and is never displaced; a rule only adds a missing key | M2 | decided |
 | `targets` | `object_list`, item key `name` | 2 rows below | 0–8 rows | M2 (manifest); `headers` still read | proposed |
 | `targets[].kind` | `select` | `header` | `header`, `query`, `body` | M2 | proposed |
 | `targets[].name` | string | `X-AoE-Tags` | HTTP field-name grammar, or a param name | M0 as `header` | decided |
@@ -121,7 +121,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Parameter | Value | Status |
 |---|---|---|
 | Tag grammar | `[a-z0-9][a-z0-9._:-]*` per token | decided |
-| Tag cap per header | 5 | decided |
+| Tag cap per header | 5 inherited tags; a session's own edits are exempt and always carried | decided |
 | Rendered value max | 800 bytes | proposed |
 | Default separator | `,` between tokens; `feature:<tag>` for a rule hit | decided |
 | Forbidden content | titles, raw paths, group prose, newlines, non-ASCII unless the operator writes them into a template | decided |
@@ -129,7 +129,7 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Over-long render | truncate to 800 bytes on a UTF-8 boundary, warn on stderr, still exit 0 | proposed |
 | Control characters | stripped from the rendered value (a newline would corrupt the `KEY=VALUE` stdout contract); outer whitespace trimmed | decided |
 | Invalid header / env name | that header is skipped with a warning; `doctor` reports it | decided |
-| Invalid / over-cap rule tags | invalid tags dropped with a warning; valid tags deduped, then capped at 5 | decided |
+| Invalid / over-cap rule tags | invalid tags dropped with a warning; valid inherited tags deduped, then capped at 5 (session edits exempt) | decided |
 | Absent `targets`/`headers` key | built-in target set (default rows above); an explicit `targets = []` means the tags are resolved but delivered nowhere | decided |
 | A target whose `kind` the harness cannot interpolate | `literal` is written verbatim; without one, `setup --apply` refuses the whole plan | decided |
 | A target whose `kind` the harness does not support | `setup --apply` refuses the whole plan; `doctor` fails that target | decided |

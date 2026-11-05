@@ -22,6 +22,8 @@ use crate::settings;
 
 // --- constants: plan/parameters.md §4, §5, §7 -------------------------------
 
+/// The budget for *inherited* tags in one header. A session's own edits are
+/// added on top and are never capped (plan/parameters.md §5).
 pub const TAG_CAP: usize = 5;
 /// A tag carries a whole `key:=value` pair now, so the ceiling is the string in
 /// settings, not the delivered value (`VALUE_MAX_BYTES` still clamps that).
@@ -214,8 +216,14 @@ pub fn default_targets() -> Vec<Target> {
 /// Validated settings. Malformed rows are dropped with a warning, never fatal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
-    /// Tags every session carries, before any rule matches.
+    /// Tags every session carries, before any rule matches. After
+    /// [`crate::session_tags::apply`] this starts with the session's own edits,
+    /// then the repo file's pairs, then this list.
     pub tags: Vec<String>,
+    /// How many leading [`Settings::tags`] entries are the session's own edits.
+    /// They are exempt from [`TAG_CAP`]: an operator who types a tag for one
+    /// session gets it even when the inherited set already fills the header.
+    pub manual_tag_count: usize,
     /// A JSON file inside the session's project whose key/value pairs become
     /// tags; empty means "no file". The pair set is merged into `tags` when the
     /// snapshot is built, because only then is the project path known.
@@ -236,6 +244,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             tags: Vec::new(),
+            manual_tag_count: 0,
             tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
@@ -274,6 +283,7 @@ impl Settings {
 
         Self {
             tags,
+            manual_tag_count: 0,
             tags_file,
             targets,
             rules,
@@ -1464,7 +1474,9 @@ fn valid_env_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-/// Every matching rule contributes; one tag per key, then cap at 5 (parameters §5).
+/// Every matching rule contributes; one tag per key, then cap the inherited tags
+/// at 5 (parameters §5). A session's own edits are always carried, so the total
+/// may be `TAG_CAP + settings.manual_tag_count`.
 pub fn matched_tags(settings: &Settings, facts: &SessionFacts) -> Vec<String> {
     let slugged = project_slug(&facts.path);
     // Stable sort by priority (descending); equal priorities keep list order.
@@ -1474,15 +1486,16 @@ pub fn matched_tags(settings: &Settings, facts: &SessionFacts) -> Vec<String> {
     // global list — so the budget is spent in that priority order. A rule adds a
     // dimension; it never rewrites a key the operator already set, even under a
     // different value.
+    let cap = TAG_CAP + settings.manual_tag_count;
     let mut tags: Vec<String> = settings.tags.clone();
-    tags.truncate(TAG_CAP);
+    tags.truncate(cap);
     let mut keys: Vec<String> = tags
         .iter()
         .filter_map(|raw| Tag::parse(raw).ok())
         .map(|tag| tag.key)
         .collect();
     for rule in ordered {
-        if tags.len() == TAG_CAP {
+        if tags.len() == cap {
             break;
         }
         if !rule_matches(rule, facts, &slugged) {
@@ -2148,21 +2161,18 @@ fn apply_tags_file(settings: &mut Settings, project_path: &str) {
     settings.tags = merged;
 }
 
-/// One warning when the merged static set is already over the per-header budget.
+/// One warning when the merged inherited set is over the per-header budget.
 ///
-/// The list is in priority order by the time this runs — a session edit, then the
-/// repo file, then the settings — so the entries named here are exactly the ones
-/// a render will drop. Rules can add nothing once the budget is full.
+/// The list is in priority order by the time this runs — the session's own edits,
+/// then the repo file, then the settings — so the entries named here are exactly
+/// the inherited ones a render will drop. Session edits are exempt: `manual_tag_count`
+/// leading entries always travel. Rules can add nothing once the budget is full.
 fn warn_if_tags_overflow(settings: &mut Settings) {
-    if settings.tags.len() <= TAG_CAP {
+    let cap = TAG_CAP + settings.manual_tag_count;
+    if settings.tags.len() <= cap {
         return;
     }
-    let dropped: Vec<&str> = settings
-        .tags
-        .iter()
-        .skip(TAG_CAP)
-        .map(String::as_str)
-        .collect();
+    let dropped: Vec<&str> = settings.tags.iter().skip(cap).map(String::as_str).collect();
     let shown = dropped
         .iter()
         .take(5)
@@ -2171,9 +2181,10 @@ fn warn_if_tags_overflow(settings: &mut Settings) {
         .join(", ");
     let more = dropped.len().saturating_sub(5);
     settings.warnings.push(format!(
-        "settings: {} tags are configured (session edits, tags_file and tags) but a header \
-         carries at most {TAG_CAP}; dropped {shown}{}",
+        "settings: {} tags are configured but a header carries {TAG_CAP} inherited tags plus \
+         {} session edit(s); dropped {shown}{}",
         settings.tags.len(),
+        settings.manual_tag_count,
         if more > 0 {
             format!(", +{more} more")
         } else {
@@ -2336,6 +2347,7 @@ mod tests {
     fn settings(tags: &[&str]) -> Settings {
         Settings {
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            manual_tag_count: 0,
             tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
@@ -2577,6 +2589,34 @@ mod tests {
     }
 
     #[test]
+    fn a_manual_tag_is_not_counted_against_the_inherited_budget() {
+        let mut configured = settings(&["hand:written", "a:1", "b:2", "c:3", "d:4", "e:5", "f:6"]);
+        configured.manual_tag_count = 1;
+        let carried = matched_tags(&configured, &facts());
+        assert_eq!(carried.len(), TAG_CAP + 1, "{carried:?}");
+        assert!(carried.contains(&"hand:written".to_string()), "{carried:?}");
+        assert!(!carried.contains(&"f:6".to_string()), "{carried:?}");
+    }
+
+    #[test]
+    fn the_overflow_warning_never_names_a_session_edit() {
+        let mut configured = settings(&["hand:written", "a:1", "b:2", "c:3", "d:4", "e:5", "f:6"]);
+        configured.manual_tag_count = 1;
+        warn_if_tags_overflow(&mut configured);
+        assert_eq!(configured.warnings.len(), 1, "{:?}", configured.warnings);
+        assert!(
+            configured.warnings[0].contains("dropped f:6"),
+            "{:?}",
+            configured.warnings
+        );
+        assert!(
+            !configured.warnings[0].contains("hand:written"),
+            "{:?}",
+            configured.warnings
+        );
+    }
+
+    #[test]
     fn a_rule_cannot_replace_a_manually_set_key() {
         let mut configured = settings(&["team:manual"]);
         configured.rules = vec![Rule::new("team:rule", "manual", "")];
@@ -2602,6 +2642,7 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         Settings {
             tags: Vec::new(),
+            manual_tag_count: 0,
             tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),

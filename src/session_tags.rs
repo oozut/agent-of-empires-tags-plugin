@@ -285,9 +285,9 @@ pub fn reset(app_dir: &Path, session_id: &str) -> Result<(), String> {
 /// The order is what makes an edit predictable: drop the keys the session
 /// `unset`, then replace same-key entries, then put the session's own entries in
 /// front. They are first because a tag typed for this one session is the most
-/// specific declaration there is — the five-tag budget is spent on it before a
-/// repo file entry or a global setting, so neither can push it out. The token
-/// needs no merge — it stands in for the whole rendered payload.
+/// specific declaration there is — and they are exempt from the five-tag inherited
+/// budget, so a repo file or global setting cannot push one out. The token needs
+/// no merge — it stands in for the whole rendered payload.
 pub fn apply(settings: &mut Settings, app_dir: &Path, session_id: &str) {
     let (overrides, warnings) = load(app_dir, session_id);
     settings.warnings.extend(warnings);
@@ -315,6 +315,7 @@ pub fn apply(settings: &mut Settings, app_dir: &Path, session_id: &str) {
     let mut merged = overrides.tags.clone();
     merged.append(&mut settings.tags);
     settings.tags = merged;
+    settings.manual_tag_count = overrides.tags.len();
     if !overrides.token.is_empty() {
         settings.token = overrides.token.clone();
     }
@@ -367,6 +368,7 @@ mod tests {
         let _ = Env::current();
         Settings {
             tags: tags.iter().map(|tag| tag.to_string()).collect(),
+            manual_tag_count: 0,
             tags_file: String::new(),
             targets: default_targets(),
             rules: Vec::new(),
@@ -496,20 +498,22 @@ mod tests {
     }
 
     #[test]
-    fn a_manual_tag_spends_the_budget_before_anything_inherited() {
+    fn a_manual_tag_is_carried_beyond_the_inherited_budget() {
         let app = temp();
         let session = "cf11af87da7e4bf0";
         set_tag(&app, session, "hand:written").expect("set");
-        // A full inherited set: without the priority the manual tag would be the
-        // sixth entry and `matched_tags` would drop it.
-        let mut configured = settings(&["a:1", "b:2", "c:3", "d:4", "e:5"]);
+        // Six inherited tags already overflow the five-tag budget; the manual one
+        // is added on top, and the last inherited tag is what falls off.
+        let mut configured = settings(&["a:1", "b:2", "c:3", "d:4", "e:5", "f:6"]);
         apply(&mut configured, &app, session);
         assert_eq!(configured.tags[0], "hand:written");
+        assert_eq!(configured.manual_tag_count, 1);
 
         let carried = matched_tags(&configured, &facts());
-        assert_eq!(carried.len(), TAG_CAP);
+        assert_eq!(carried.len(), TAG_CAP + 1);
         assert!(carried.contains(&"hand:written".to_string()), "{carried:?}");
-        assert!(!carried.contains(&"e:5".to_string()), "{carried:?}");
+        assert!(carried.contains(&"e:5".to_string()), "{carried:?}");
+        assert!(!carried.contains(&"f:6".to_string()), "{carried:?}");
         let _ = std::fs::remove_dir_all(&app);
     }
 
