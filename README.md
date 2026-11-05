@@ -19,11 +19,16 @@ config edit between them. The same edit from a shell:
 aoe-llm-tags tag --set team:platform        # this session only (AOE_SESSION_ID)
 aoe-llm-tags tag --session <id> --unset cost --token '{"hand":true}'
 aoe-llm-tags tag --reset                    # back to the settings
+aoe-llm-tags tag --git                      # the standard git entries, as a sample
+aoe-llm-tags references                     # every {reference}, with this session's value
 ```
 
 What travels is a **JSON object, not a string**: `tags` is a set of `key:value` (and `key:=json`)
 entries, merged with the session's own fields, so a consumer reads `tags["team"]` instead of
-splitting a comma list, and a new dimension never changes the shape it already parses.
+splitting a comma list, and a new dimension never changes the shape it already parses. A value may
+name a reference — `git.branch:{git.branch}` puts the branch in the tag set itself — and the git
+facts (`{git.commit}`, `{git.tag}`, `{git.dirty}`, …) are read lazily from the session's checkout
+only when a template or a tag names one.
 `format = "csv"` and `template` remain for a consumer that wants the flat list or one field.
 
 `setup --apply` no longer edits any user config: a value rides the launch environment, or the
@@ -32,7 +37,7 @@ the variable that points the harness at it. Verified end to end on this host for
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 149 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 200 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -56,7 +61,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 149 tests, no aoe, no network
+cargo test --locked                  # 200 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

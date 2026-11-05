@@ -33,13 +33,30 @@ function element(tag = "div") {
   const node = {
     tagName: tag.toUpperCase(),
     children: [],
-    innerHTML: "",
+    _innerHTML: "",
+    // A real element drops its children when `innerHTML` is assigned (notably the
+    // `""` a re-render uses to clear a table); the stub must do the same or a
+    // second render looks like duplicated rows.
+    get innerHTML() {
+      return this._innerHTML;
+    },
+    set innerHTML(text) {
+      this._innerHTML = text;
+      if (text === "") this.children.length = 0;
+    },
     textContent: "",
     className: "",
     value: "",
     title: "",
     disabled: false,
     colSpan: 1,
+    selectionStart: 0,
+    selectionEnd: 0,
+    focus() {},
+    setSelectionRange(start, end) {
+      this.selectionStart = start;
+      this.selectionEnd = end;
+    },
     style: { setProperty() {} },
     append(...kids) {
       this.children.push(...kids);
@@ -127,6 +144,17 @@ const STATE = {
             targets: [
               { name: "X-AoE-Tags", env_var: "AOE_HDR_X_AOE_TAGS", value: '{"team":"platform"}' },
             ],
+          },
+        ],
+        references: [
+          { name: "session", reference: "{session}", group: "Session", description: "Short session id." },
+          { name: "git.branch", reference: "{git.branch}", group: "Git", description: "Current branch." },
+        ],
+        presets: [
+          {
+            id: "git",
+            label: "Add standard git information",
+            tags: ["vcs:git", "git.branch:{git.branch}"],
           },
         ],
         page: "/plugins/dev.oozut.llm-tags/tags",
@@ -221,7 +249,53 @@ if (!targetRows.some((row) => row.includes("X-AoE-Tags") && row.includes("AOE_HD
 }
 if (banner && banner.textContent) fail(`the page left a banner up: ${banner.textContent}`);
 
+// The reference dropdown comes from the pushed catalogue: a Git group with the
+// dotted reference in it, not a hard-coded list in the page.
+const referenceOptions = (byId.get("reference")?.children || []).flatMap((node) =>
+  node.children?.length ? node.children : [node],
+);
+if (!referenceOptions.some((option) => option.value === "{git.branch}")) {
+  fail(
+    `the reference dropdown is missing {git.branch}: ${JSON.stringify(
+      referenceOptions.map((option) => option.value),
+    )}`,
+  );
+}
+const valueInput = document.getElementById("value");
+valueInput.value = "git.branch:";
+valueInput.selectionStart = valueInput.value.length;
+valueInput.selectionEnd = valueInput.value.length;
+byId.get("reference").onchange({ target: { value: "{git.branch}" } });
+if (valueInput.value !== "git.branch:{git.branch}") {
+  fail(`inserting a reference produced ${JSON.stringify(valueInput.value)}`);
+}
+// Inserting is a local edit: it must not have asked the worker for anything.
+if (replies.some((reply) => reply.method === "action")) {
+  fail("inserting a reference sent an action; it should only fill the field");
+}
+
+// The sample tick is a per-session write of the whole preset, fired once.
+if (!byId.get("presetsub")?.textContent?.includes("git.branch:{git.branch}")) {
+  fail(`the preset note does not name what it writes: ${byId.get("presetsub")?.textContent}`);
+}
+byId.get("gitpreset").onchange({ target: { checked: true } });
+await new Promise((done) => setTimeout(done, 50));
+const writes = replies
+  .filter((reply) => reply.method === "action")
+  .map((reply) => reply.params?.method);
+if (!writes.includes("tag.preset")) {
+  fail(`ticking the preset fired ${JSON.stringify(writes)}, not tag.preset`);
+}
+const presetWrite = replies.find(
+  (reply) => reply.method === "action" && reply.params?.method === "tag.preset",
+);
+if (presetWrite?.params?.params?.preset !== "git" || presetWrite?.params?.params?.applied !== true) {
+  fail(`the preset write carried ${JSON.stringify(presetWrite?.params)}`);
+}
+
 console.log(`OK ${file}`);
 console.log(
-  `   opened the bridge, asked for ${asked.join(", ")}, rendered ${tagRows.length} tag row(s) and ${targetRows.length} target row(s)`,
+  `   opened the bridge, asked for ${asked.join(", ")}, rendered ${tagRows.length} tag row(s), ` +
+    `${targetRows.length} target row(s), ${referenceOptions.length} reference(s); ` +
+    `the git preset write carries ${JSON.stringify(presetWrite.params.params)}`,
 );

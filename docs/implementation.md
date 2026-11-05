@@ -42,6 +42,10 @@ src/{env,settings,resolver}.rs  step 1   facts → fields → rendering, no aoe 
 src/{adapters,setup,doctor}.rs  step 4-5 adapter data, the mapping lines, the checks
 src/cli.rs                      step 1   clap surface + exit codes; the hook's catch_unwind lives here
 src/worker.rs + src/worker_main.rs  step 7 JSON-RPC worker (stdio, newline JSON)
+src/gitinfo.rs                  step 8   {git.*} facts from the session's checkout, read lazily:
+                                         one `git` budget for the whole resolve, credential-free
+                                         remote, `git.dirty` = false on a clean tree, `git.repo`
+                                         from origin or the shared `.git` of a linked worktree
 adapters.toml                   step 4   adapter rows (pi first), data not code; include_str!'d
 tools/build-worker.sh           step 10  source-install build: cargo → bin/ (release assets skip it)
 .github/workflows/ci.yml        step 10  fmt + clippy + test, then the per-os/arch asset matrix
@@ -123,10 +127,14 @@ value; a file that cannot be parsed is a warning and is ignored (profile → glo
 
 Rule evaluation (M1 grows this; M0 needs only `project` and `manual`). Rendering is per header,
 so the default tag format is just the default template. The pipeline in `src/resolver.rs`, in
-order: `SessionFacts` (row wins, hook env is the fallback) → `build_fields` → `matched_tags`
-(every matching rule contributes, in list order, deduped, capped at 5) → `render_template` per
-enabled header (`clamp_bytes` at 800) → `hook_lines` (`NAME=value`, NAME is the env var) or
-`render_headers` (header → value, for `doctor` and the worker).
+order: `SessionFacts` (row wins, hook env is the fallback) → `matched_tags` (every matching rule
+contributes, in list order, deduped, capped at 5) → the git facts a template or a tag value names
+(`wanted_git_references` → `src/gitinfo.rs`, nothing is run when nothing names one) →
+`expand_tag_value` for each tag, so a tag carries the branch rather than the reference →
+`build_fields` → `render_template` per enabled header (`clamp_bytes` at 800) → `hook_lines`
+(`NAME=value`, NAME is the env var) or `render_headers` (header → value, for `doctor` and the
+worker). One catalogue (`reference_catalog`) feeds both the `references` verb and the editor's
+dropdown, so the UI cannot offer a reference the renderer does not know.
 
 Default header set shipped in code, overridable by settings:
 
@@ -144,8 +152,11 @@ pub fn default_headers() -> Vec<Header> {
 One resolver, every verb: `hook`, `value`, `doctor` and the worker's `status` all call
 `resolver::snapshot`, so a value cannot differ between the launch path and the UI.
 
-Tests that need no aoe at all (`tests/cli.rs`, `tests/doctor.rs`, plus the unit tests in each
-module): accumulator order/dedup/cap, grammar rejection, `short_id` stability, template field
+Tests that need no aoe at all (`tests/cli.rs`, `tests/doctor.rs`, `tests/git.rs` — a fake `git`
+that records its argv, so "no reference named, no subprocess" is asserted; `tests/git_real.rs`
+itself uses the real `git` for the shapes a fake would only be told to produce — a linked worktree,
+an unborn branch, a detached HEAD, a unicode subject, and a `git` that never answers, plus the
+unit tests in each module): accumulator order/dedup/cap, grammar rejection, `short_id` stability, template field
 coverage, env-name derivation, disabled headers emitting nothing, missing settings, malformed TOML
 (→ exit 0, env fallback), and the hook exiting 0 on every failure path.
 

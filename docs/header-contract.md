@@ -93,6 +93,51 @@ Template fields, resolved from the session manager first and the hook environmen
 `{session}` `{session_id}` `{feature}` `{tool}` `{profile}` `{group}` `{group_slug}` `{project}`
 `{project_slug}` `{branch}` `{tags}` `{tags_csv}` `{tags_json}` `{payload_json}` `{tags_b64}`
 
+and the git facts, read from the session's own checkout:
+
+`{git.branch}` `{git.commit}` `{git.sha}` `{git.tag}` `{git.describe}` `{git.subject}`
+`{git.author}` `{git.dirty}` `{git.remote}` `{git.repo}` `{git.root}`
+
+`{git.branch}` comes from git itself (`rev-parse --abbrev-ref HEAD`, or the short SHA on a
+detached HEAD), `{git.commit}` is the abbreviated SHA and `{git.sha}` the full one; `{branch}` is
+untouched — it stays whatever the session manager reports, so an existing template keeps its
+meaning. `{git.tag}` and `{git.describe}` are empty when no tag names the commit, and
+`{git.remote}` drops any credentials in the URL. `{git.dirty}` always answers — `false` for a
+clean tree, not an empty string — because "clean" is a fact and an empty value would read as
+"unknown". `{git.repo}` names the repository the checkout belongs to, so a linked worktree
+reports `android-keyboard` rather than the worktree's own directory name.
+
+**Nothing runs unless a reference is named**: a launch whose templates and tags mention no git fact
+starts no `git` process at all, and a launch that names several pays one timeout budget for all of
+them, shared with the session-manager lookups — a `git` that hangs costs one wait, not one per
+fact. `AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be
+read is empty and a warning, never a failed launch.
+
+### References as tag values
+
+A tag value is a template too, expanded once at launch:
+
+```toml
+tags = ["vcs:git", "git.branch:{git.branch}", "git.commit:{git.commit}"]
+```
+
+That is how a consumer reads the revision from the payload itself — `tags["git.branch"]` — instead
+of the operator writing a target template for one consumer. The session fields are available too,
+but a value cannot reference a field that is built *from* the tags (`{tags}`, `{tags_csv}`,
+`{tags_json}`, `{payload_json}`, `{tags_b64}`, `{feature}`): that is reported and renders empty
+rather than producing a tag that looks like an answer.
+
+Two ways to get the standard set without writing it by hand, both writing the same four entries:
+
+```sh
+aoe-llm-tags tag --git                      # vcs:git, git.branch, git.commit, git.tag
+aoe-llm-tags references                     # every reference, with this session's value
+```
+
+The editor page offers the same set as a tick box, and its "Insert a reference" dropdown is fed
+from the same catalogue the `references` verb prints, so a reference cannot be offered by the UI
+and unknown to the renderer.
+
 Rules that keep the contract honest:
 
 - **Low cardinality by default.** `{session}` is the short id (`S-9f3a`); `{session_id}` is the
