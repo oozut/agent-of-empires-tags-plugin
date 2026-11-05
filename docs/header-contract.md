@@ -117,8 +117,10 @@ refused for the same reason — the session's path is the checkout.
 **Nothing runs unless a reference is named**: a launch whose templates and tags mention no git fact
 starts no `git` process at all, and a launch that names several pays one timeout budget for all of
 them, shared with the session-manager lookups — a `git` that hangs costs one wait, not one per
-fact. `AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be
-read is empty and a warning, never a failed launch.
+fact. The budget is a real one: the pipes are read on detached threads, so a grandchild that
+inherits stdout cannot hold the launch past it, and each lookup's output is capped at 4 MiB.
+`AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be read
+is empty and a warning, never a failed launch.
 
 ### References as tag values
 

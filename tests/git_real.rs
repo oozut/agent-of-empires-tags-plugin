@@ -244,6 +244,31 @@ fn a_git_that_never_answers_costs_one_launch_budget_and_not_one_per_fact() {
 }
 
 #[test]
+fn a_grandchild_that_outlives_git_cannot_hold_the_launch() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    // git exits at once, but the background child inherited its stdout, so the
+    // pipe stays open. Waiting for the reader to finish would wait for `sleep`:
+    // the drain gets a grace period and the launch keeps its budget.
+    let leaky = sandbox.path("bin/leaky-git");
+    sandbox.write_executable(&leaky, "#!/bin/sh\necho main\nsleep 30 &\nexit 1\n");
+    sandbox.write_config(&settings_config(r#"tags = ["branch:{git.branch}"]"#, ""));
+
+    let started = Instant::now();
+    let run = hook_at(
+        &sandbox,
+        &repo,
+        &[("AOE_GIT_BIN", leaky.to_str().expect("path"))],
+    );
+    let elapsed = started.elapsed();
+    payload(&run);
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "a held pipe must not become the launch's wait: {elapsed:?}"
+    );
+}
+
+#[test]
 fn a_slow_aoe_and_a_slow_git_share_the_same_budget() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");

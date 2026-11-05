@@ -11,8 +11,9 @@
 //! of `group`/`title` for structured host sessions.
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -1265,6 +1266,43 @@ pub fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// How much of a child's output is kept. A lookup that answers with more than
+/// this is not answering the question that was asked, and pulling it into memory
+/// without a bound is how one wedged subprocess takes the launch down with it.
+pub const OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// What the drains get to hand over once the child is gone.
+///
+/// A child that exits closes its own pipes, so a successful lookup spends none of
+/// this. It is only ever paid when a *grandchild* still holds the write end open —
+/// the case that used to hold the launch past its budget, because the reader
+/// thread could not finish and the caller joined it.
+const DRAIN_GRACE: Duration = Duration::from_millis(250);
+
+/// Read one pipe to the end, keeping at most [`OUTPUT_MAX_BYTES`] of it.
+///
+/// Past the cap the bytes are read and dropped rather than left in the pipe: a
+/// child blocked on a full pipe never exits, and the wait loop would then spend
+/// the whole budget on a child that is only waiting for us.
+fn drain(mut stream: impl Read, done: mpsc::Sender<Vec<u8>>) {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                if buf.len() < OUTPUT_MAX_BYTES {
+                    let room = OUTPUT_MAX_BYTES - buf.len();
+                    buf.extend_from_slice(&chunk[..read.min(room)]);
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = done.send(buf);
+}
+
 /// Run one read-only subprocess and return its stdout as text. Never blocks long.
 ///
 /// Shared by the `aoe` query and the `git` facts: both are read-only lookups the
@@ -1277,12 +1315,30 @@ pub fn run_text(
     args: &[String],
     timeout: Duration,
 ) -> Result<String, AoeError> {
+    run_text_clean(bin, verb, args, &[], timeout)
+}
+
+/// [`run_text`], removing `drop` from the child's environment.
+///
+/// The launch environment is the host's, not the command's: a `GIT_DIR` inherited
+/// from it would send `git -C <session>` to a repository the session does not own,
+/// whatever the git facts checked before spawning.
+pub fn run_text_clean(
+    bin: &str,
+    verb: &str,
+    args: &[String],
+    drop: &[&str],
+    timeout: Duration,
+) -> Result<String, AoeError> {
     let mut command = std::process::Command::new(bin);
     command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    for name in drop {
+        command.env_remove(name);
+    }
     let mut child = command.spawn().map_err(|source| AoeError::Spawn {
         bin: bin.to_string(),
         source,
@@ -1291,56 +1347,54 @@ pub fn run_text(
     // Both pipes are drained on their own threads: `aoe list --json` can exceed
     // the pipe buffer, and a child blocked on a full pipe never exits, so reading
     // only after `try_wait` would turn a slow query into a guaranteed timeout.
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    //
+    // The threads are detached and report through a channel, not joined: joining
+    // a reader whose pipe a grandchild still holds is exactly the wait the budget
+    // exists to avoid, and it made the timeout advisory rather than real.
+    let (out_tx, out_rx) = mpsc::channel();
+    let (err_tx, err_rx) = mpsc::channel();
+    if let Some(stream) = child.stdout.take() {
+        std::thread::spawn(move || drain(stream, out_tx));
+    }
+    if let Some(stream) = child.stderr.take() {
+        std::thread::spawn(move || drain(stream, err_tx));
+    }
+
     let deadline = Instant::now() + timeout;
-    let (status, timed_out, out_buf, err_buf) = std::thread::scope(|scope| {
-        let drain = |mut stream: std::process::ChildStdout| {
-            scope.spawn(move || {
-                let mut buf = Vec::new();
-                let _ = stream.read_to_end(&mut buf);
-                buf
-            })
-        };
-        let out_handle = stdout.map(drain);
-        let err_handle = stderr.map(|mut stream: std::process::ChildStderr| {
-            scope.spawn(move || {
-                let mut buf = Vec::new();
-                let _ = stream.read_to_end(&mut buf);
-                buf
-            })
-        });
-        let mut timed_out = false;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {}
-                Err(err) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return (Err(err), false, Vec::new(), Vec::new());
-                }
-            }
-            if Instant::now() >= deadline {
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(err) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                timed_out = true;
-                break None;
+                return Err(AoeError::Spawn {
+                    bin: bin.to_string(),
+                    source: err,
+                });
             }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let out_buf = out_handle
-            .map(|handle| handle.join().unwrap_or_default())
-            .unwrap_or_default();
-        let err_buf = err_handle
-            .map(|handle| handle.join().unwrap_or_default())
-            .unwrap_or_default();
-        (Ok(status), timed_out, out_buf, err_buf)
-    });
-    let status = status.map_err(|source| AoeError::Spawn {
-        bin: bin.to_string(),
-        source,
-    })?;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            timed_out = true;
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    // The decision is made at the deadline; the drains only get a grace period to
+    // hand over what they have already read. A reader still blocked when it runs
+    // out is left behind — it exits by itself if the pipe ever closes, and its
+    // buffer is bounded either way.
+    let drain_deadline = Instant::now() + DRAIN_GRACE;
+    let out_buf = out_rx
+        .recv_timeout(drain_deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
+    let err_buf = err_rx
+        .recv_timeout(drain_deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
 
     if timed_out || status.is_none() {
         return Err(AoeError::TimedOut {
@@ -3253,6 +3307,33 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn a_lookup_that_floods_stdout_is_read_up_to_the_cap_and_no_further() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir();
+        let script = dir.path.join("flood");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' 'a'\n",
+                OUTPUT_MAX_BYTES * 2
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let out = run_text(
+            script.to_str().unwrap(),
+            "flood",
+            &[],
+            Duration::from_secs(10),
+        )
+        .expect("the command succeeds");
+        assert_eq!(
+            out.len(),
+            OUTPUT_MAX_BYTES,
+            "the cap bounds what one lookup can cost"
+        );
+    }
 
     #[test]
     fn a_comma_in_a_csv_field_is_quoted_so_it_cannot_forge_a_pair() {
