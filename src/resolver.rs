@@ -906,6 +906,10 @@ pub struct ResolvedHeader {
 pub struct Snapshot {
     pub facts: SessionFacts,
     pub settings: Settings,
+    /// The tags as they are sent: matched, parsed, and with every `{git.xxx}`
+    /// reference in a value already expanded. `settings.tags` still holds the
+    /// entries as stored, which is what an editor has to show.
+    pub tags: Vec<Tag>,
     pub resolved: Vec<ResolvedHeader>,
     pub warnings: Vec<String>,
     pub raw: toml::Table,
@@ -1624,7 +1628,7 @@ pub fn snapshot_with_table(
     }
 
     let remaining = DEFAULT_TIMEOUT.saturating_sub(elapsed);
-    let (resolved, render_warnings) =
+    let (resolved, render_warnings, tags) =
         render_headers(&configured, &mut facts, runner, env, remaining);
     let mut all_warnings = configured.warnings.clone();
     all_warnings.extend(render_warnings);
@@ -1632,6 +1636,7 @@ pub fn snapshot_with_table(
     Snapshot {
         facts,
         settings: configured,
+        tags,
         resolved,
         warnings: all_warnings,
         raw: raw_table,
@@ -1644,7 +1649,7 @@ pub fn render_headers(
     runner: Option<Runner<'_>>,
     env: &Env,
     timeout: Duration,
-) -> (Vec<ResolvedHeader>, Vec<String>) {
+) -> (Vec<ResolvedHeader>, Vec<String>, Vec<Tag>) {
     let mut warnings = Vec::new();
     let enabled = enabled_targets(settings);
 
@@ -1766,7 +1771,7 @@ pub fn render_headers(
         });
     }
 
-    (resolved, warnings)
+    (resolved, warnings, tags)
 }
 
 /// The hook's stdout: exactly `NAME=value` per enabled header, nothing else.

@@ -101,10 +101,17 @@ and the git facts, read from the session's own checkout:
 `{git.branch}` comes from git itself (`rev-parse --abbrev-ref HEAD`, or the short SHA on a
 detached HEAD), `{git.commit}` is the abbreviated SHA and `{git.sha}` the full one; `{branch}` is
 untouched — it stays whatever the session manager reports, so an existing template keeps its
-meaning. `{git.tag}` and `{git.describe}` are
-empty when no tag names the commit, and `{git.remote}` drops any credentials in the URL.
+meaning. `{git.tag}` and `{git.describe}` are empty when no tag names the commit, and
+`{git.remote}` drops any credentials in the URL. `{git.dirty}` always answers — `false` for a
+clean tree, not an empty string — because "clean" is a fact and an empty value would read as
+"unknown". `{git.repo}` names the repository the checkout belongs to, so a linked worktree
+reports `android-keyboard` rather than the worktree's own directory name.
+
 **Nothing runs unless a reference is named**: a launch whose templates and tags mention no git fact
-starts no `git` process at all. `AOE_GIT_BIN` overrides the binary for a wrapper or a test double.
+starts no `git` process at all, and a launch that names several pays one timeout budget for all of
+them, shared with the session-manager lookups — a `git` that hangs costs one wait, not one per
+fact. `AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be
+read is empty and a warning, never a failed launch.
 
 ### References as tag values
 

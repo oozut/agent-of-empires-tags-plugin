@@ -386,10 +386,11 @@ impl Host {
             let session_keys: Vec<String> =
                 edits.entries().into_iter().map(|(key, _)| key).collect();
             let mut tag_rows: Vec<serde_json::Value> = Vec::new();
-            for raw in &snap.settings.tags {
-                let Ok(tag) = resolver::Tag::parse(raw) else {
-                    continue;
-                };
+            // The pane answers "what is this session sending", so it shows the
+            // rendered tag set — `git.branch = git-tags`, not the reference it was
+            // written as. The editor page below shows the stored entry instead,
+            // because that is what a user edits.
+            for tag in &snap.tags {
                 let origin = if session_keys.contains(&tag.key) {
                     "session"
                 } else {

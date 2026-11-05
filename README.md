@@ -37,7 +37,7 @@ the variable that points the harness at it. Verified end to end on this host for
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 181 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 200 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -61,7 +61,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 181 tests, no aoe, no network
+cargo test --locked                  # 200 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

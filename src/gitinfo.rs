@@ -11,7 +11,7 @@
 //!
 //! * **One runner, injectable.** Every call goes through [`Runner`], so a test
 //!   answers without a repository and production shells out through
-//!   [`default_runner`] (bounded by the launch budget, `AOE_GIT_BIN` overridable).
+//!   [`run_text`] with what is left of the launch budget, `AOE_GIT_BIN` overridable.
 //! * **A missing fact is empty, not an error.** A repository with no tag renders
 //!   `{git.tag}` as an empty string; a path that is not a working tree produces
 //!   one warning and empty values, never a failed hook.
@@ -20,7 +20,7 @@
 //!   `{git.author}` are opt-in by reference, like `{project_path}`.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::env::Env;
@@ -78,7 +78,8 @@ pub const REFERENCES: [GitReference; 11] = [
     },
     GitReference {
         name: "git.repo",
-        description: "Repository name from `origin`, or the working tree's directory name.",
+        description:
+            "Repository name from `origin`; without one, the name of the repository the checkout belongs to.",
     },
     GitReference {
         name: "git.root",
@@ -127,13 +128,6 @@ fn which(env: &Env, name: &str) -> Option<String> {
         }
     }
     None
-}
-
-pub fn default_runner<'a>(
-    env: &'a Env,
-    timeout: Duration,
-) -> impl Fn(&str, &[String]) -> Result<String, AoeError> + 'a {
-    move |verb, args| run_text(&git_bin(env), verb, args, timeout)
 }
 
 /// Resolve the requested references for the work tree at `path`.
@@ -188,28 +182,27 @@ pub fn resolve(
         );
     }
 
-    let owned;
-    let runner: Runner<'_> = match runner {
-        Some(runner) => runner,
-        None => {
-            owned = default_runner(env, timeout);
-            &owned
-        }
-    };
     let mut git = Git {
         path,
         runner,
+        env,
         deadline: Instant::now() + timeout,
         cache: BTreeMap::new(),
         warnings: Vec::new(),
     };
-    if !git.inside_work_tree() {
-        return (
-            values,
-            vec![format!(
-                "{path:?} is not inside a git work tree; {listed} render empty"
-            )],
-        );
+    match git.inside_work_tree() {
+        Ok(true) => {}
+        Ok(false) => {
+            return (
+                values,
+                vec![format!(
+                    "{path:?} is not inside a git work tree; {listed} render empty"
+                )],
+            )
+        }
+        // A `git` that hung or died answers no question at all; saying "not a work
+        // tree" would send a user looking for the wrong fault.
+        Err(err) => return (values, vec![format!("{listed} render empty: {err}")]),
     }
     for name in &wanted {
         if let Some(value) = git.field(name) {
@@ -221,7 +214,10 @@ pub fn resolve(
 
 struct Git<'a> {
     path: &'a str,
-    runner: Runner<'a>,
+    runner: Option<Runner<'a>>,
+    env: &'a Env,
+    /// One deadline for the whole set of facts, not one per fact: naming eleven
+    /// references must not buy eleven budgets.
     deadline: Instant,
     /// Keyed by the command line, so two references that need the same fact
     /// (`git.commit` and a detached `git.branch`) cost one subprocess.
@@ -235,12 +231,20 @@ impl Git<'_> {
         if let Some(cached) = self.cache.get(&key) {
             return cached.clone();
         }
-        let result = if Instant::now() >= self.deadline {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        let result = if remaining.is_zero() {
             Err("the git lookup used the launch budget".to_string())
         } else {
             let mut argv = vec!["-C".to_string(), self.path.to_string()];
             argv.extend(args.iter().map(|arg| arg.to_string()));
-            (self.runner)(verb, &argv)
+            // Each call gets what is *left* of the budget rather than the whole of
+            // it again, so a `git` that hangs costs the launch one budget, not one
+            // per fact named.
+            let outcome = match self.runner {
+                Some(runner) => runner(verb, &argv),
+                None => run_text(&git_bin(self.env), verb, &argv, remaining),
+            };
+            outcome
                 .map(|text| text.trim().to_string())
                 .map_err(|err| err.to_string())
         };
@@ -258,11 +262,9 @@ impl Git<'_> {
         }
     }
 
-    fn inside_work_tree(&mut self) -> bool {
-        matches!(
-            self.call("rev-parse", &["rev-parse", "--is-inside-work-tree"]),
-            Ok(text) if text == "true"
-        )
+    fn inside_work_tree(&mut self) -> Result<bool, String> {
+        self.call("rev-parse", &["rev-parse", "--is-inside-work-tree"])
+            .map(|text| text == "true")
     }
 
     fn field(&mut self, name: &str) -> Option<String> {
@@ -283,9 +285,16 @@ impl Git<'_> {
             "git.describe" => self.optional("describe", &["describe", "--tags", "--always"]),
             "git.subject" => self.required("git.subject", "log", &["log", "-1", "--format=%s"]),
             "git.author" => self.required("git.author", "log", &["log", "-1", "--format=%an"]),
-            "git.dirty" => self
-                .required("git.dirty", "status", &["status", "--porcelain"])
-                .map(|text| if text.is_empty() { "false" } else { "true" }.to_string()),
+            // An empty `status --porcelain` is the answer "clean", so this one
+            // cannot go through `required` — empty is a value here, not a miss.
+            "git.dirty" => match self.call("status", &["status", "--porcelain"]) {
+                Ok(text) if text.is_empty() => Some("false".to_string()),
+                Ok(_) => Some("true".to_string()),
+                Err(err) => {
+                    self.warn("git.dirty", &err);
+                    None
+                }
+            },
             "git.remote" => self
                 .optional("config", &["config", "--get", "remote.origin.url"])
                 .map(|url| scrub_url(&url)),
@@ -294,14 +303,7 @@ impl Git<'_> {
                     .optional("config", &["config", "--get", "remote.origin.url"])
                     .map(|url| repo_from_url(&url))
                     .filter(|name| !name.is_empty());
-                remote.or_else(|| {
-                    self.optional("rev-parse", &["rev-parse", "--show-toplevel"])
-                        .and_then(|root| {
-                            Path::new(&root)
-                                .file_name()
-                                .map(|name| name.to_string_lossy().into_owned())
-                        })
-                })
+                remote.or_else(|| self.repository_directory_name())
             }
             "git.root" => self.optional("rev-parse", &["rev-parse", "--show-toplevel"]),
             _ => None,
@@ -317,6 +319,25 @@ impl Git<'_> {
                 None
             }
         }
+    }
+
+    /// The repository's own directory name, without an origin to read it from.
+    ///
+    /// `--show-toplevel` would answer with the *worktree* (`lithuanians`), but a
+    /// linked worktree shares its repository's `.git` with every sibling: the
+    /// common dir is `<repo>/.git`, so its parent names the repository. A plain
+    /// checkout answers `.git` there, which lands in the same place.
+    fn repository_directory_name(&mut self) -> Option<String> {
+        let root = self.optional("rev-parse", &["rev-parse", "--show-toplevel"])?;
+        let common = self.optional("rev-parse", &["rev-parse", "--git-common-dir"]);
+        let directory = match common {
+            Some(common) if Path::new(&common).is_absolute() => PathBuf::from(common),
+            Some(common) => Path::new(&root).join(common),
+            None => return None,
+        };
+        let repo = directory.parent()?;
+        let name = repo.file_name()?.to_string_lossy().into_owned();
+        (!name.is_empty()).then_some(name)
     }
 
     fn warn(&mut self, name: &str, err: &str) {
@@ -442,6 +463,75 @@ mod tests {
     }
 
     #[test]
+    fn a_clean_tree_answers_false_rather_than_nothing() {
+        // `status --porcelain` prints nothing when there is nothing to say, and
+        // "clean" is still an answer: an empty `{git.dirty}` would read as unknown.
+        let answers: &[(&str, &str)] = &[("--is-inside-work-tree", "true"), ("--porcelain", "")];
+        let (values, warnings, _) = resolve_with(answers, &["git.dirty"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(values["git.dirty"], "false");
+    }
+
+    #[test]
+    fn a_linked_worktree_names_the_repository_it_shares() {
+        // `--show-toplevel` answers with the worktree; the common `.git` is the
+        // repository every sibling worktree shares.
+        let answers: &[(&str, &str)] = &[
+            ("--is-inside-work-tree", "true"),
+            ("--show-toplevel", "/srv/worktrees/lithuanians"),
+            ("--git-common-dir", "/srv/checkouts/android-keyboard/.git"),
+        ];
+        let (values, warnings, _) = resolve_with(answers, &["git.repo"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(values["git.repo"], "android-keyboard");
+    }
+
+    #[test]
+    fn a_probe_that_failed_is_not_reported_as_the_wrong_directory() {
+        let answers: &[(&str, &str)] = &[];
+        let (values, warnings, _) = resolve_with(answers, &["git.branch"]);
+        assert_eq!(values["git.branch"], "");
+        assert!(
+            !warnings.iter().any(|line| line.contains("not inside")),
+            "a git that failed says so, it does not blame the path: {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|line| line.contains("render empty")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn one_budget_covers_every_fact() {
+        // A runner that spends the whole budget on its first answer: the rest must
+        // not get a fresh one each.
+        let started = std::time::Instant::now();
+        let slow = |_verb: &str, args: &[String]| {
+            std::thread::sleep(Duration::from_millis(120));
+            if args.iter().any(|arg| arg == "--is-inside-work-tree") {
+                return Ok("true".to_string());
+            }
+            Ok("main".to_string())
+        };
+        let (values, warnings) = resolve(
+            "/w/repo",
+            &["git.branch", "git.commit", "git.sha", "git.subject"],
+            Some(&slow),
+            &Env::default(),
+            Duration::from_millis(200),
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "{warnings:?}"
+        );
+        assert_eq!(values["git.branch"], "main");
+        assert!(
+            warnings.iter().any(|line| line.contains("launch budget")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
     fn only_the_referenced_facts_cost_a_subprocess() {
         let (values, warnings, seen) = resolve_with(ANSWERS, &["git.branch"]);
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -485,7 +575,8 @@ mod tests {
 
     #[test]
     fn a_directory_that_is_not_a_work_tree_is_one_warning_and_empty_values() {
-        let answers: &[(&str, &str)] = &[];
+        // git's own answer for a path outside a checkout is `false`, not an error.
+        let answers: &[(&str, &str)] = &[("--is-inside-work-tree", "false")];
         let (values, warnings, _) = resolve_with(answers, &["git.branch", "git.sha"]);
         assert_eq!(values["git.branch"], "");
         assert_eq!(values["git.sha"], "");

@@ -81,11 +81,17 @@ pub fn apply_preset(app_dir: &Path, session_id: &str, id: &str) -> Result<Overri
 }
 
 /// Remove every key a preset sets. Unticking the box is one action, not four.
+///
+/// This drops the session's own entries rather than hiding the keys: the sample
+/// replaced whatever the settings said, so unticking it has to let the settings
+/// show through again. `unset_tag` cannot say that — a tombstone would hide the
+/// user's configured `vcs` as well — which is why the preset removes its own
+/// entries with `drop_tag`.
 pub fn remove_preset(app_dir: &Path, session_id: &str, id: &str) -> Result<Overrides, String> {
     let entries = preset(id).ok_or_else(|| format!("unknown preset {id:?}"))?;
     for entry in entries {
         if let Ok(tag) = Tag::parse(entry) {
-            unset_tag(app_dir, session_id, &tag.key)?;
+            drop_tag(app_dir, session_id, &tag.key)?;
         }
     }
     Ok(load(app_dir, session_id).0)
@@ -239,6 +245,27 @@ pub fn unset_tag(app_dir: &Path, session_id: &str, key: &str) -> Result<Override
     Ok(overrides)
 }
 
+/// Remove this session's own entry for a key, without hiding an inherited one.
+///
+/// `unset_tag` answers "this session does not want the tag"; this answers "this
+/// session's file should no longer say anything about it", which is what undoing
+/// an edit means. Every key the preset's sample set touched came from here, so
+/// unticking restores the value the settings carry instead of erasing the key.
+pub fn drop_tag(app_dir: &Path, session_id: &str, key: &str) -> Result<Overrides, String> {
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("a tag key is required".to_string());
+    }
+    let (mut overrides, _) = load(app_dir, session_id);
+    overrides.tags.retain(|raw| match Tag::parse(raw) {
+        Ok(existing) => existing.key != key,
+        Err(_) => true,
+    });
+    overrides.unset.retain(|listed| listed != key);
+    save(app_dir, session_id, &overrides)?;
+    Ok(overrides)
+}
+
 /// Replace what every template-less target renders with a literal string.
 /// An empty value clears the override, which is the same as not having one.
 pub fn set_token(app_dir: &Path, session_id: &str, token: &str) -> Result<Overrides, String> {
@@ -321,6 +348,12 @@ mod tests {
             profile: "main".to_string(),
             branch: String::new(),
         }
+    }
+
+    fn value_of(tags: &[Tag], key: &str) -> Option<serde_json::Value> {
+        tags.iter()
+            .find(|tag| tag.key == key)
+            .map(|tag| tag.value.clone())
     }
 
     fn settings(tags: &[&str]) -> Settings {
@@ -476,15 +509,54 @@ mod tests {
 
         let edits = remove_preset(&app, session, "git").expect("remove");
         assert!(edits.tags.is_empty(), "{edits:?}");
-        assert_eq!(edits.unset.len(), crate::resolver::GIT_PRESET.len());
-        // The file is gone only when nothing else remains: the tombstones are edits.
-        assert!(path(&app, session).exists());
+        // Unticking removes the sample; it must not hide a tag the settings carry,
+        // so it leaves no tombstones behind.
+        assert!(edits.unset.is_empty(), "{edits:?}");
+        assert!(!path(&app, session).exists());
         let mut configured = settings(&[]);
         apply(&mut configured, &app, session);
         assert!(configured.tags.is_empty(), "{:?}", configured.tags);
 
         let unknown = apply_preset(&app, session, "nope").expect_err("refused");
         assert!(unknown.contains("unknown preset"), "{unknown}");
+        let _ = std::fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn unticking_the_sample_lets_the_configured_value_show_through() {
+        let app = temp();
+        let session = "cf11af87da7e4bf0";
+        // A tag set this user really has: `vcs:prod` belongs to the settings, and
+        // the sample writes `vcs:git` over it.
+        let mut configured = settings(&["vcs:prod", "team:core"]);
+        apply_preset(&app, session, "git").expect("apply");
+        apply(&mut configured, &app, session);
+        let tags = parse_tags(&configured.tags).0;
+        assert_eq!(value_of(&tags, "vcs"), Some(serde_json::json!("git")));
+        assert_eq!(value_of(&tags, "team"), Some(serde_json::json!("core")));
+
+        // Unticking is an undo, not a "hide this key": `prod` is back.
+        remove_preset(&app, session, "git").expect("remove");
+        let mut configured = settings(&["vcs:prod", "team:core"]);
+        apply(&mut configured, &app, session);
+        let tags = parse_tags(&configured.tags).0;
+        assert_eq!(value_of(&tags, "vcs"), Some(serde_json::json!("prod")));
+        assert_eq!(value_of(&tags, "team"), Some(serde_json::json!("core")));
+        let _ = std::fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn dropping_an_edit_leaves_the_rest_of_the_session_alone() {
+        let app = temp();
+        let session = "cf11af87da7e4bf0";
+        set_tag(&app, session, "team:platform").expect("set");
+        set_token(&app, session, "literal").expect("token");
+        unset_tag(&app, session, "cost").expect("unset");
+        drop_tag(&app, session, "team").expect("drop");
+        let (edits, _) = load(&app, session);
+        assert!(edits.tags.is_empty(), "{edits:?}");
+        assert_eq!(edits.unset, vec!["cost".to_string()]);
+        assert_eq!(edits.token, "literal");
         let _ = std::fs::remove_dir_all(&app);
     }
 
