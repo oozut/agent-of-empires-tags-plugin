@@ -82,10 +82,10 @@ A target chooses **where** the payload travels and **what** of it travels there.
 |---|---|
 | `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
 | `name` | Wire name: a header name, a query parameter, or the body field to set. |
-| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. |
+| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. A field holding a comma, a quote or a line break is quoted (`"team:x,org:evil"`, internal quotes doubled), so a value cannot forge a pair the sender never wrote. |
 | `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, `{tags_b64}`, or one field such as `{feature}`. |
-| `literal` | Written as-is instead of the rendered template. |
-| `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. |
+| `literal` | Used instead of the rendered template, for a harness that does not expand `$NAME` in that position. Not a bypass: it is cleaned like every other value (control characters dropped, surrounding whitespace trimmed) and capped at 800 bytes where the settings are parsed, because a newline written as-is added a `NAME=value` line nobody set and a carriage return broke an `env_only` header list. |
+| `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. A pinned name has to be one — a letter or `_`, then letters, digits or `_` — or the row is refused: the name travels into `NAME=value` lines and into the shell command an `env_only` harness runs, where a `;` is a second command. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
 
 Template fields, resolved from the session manager first and the hook environment second:
@@ -157,7 +157,8 @@ Rules that keep the contract honest:
   JSON. A key or value outside the grammar is dropped with a warning rather than written.
 - **Values are typed.** `:=` is the only way to get a number, boolean or nested value into a
   payload, and it stays typed all the way to the consumer; a `csv` target flattens it back to
-  text, because a comma list has no types.
+  text, because a comma list has no types, and a field with a comma, a quote or a line break in
+  it is quoted so it cannot pass for two fields.
 
 ### A repository's own tags
 

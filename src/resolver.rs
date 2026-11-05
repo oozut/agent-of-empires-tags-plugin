@@ -417,12 +417,27 @@ impl Tag {
         })
     }
 
-    /// The tag as written in settings, for the `csv` format and `{tags}`.
+    /// The tag as one `csv` field, for the `csv` format and `{tags}`.
+    ///
+    /// A value is free text (`{"team":"core,platform"}` is a perfectly good entry
+    /// from a repo's `tags_file`), so a field that would otherwise split the list
+    /// is quoted and its own quotes doubled: `"team:core,platform"`. A consumer
+    /// that splits on the comma alone still sees two fields — a format with an
+    /// escape cannot save a parser that ignores it, and `json` is the format for
+    /// those — but a CSV parser now reads the list the way it was written.
     pub fn csv(&self) -> String {
-        match &self.value {
+        let field = match &self.value {
             Value::Bool(true) => self.key.clone(),
             Value::String(text) => format!("{}:{text}", self.key),
             other => format!("{}:{other}", self.key),
+        };
+        if field
+            .chars()
+            .any(|ch| matches!(ch, ',' | '"' | '\n' | '\r'))
+        {
+            format!("\"{}\"", field.replace('"', "\"\""))
+        } else {
+            field
         }
     }
 
@@ -1602,7 +1617,12 @@ pub fn valid_header_name(name: &str) -> bool {
         && name.len() <= 64
 }
 
-fn valid_env_name(name: &str) -> bool {
+/// An environment variable name: a letter or `_`, then letters, digits or `_`.
+///
+/// The hook prints `NAME=value` lines and the mapping line for a `custom_headers_env`
+/// harness is a shell command that reads `$NAME`, so a name is not free text: a
+/// `;` or a newline in it would turn one exported variable into a command.
+pub fn valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -2187,6 +2207,17 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
                 continue;
             }
         };
+        // A name is carried into `NAME=value` lines and into the shell command a
+        // guarded harness runs, so it is checked where it is accepted rather than
+        // only where it is used.
+        if !valid_env_name(&env_var) {
+            warnings.push(format!(
+                "settings: {label}[{index}] ({name}) env_var {env_var:?} is not a valid \
+                 environment variable name (a letter or `_`, then letters, digits or `_`); \
+                 skipping it"
+            ));
+            continue;
+        }
         let param = match row.get("param") {
             None => String::new(),
             Some(toml::Value::String(text)) => text.clone(),
@@ -2205,9 +2236,28 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
             ));
             continue;
         }
+        // A literal used to be written out as it was typed, so a newline in one
+        // added an extra `NAME=value` line to the hook's output — a variable the
+        // user never set — and a `\r` broke the header list an `env_only` harness
+        // reads. It goes through the same cleaning and the same cap as every other
+        // value now, at the point where it is accepted.
         let literal = match row.get("literal") {
             None => String::new(),
-            Some(toml::Value::String(text)) => text.clone(),
+            Some(toml::Value::String(text)) => {
+                let cleaned = sanitize_value(text);
+                let (cleaned, truncated) = clamp_bytes(&cleaned, VALUE_MAX_BYTES);
+                if cleaned != *text {
+                    warnings.push(format!(
+                        "settings: {label}[{index}] ({name}) literal {}",
+                        if truncated {
+                            format!("is longer than {VALUE_MAX_BYTES} bytes; trimmed")
+                        } else {
+                            "has control characters or surrounding spaces; cleaned up".to_string()
+                        }
+                    ));
+                }
+                cleaned
+            }
             Some(_) => {
                 warnings.push(format!(
                     "settings: {label}[{index}] ({name}) literal is not a string; ignoring it"
@@ -3115,5 +3165,105 @@ mod tests {
         let (out, missing) = render_template("{X-Aoe}", &fields);
         assert_eq!(out, "{X-Aoe}");
         assert!(missing.is_empty(), "{missing:?}");
+    }
+
+    #[test]
+    fn an_env_var_that_is_not_a_name_is_refused_where_it_is_written() {
+        // The hook prints `NAME=value` and the `custom_headers_env` line of a
+        // guarded harness runs a shell command that reads `$NAME`, so a `;` or a
+        // `$(` here is a command, not a variable name.
+        for bad in ["AOE; reboot", "$(id)", "AOE HDR", "9AOE", ""] {
+            let table: toml::Table = format!(
+                r#"
+                [[targets]]
+                name = "X-AoE-Tags"
+                env_var = {bad:?}
+                template = "{{team}}"
+
+                [[targets]]
+                name = "X-AoE-Session"
+                env_var = "AOE_HDR_X_AOE_SESSION"
+                template = "{{session_id}}"
+                "#
+            )
+            .parse()
+            .unwrap();
+            let mut warnings = Vec::new();
+            let parsed = Settings::from_table(&table, std::mem::take(&mut warnings));
+            assert_eq!(
+                parsed.targets.len(),
+                1,
+                "{bad:?} was kept: {:?}",
+                parsed.targets
+            );
+            assert_eq!(parsed.targets[0].env_var, "AOE_HDR_X_AOE_SESSION");
+            warnings.extend(parsed.warnings);
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.contains("is not a valid environment variable name")),
+                "{bad:?}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_with_a_newline_is_cleaned_up_before_it_can_add_a_line() {
+        // Written out as typed, a newline added a second `NAME=value` line to the
+        // hook's output — a variable the user never set — and a `\r` broke the
+        // header list an `env_only` harness reads.
+        let table: toml::Table = r#"
+            [[targets]]
+            name = "X-AoE-Tags"
+            literal = "  a\r\nb  "
+        "#
+        .parse()
+        .unwrap();
+        let warnings = Vec::new();
+        let parsed = Settings::from_table(&table, warnings);
+        assert_eq!(parsed.targets[0].literal, "ab");
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("cleaned up")),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn a_literal_is_capped_like_every_other_value() {
+        let long = "a".repeat(VALUE_MAX_BYTES + 40);
+        let table: toml::Table =
+            format!("[[targets]]\nname = \"X-AoE-Tags\"\nliteral = \"{long}\"\n")
+                .parse()
+                .unwrap();
+        let parsed = Settings::from_table(&table, Vec::new());
+        assert_eq!(parsed.targets[0].literal.len(), VALUE_MAX_BYTES);
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("is longer than")),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+
+    #[test]
+    fn a_comma_in_a_csv_field_is_quoted_so_it_cannot_forge_a_pair() {
+        // `csv` is the format a consumer splits on `,`: an unquoted comma in a
+        // value would arrive as a second key it never sent.
+        let unforged = Tag::parse("team:x,org:evil").unwrap();
+        assert_eq!(unforged.csv(), "\"team:x,org:evil\"");
+        let quoted = Tag::parse("note:he said \"hi\"").unwrap();
+        assert_eq!(quoted.csv(), "\"note:he said \"\"hi\"\"\"");
+        // Nothing to escape: no quotes, so the common case stays plain.
+        assert_eq!(Tag::parse("team:core").unwrap().csv(), "team:core");
+        assert_eq!(Tag::parse("platform").unwrap().csv(), "platform");
     }
 }
