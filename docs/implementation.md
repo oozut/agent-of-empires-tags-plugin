@@ -128,10 +128,13 @@ value; a file that cannot be parsed is a warning and is ignored (profile → glo
 `tags_file` is the one setting whose value is a path. It is read at launch from
 `<project path>/<value>` (relative, and it must stay inside the project), and every top-level
 pair of that JSON object becomes a tag with its JSON type intact. The file's entries come first
-and replace a `settings.tags` entry with the same key; `session_tags::apply` still runs after,
-so a session's own edit wins over the file. The merged list still passes through `matched_tags`'s
-five-tag cap, and a missing or malformed file is a warning in `snapshot.warnings` — `doctor`
-prints it instead of failing the launch.
+and replace a `settings.tags` entry with the same key; `session_tags::apply` still runs after
+and puts a session's own edit in front of everything. That gives one priority order — a session
+edit, then the repo file, then `settings.tags`, then a rule hit — and `matched_tags` spends the
+five-tag budget in exactly that order. A rule only adds a key the set does not already have, so
+a rule with the same key as a session edit, a file entry or a static tag cannot rewrite its
+value. A missing or malformed file is a warning in `snapshot.warnings`; `doctor` prints it
+instead of failing the launch.
 
 Rule evaluation (M1 grows this; M0 needs only `project` and `manual`). Rendering is per header,
 so the default tag format is just the default template. The pipeline in `src/resolver.rs`, in

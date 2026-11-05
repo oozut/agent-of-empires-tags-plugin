@@ -283,8 +283,11 @@ pub fn reset(app_dir: &Path, session_id: &str) -> Result<(), String> {
 /// Fold a session's edits into the settings a render is about to use.
 ///
 /// The order is what makes an edit predictable: drop the keys the session
-/// `unset`, then replace same-key entries, then append the session's own. The
-/// token needs no merge — it stands in for the whole rendered payload.
+/// `unset`, then replace same-key entries, then put the session's own entries in
+/// front. They are first because a tag typed for this one session is the most
+/// specific declaration there is — the five-tag budget is spent on it before a
+/// repo file entry or a global setting, so neither can push it out. The token
+/// needs no merge — it stands in for the whole rendered payload.
 pub fn apply(settings: &mut Settings, app_dir: &Path, session_id: &str) {
     let (overrides, warnings) = load(app_dir, session_id);
     settings.warnings.extend(warnings);
@@ -309,7 +312,9 @@ pub fn apply(settings: &mut Settings, app_dir: &Path, session_id: &str) {
             Err(_) => true,
         });
     }
-    settings.tags.extend(overrides.tags.iter().cloned());
+    let mut merged = overrides.tags.clone();
+    merged.append(&mut settings.tags);
+    settings.tags = merged;
     if !overrides.token.is_empty() {
         settings.token = overrides.token.clone();
     }
@@ -325,7 +330,9 @@ pub fn app_dir_name() -> &'static str {
 mod tests {
     use super::*;
     use crate::env::Env;
-    use crate::resolver::{default_targets, parse_tags, payload, payload_json, SessionFacts};
+    use crate::resolver::{
+        default_targets, matched_tags, parse_tags, payload, payload_json, SessionFacts, TAG_CAP,
+    };
 
     fn temp() -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -468,9 +475,15 @@ mod tests {
 
         set_tag(&app, session, "team:platform").expect("set");
         unset_tag(&app, session, "cost").expect("unset");
-        let mut configured = settings(&["team:core", "cost:1"]);
+        // `repo:file` stands where `apply_tags_file` would have put a repo
+        // declaration: behind a session edit, in front of a global setting.
+        let mut configured = settings(&["team:core", "cost:1", "repo:file"]);
         apply(&mut configured, &app, session);
-        assert_eq!(configured.tags, vec!["team:platform"]);
+        assert_eq!(
+            configured.tags,
+            vec!["team:platform", "repo:file"],
+            "a session edit is first, and a file entry stays ahead of a global tag"
+        );
 
         // The payload a consumer would see, from the same resolver a hook uses.
         let (tags, _) = parse_tags(&configured.tags);
@@ -479,6 +492,24 @@ mod tests {
         let object: serde_json::Value = serde_json::from_str(&payload_json(&built)).expect("json");
         assert_eq!(object["team"], "platform");
         assert!(object.get("cost").is_none(), "{object}");
+        let _ = std::fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    fn a_manual_tag_spends_the_budget_before_anything_inherited() {
+        let app = temp();
+        let session = "cf11af87da7e4bf0";
+        set_tag(&app, session, "hand:written").expect("set");
+        // A full inherited set: without the priority the manual tag would be the
+        // sixth entry and `matched_tags` would drop it.
+        let mut configured = settings(&["a:1", "b:2", "c:3", "d:4", "e:5"]);
+        apply(&mut configured, &app, session);
+        assert_eq!(configured.tags[0], "hand:written");
+
+        let carried = matched_tags(&configured, &facts());
+        assert_eq!(carried.len(), TAG_CAP);
+        assert!(carried.contains(&"hand:written".to_string()), "{carried:?}");
+        assert!(!carried.contains(&"e:5".to_string()), "{carried:?}");
         let _ = std::fs::remove_dir_all(&app);
     }
 

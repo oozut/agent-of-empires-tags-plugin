@@ -35,6 +35,10 @@ type = "string_list"
 help = """
 Tags every session carries, before any rule matches. Rules add to this set.
 
+A `tags_file` entry and a per-session edit replace a same-key entry here; the
+priority order is a per-session edit, then the repo file, then this list, then
+a rule hit.
+
 A tag is a key and a value, and it is delivered as a JSON object, so a consumer reads
 `tags["team"]` instead of splitting a string:
 
@@ -79,7 +83,8 @@ with `=`.
 
 The repo file is the more specific declaration: its entries come first and replace a `tags`
 entry with the same key, while a per-session edit still wins over both. Like every tag, the
-file's pairs share the five-tag budget of a header. The file is read at launch, so an edit
+file's pairs share the five-tag budget of a header, and the order is the priority: a session
+edit, then this file, then `tags`, then a rule hit. The file is read at launch, so an edit
 applies to the next session, and a missing or malformed file is a warning in `doctor` rather
 than a failed launch.
 """

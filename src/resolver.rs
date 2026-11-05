@@ -1464,26 +1464,39 @@ fn valid_env_name(name: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
 }
 
-/// Every matching rule contributes; dedupe, then cap at 5 (parameters §5).
+/// Every matching rule contributes; one tag per key, then cap at 5 (parameters §5).
 pub fn matched_tags(settings: &Settings, facts: &SessionFacts) -> Vec<String> {
     let slugged = project_slug(&facts.path);
     // Stable sort by priority (descending); equal priorities keep list order.
     let mut ordered: Vec<&Rule> = settings.rules.iter().collect();
     ordered.sort_by_key(|a| std::cmp::Reverse(a.priority));
-    // Settings `tags` come first: the operator lists what every session carries,
-    // and rules add to that set. A rule never displaces a static tag.
+    // Settings `tags` come first — a session edit, then the repo file, then the
+    // global list — so the budget is spent in that priority order. A rule adds a
+    // dimension; it never rewrites a key the operator already set, even under a
+    // different value.
     let mut tags: Vec<String> = settings.tags.clone();
     tags.truncate(TAG_CAP);
+    let mut keys: Vec<String> = tags
+        .iter()
+        .filter_map(|raw| Tag::parse(raw).ok())
+        .map(|tag| tag.key)
+        .collect();
     for rule in ordered {
-        if tags.contains(&rule.tag) {
-            continue;
-        }
-        if rule_matches(rule, facts, &slugged) {
-            tags.push(rule.tag.clone());
-        }
         if tags.len() == TAG_CAP {
             break;
         }
+        if !rule_matches(rule, facts, &slugged) {
+            continue;
+        }
+        let Ok(tag) = Tag::parse(&rule.tag) else {
+            // `parse_rules` already warned when this rule was loaded.
+            continue;
+        };
+        if keys.contains(&tag.key) {
+            continue;
+        }
+        keys.push(tag.key);
+        tags.push(rule.tag.clone());
     }
     tags
 }
@@ -1763,11 +1776,14 @@ pub fn snapshot_with_table(
     apply_tags_file(&mut configured, &facts.path);
     // A session's own edits (the UI page and the `tag` command write them) are
     // applied here, once, so the hook, `status`, `doctor` and the worker all see
-    // the same tags. They live in the session's directory, never the config.
+    // the same tags. They live in the session's directory, never the config, and
+    // `apply` puts them in front of everything inherited: a tag typed for this
+    // session is the most specific thing there is.
     if !facts.id.is_empty() {
         let app_dir = settings::app_dir(env);
         crate::session_tags::apply(&mut configured, &app_dir, &facts.id);
     }
+    warn_if_tags_overflow(&mut configured);
 
     let remaining = DEFAULT_TIMEOUT.saturating_sub(elapsed);
     let (resolved, render_warnings, tags) =
@@ -2130,31 +2146,40 @@ fn apply_tags_file(settings: &mut Settings, project_path: &str) {
     let mut merged: Vec<String> = file_tags.iter().map(Tag::entry).collect();
     merged.append(&mut settings.tags);
     settings.tags = merged;
-    if settings.tags.len() > TAG_CAP {
-        let dropped: Vec<&str> = settings
-            .tags
-            .iter()
-            .skip(TAG_CAP)
-            .map(String::as_str)
-            .collect();
-        let shown = dropped
-            .iter()
-            .take(5)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
-        let more = dropped.len().saturating_sub(5);
-        settings.warnings.push(format!(
-            "settings: {} tags are configured (tags and tags_file) but a header carries at \
-             most {TAG_CAP}; dropped {shown}{}",
-            settings.tags.len(),
-            if more > 0 {
-                format!(", +{more} more")
-            } else {
-                String::new()
-            }
-        ));
+}
+
+/// One warning when the merged static set is already over the per-header budget.
+///
+/// The list is in priority order by the time this runs — a session edit, then the
+/// repo file, then the settings — so the entries named here are exactly the ones
+/// a render will drop. Rules can add nothing once the budget is full.
+fn warn_if_tags_overflow(settings: &mut Settings) {
+    if settings.tags.len() <= TAG_CAP {
+        return;
     }
+    let dropped: Vec<&str> = settings
+        .tags
+        .iter()
+        .skip(TAG_CAP)
+        .map(String::as_str)
+        .collect();
+    let shown = dropped
+        .iter()
+        .take(5)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let more = dropped.len().saturating_sub(5);
+    settings.warnings.push(format!(
+        "settings: {} tags are configured (session edits, tags_file and tags) but a header \
+         carries at most {TAG_CAP}; dropped {shown}{}",
+        settings.tags.len(),
+        if more > 0 {
+            format!(", +{more} more")
+        } else {
+            String::new()
+        }
+    ));
 }
 
 /// A `tags_file` value: one repo-relative path, or nothing. Anything else is a
@@ -2500,6 +2525,75 @@ mod tests {
         assert_eq!(payload["team"], "repo");
         assert_eq!(payload["cost"], 1.5);
         assert_eq!(payload["feature"], "billing");
+    }
+
+    #[test]
+    fn a_session_edit_outranks_the_repo_file_and_keeps_the_budget() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.path.join("tags.json"),
+            r#"{"alpha":"1","beta":"2","gamma":"3","delta":"4","epsilon":"5"}"#,
+        )
+        .unwrap();
+        let table: toml::Table = "tags = [\"global:one\"]\ntags_file = \"tags.json\""
+            .parse()
+            .unwrap();
+        let env = Env::new([("HOME", dir.path.to_str().unwrap())]);
+        let facts = SessionFacts {
+            id: "cf11af87da7e4bf0".to_string(),
+            path: dir.path.display().to_string(),
+            ..facts()
+        };
+        crate::session_tags::set_tag(&crate::settings::app_dir(&env), &facts.id, "hand:written")
+            .expect("session edit");
+        let snap = snapshot_with_table(&Flags::default(), &env, None, Some(table), Some(facts));
+
+        // Seven configured tags, five carried: the manual one is first, then the
+        // repo file's pairs, and the global tag is the one that falls off.
+        assert_eq!(snap.settings.tags[0], "hand:written");
+        let payload: Value = serde_json::from_str(&snap.resolved[0].value).unwrap();
+        assert_eq!(payload["hand"], "written", "{payload}");
+        assert!(payload.get("alpha").is_some(), "{payload}");
+        assert!(payload.get("global").is_none(), "{payload}");
+        assert!(
+            snap.warnings
+                .iter()
+                .any(|warning| warning.contains("dropped")),
+            "{:?}",
+            snap.warnings
+        );
+    }
+
+    #[test]
+    fn the_overflow_warning_names_what_the_render_will_drop() {
+        let mut configured = settings(&["a:1", "b:2", "c:3", "d:4", "e:5", "f:6"]);
+        warn_if_tags_overflow(&mut configured);
+        assert_eq!(configured.warnings.len(), 1, "{:?}", configured.warnings);
+        assert!(
+            configured.warnings[0].contains("dropped f:6"),
+            "{:?}",
+            configured.warnings
+        );
+    }
+
+    #[test]
+    fn a_rule_cannot_replace_a_manually_set_key() {
+        let mut configured = settings(&["team:manual"]);
+        configured.rules = vec![Rule::new("team:rule", "manual", "")];
+        assert_eq!(matched_tags(&configured, &facts()), vec!["team:manual"]);
+    }
+
+    #[test]
+    fn rules_fill_the_remaining_budget_behind_the_static_tags() {
+        let mut configured = settings(&["a:1", "b:2", "c:3", "d:4"]);
+        configured.rules = vec![
+            Rule::new("e:5", "manual", "").with_priority(1),
+            Rule::new("f:6", "manual", ""),
+        ];
+        assert_eq!(
+            matched_tags(&configured, &facts()),
+            vec!["a:1", "b:2", "c:3", "d:4", "e:5"]
+        );
     }
 
     fn feature_settings(raw: &str) -> Settings {

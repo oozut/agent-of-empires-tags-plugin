@@ -159,10 +159,14 @@ the project root and cannot leave it. Every top-level pair is one tag with its J
 (`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the same grammar as a
 settings tag; a key that does not is skipped with a warning rather than rewritten.
 
-The repo file is the more specific declaration: its entries come first and replace a `tags`
-entry with the same key, while a per-session edit still wins over both. It shares the five-tag
-budget, is read at launch, and is configuration rather than a fourth delivery channel — a
-missing or malformed file is a warning `doctor` prints, never a failed launch.
+The repo file is one rung below a session's own edit: its entries come first and replace a
+`tags` entry with the same key, while a per-session edit still wins over both. From most to
+least specific, the order is **session edit → `tags_file` → `tags` → rule hit**, and that is
+also the order the five-tag budget is spent in, so a tag typed for one session is never pushed
+out by a repo-wide or global one. A rule adds a key the set does not already have; it never
+rewrites one a session, file or setting already set. The file is read at launch and is
+configuration rather than a fourth delivery channel — a missing or malformed file is a warning
+`doctor` prints, never a failed launch.
 
 ## Who reads it
 
