@@ -210,6 +210,29 @@ fn a_launch_that_names_no_git_fact_starts_no_git_process() {
 }
 
 #[test]
+fn a_session_without_its_own_git_folder_reads_no_git_fact() {
+    let sandbox = Sandbox::new();
+    let git = fake_git(&sandbox);
+    // The session's own path is not a checkout. A repository above it is not this
+    // session's repository, so no `git -C` is run at all — not even to ask whether
+    // the path is one.
+    std::fs::remove_dir_all(sandbox.project().join(".git")).expect("remove .git");
+    sandbox.write_config(&settings_config(
+        r#"tags = ["git.branch:{git.branch}"]"#,
+        "",
+    ));
+    let run = run_with_git(&sandbox, &git, &[]);
+    let payload = payload(&run);
+    assert_eq!(payload["git.branch"], "", "{payload}");
+    assert!(calls(&sandbox).is_empty(), "{:?}", calls(&sandbox));
+    assert!(
+        run.stderr.contains("is not a git checkout"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
 fn git_is_read_from_the_sessions_own_checkout() {
     let sandbox = Sandbox::new();
     let git = fake_git(&sandbox);
@@ -220,11 +243,9 @@ fn git_is_read_from_the_sessions_own_checkout() {
     run_with_git(&sandbox, &git, &[]);
     let calls = calls(&sandbox);
     assert!(!calls.is_empty());
+    let expected = format!("-C {} ", sandbox.project().display());
     for line in &calls {
-        assert!(
-            line.starts_with("-C /var/lib/aoe/android-keyboard-worktrees/lithuanians "),
-            "{line}"
-        );
+        assert!(line.starts_with(&expected), "{line}");
     }
 }
 

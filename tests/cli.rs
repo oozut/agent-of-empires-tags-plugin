@@ -7,10 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, DEFAULT_PAYLOAD, PLUGIN_ID, SESSION_JSON};
-
-/// The default target carries one JSON object, not a flat string.
-const DEFAULT_VALUE: &str = DEFAULT_PAYLOAD;
+use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -22,7 +19,8 @@ fn hook_prints_one_name_value_line() {
     let run = hook(&sandbox);
     run.assert_ok();
     // NAME is the environment variable: aoe parses hook stdout as KEY=VALUE.
-    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={DEFAULT_VALUE}")]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={default_value}")]);
     assert_eq!(run.stderr, "");
 }
 
@@ -45,7 +43,7 @@ fn the_session_row_beats_the_environment() {
     run.assert_ok();
     assert_eq!(
         run.lines(),
-        vec!["P=/var/lib/aoe/android-keyboard-worktrees/lithuanians"]
+        vec![format!("P={}", sandbox.project().display())]
     );
 }
 
@@ -79,7 +77,8 @@ fn malformed_settings_do_not_abort_the_session() {
     run.assert_ok();
     assert!(run.stderr.contains("malformed TOML"), "{}", run.stderr);
     // The built-in default header still renders, so a broken file degrades instead of failing.
-    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={DEFAULT_VALUE}")]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={default_value}")]);
 }
 
 #[test]
@@ -114,7 +113,8 @@ fn value_prints_the_bare_value() {
     let sandbox = Sandbox::new();
     let run = sandbox.run(&["value"]);
     run.assert_ok();
-    assert_eq!(run.lines(), vec![DEFAULT_VALUE]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![default_value]);
 }
 
 #[test]
@@ -131,7 +131,8 @@ fn value_is_case_insensitive_about_the_name() {
     let sandbox = Sandbox::new();
     let run = sandbox.run(&["value", "x-aoe-tags"]);
     run.assert_ok();
-    assert_eq!(run.lines(), vec![DEFAULT_VALUE]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![default_value]);
 }
 
 // --- setup ------------------------------------------------------------------

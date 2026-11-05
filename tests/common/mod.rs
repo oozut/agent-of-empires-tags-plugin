@@ -17,12 +17,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub const PLUGIN_ID: &str = "dev.oozut.llm-tags";
 pub const CLI: &str = env!("CARGO_BIN_EXE_aoe-llm-tags");
 
-pub const SESSION_JSON: &str = r#"{"id":"cf11af87da7e4bf0","title":"Lithuanians","path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","group":"","tool":"pi-proxy","profile":"main"}"#;
+pub const SESSION_ID: &str = "cf11af87da7e4bf0";
+
+/// `aoe session show`'s row for the fixture session. `__PROJECT__` is the
+/// sandbox's own project directory: git facts are only read from a checkout, so a
+/// fixture naming a path this machine happens to have could not test them.
+pub const SESSION_JSON: &str = r#"{"id":"cf11af87da7e4bf0","title":"Lithuanians","path":"__PROJECT__","group":"","tool":"pi-proxy","profile":"main"}"#;
 
 /// The default target sends the whole tag set as one JSON object. Keys are
 /// sorted (serde_json's default map), so this is the exact header value for the
 /// fixture session — a change in the payload shape fails here first.
-pub const DEFAULT_PAYLOAD: &str = r#"{"profile":"main","project":"lithuanians","project_path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","session":"S-cf11","session_id":"cf11af87da7e4bf0","tool":"pi-proxy"}"#;
+pub const DEFAULT_PAYLOAD: &str = r#"{"profile":"main","project":"__PROJECT_NAME__","project_path":"__PROJECT__","session":"S-cf11","session_id":"cf11af87da7e4bf0","tool":"pi-proxy"}"#;
 
 /// The same payload when `aoe` cannot be reached: no project row, so only the
 /// fields the hook environment carries are present.
@@ -54,7 +59,10 @@ impl Sandbox {
             "/usr/local/bin:/usr/bin:/bin".to_string(),
         );
         let mut sandbox = Self { root, env };
-        let aoe = sandbox.fake_aoe(SESSION_JSON);
+        // The fixture session sits in `<root>/project`, a checkout: an empty
+        // `.git` is a checkout too, which is exactly what the git gate asks for.
+        fs::create_dir_all(sandbox.project().join(".git")).expect("project checkout");
+        let aoe = sandbox.fake_aoe(&sandbox.session_json());
         sandbox
             .env
             .insert("AOE_BIN".to_string(), aoe.display().to_string());
@@ -73,6 +81,24 @@ impl Sandbox {
 
     pub fn path(&self, relative: &str) -> PathBuf {
         self.root.join(relative)
+    }
+
+    /// The fixture session's project: a real directory inside the sandbox, made a
+    /// checkout by [`Sandbox::new`].
+    pub fn project(&self) -> PathBuf {
+        self.root.join("project")
+    }
+
+    /// The `aoe session show` row naming [`Sandbox::project`].
+    pub fn session_json(&self) -> String {
+        SESSION_JSON.replace("__PROJECT__", &self.project().display().to_string())
+    }
+
+    /// The `AOE_LLM_TAGS` value the default target produces for this sandbox.
+    pub fn default_payload(&self) -> String {
+        DEFAULT_PAYLOAD
+            .replace("__PROJECT__", &self.project().display().to_string())
+            .replace("__PROJECT_NAME__", "project")
     }
 
     /// `$XDG_CONFIG_HOME/agent-of-empires/config.toml`, or the profile override.
@@ -98,9 +124,10 @@ impl Sandbox {
     /// Replace the fake session this sandbox reports: the session row beats the
     /// environment, so a test that needs another harness says so here.
     pub fn session(&mut self, id: &str, tool: &str) {
-        let json = format!(
-            r#"{{"id":"{id}","title":"Lithuanians","path":"/var/lib/aoe/android-keyboard-worktrees/lithuanians","group":"","tool":"{tool}","profile":"main"}}"#
-        );
+        let json = self
+            .session_json()
+            .replace(SESSION_ID, id)
+            .replace("\"tool\":\"pi-proxy\"", &format!("\"tool\":\"{tool}\""));
         let path = self.fake_aoe(&json);
         self.env
             .insert("AOE_BIN".to_string(), path.display().to_string());

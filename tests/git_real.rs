@@ -118,6 +118,27 @@ fn a_linked_worktree_reads_its_own_branch_root_and_name() {
 }
 
 #[test]
+fn a_directory_inside_a_checkout_is_not_a_checkout_of_its_own() {
+    // The session's path is what is read, not whatever repository happens to sit
+    // above it: a home directory that is itself a dotfiles clone must not turn a
+    // plain project into `main` of somebody else's branch.
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    let nested = repo.join("src");
+    std::fs::create_dir_all(&nested).expect("nested");
+    sandbox.write_config(&settings_config(r#"tags = ["branch:{git.branch}"]"#, ""));
+
+    let run = hook_at(&sandbox, &nested, &[]);
+    let payload = payload(&run);
+    assert_eq!(payload["branch"], "", "{payload}");
+    assert!(
+        run.stderr.contains("is not a git checkout"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
 fn an_unborn_branch_is_a_warning_and_never_a_failed_launch() {
     let sandbox = Sandbox::new();
     let repo = sandbox.path("empty");
