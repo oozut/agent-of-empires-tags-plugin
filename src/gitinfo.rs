@@ -30,7 +30,46 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::env::Env;
-use crate::resolver::{is_executable, run_text, AoeError};
+use crate::resolver::{is_executable, run_text_clean, AoeError};
+
+/// The configuration every call overrides, on the command line where a repository
+/// cannot reach it.
+///
+/// A checkout is not just data: `core.fsmonitor` names a program that `git status`
+/// runs, and `status --porcelain` is what `{git.dirty}` asks for. The session's own
+/// repository is the session's to trust, but a tag must not be the thing that turns
+/// a repository setting into a process, so the two config keys that can run one are
+/// pinned and the pager is pinned to `cat` (a `log` with `core.pager` set would
+/// otherwise be a second way to start one).
+pub const HARDENING: [&str; 6] = [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.pager=cat",
+    "-c",
+    "core.hooksPath=/dev/null",
+];
+
+/// Variables that point git somewhere other than `-C <path>`, or feed it config
+/// this plugin never chose. Removed from the child rather than checked: the launch
+/// environment belongs to the host, and a `GIT_DIR` in it wins over `-C`.
+const REDIRECTED_ENV: [&str; 7] = [
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_NAMESPACE",
+];
+
+/// The keys a child `git` is spawned without: [`REDIRECTED_ENV`] plus the
+/// `GIT_CONFIG_*` family, which is the environment's own spelling of `-c`.
+fn redirected_env(env: &Env) -> Vec<&str> {
+    let mut drop: Vec<&str> = REDIRECTED_ENV.to_vec();
+    drop.extend(env.names().filter(|name| name.starts_with("GIT_CONFIG")));
+    drop
+}
 
 /// Point this at another `git` binary (a test ships a script; a host may pin one).
 pub const GIT_BIN_ENV: &str = "AOE_GIT_BIN";
@@ -260,14 +299,25 @@ impl Git<'_> {
         let result = if remaining.is_zero() {
             Err("the git lookup used the launch budget".to_string())
         } else {
-            let mut argv = vec!["-C".to_string(), self.path.to_string()];
+            // `--no-pager` and the overrides are global options: they go before
+            // `-C`, so a repository's own config cannot put a program in the way of
+            // a read-only fact.
+            let mut argv = vec!["--no-pager".to_string()];
+            argv.extend(HARDENING.iter().map(|arg| arg.to_string()));
+            argv.push("-C".to_string());
+            argv.push(self.path.to_string());
             argv.extend(args.iter().map(|arg| arg.to_string()));
             // Each call gets what is *left* of the budget rather than the whole of
             // it again, so a `git` that hangs costs the launch one budget, not one
             // per fact named.
             let outcome = match self.runner {
                 Some(runner) => runner(verb, &argv),
-                None => run_text(&git_bin(self.env), verb, &argv, remaining),
+                None => {
+                    // The facts belong to the path that was checked, so nothing in
+                    // the launch environment gets to point git at another tree.
+                    let drop = redirected_env(self.env);
+                    run_text_clean(&git_bin(self.env), verb, &argv, &drop, remaining)
+                }
             };
             outcome
                 .map(|text| text.trim().to_string())
@@ -324,9 +374,12 @@ impl Git<'_> {
                 .optional("config", &["config", "--get", "remote.origin.url"])
                 .map(|url| scrub_url(&url)),
             "git.repo" => {
+                // Through `scrub_url` first: a URL with no path at all
+                // (`https://token@host`) would otherwise render the token as the
+                // repository name, which is the one thing a git fact must never do.
                 let remote = self
                     .optional("config", &["config", "--get", "remote.origin.url"])
-                    .map(|url| repo_from_url(&url))
+                    .map(|url| repo_from_url(&scrub_url(&url)))
                     .filter(|name| !name.is_empty());
                 remote.or_else(|| self.repository_directory_name())
             }

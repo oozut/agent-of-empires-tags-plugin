@@ -101,7 +101,9 @@ and the git facts, read from the session's own checkout:
 detached HEAD), `{git.commit}` is the abbreviated SHA and `{git.sha}` the full one; `{branch}` is
 untouched — it stays whatever the session manager reports, so an existing template keeps its
 meaning. `{git.tag}` and `{git.describe}` are empty when no tag names the commit, and
-`{git.remote}` drops any credentials in the URL. `{git.dirty}` always answers — `false` for a
+`{git.remote}` drops any credentials in the URL. `{git.repo}` goes through the same scrub before
+it takes the last path segment, so a remote with no path at all (`https://token@host`) names its
+host instead of its token. `{git.dirty}` always answers — `false` for a
 clean tree, not an empty string — because "clean" is a fact and an empty value would read as
 "unknown". `{git.repo}` names the repository the checkout belongs to, so a linked worktree
 reports `android-keyboard` rather than the worktree's own directory name.
@@ -121,6 +123,14 @@ fact. The budget is a real one: the pipes are read on detached threads, so a gra
 inherits stdout cannot hold the launch past it, and each lookup's output is capped at 4 MiB.
 `AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be read
 is empty and a warning, never a failed launch.
+
+**A checkout is data, not code.** Every call carries `--no-pager` and pins the configuration keys
+that can start a program — `core.fsmonitor` (which `git status` runs, and `{git.dirty}` asks for
+exactly that) and `core.pager` — on the command line, where the repository cannot reach them. The
+launch environment is scrubbed the other way round: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE` and
+the `GIT_CONFIG_*` family are removed from the child, because they would point `git -C <session>`
+at another tree or feed it config this plugin never chose.
 
 ### References as tag values
 

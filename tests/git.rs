@@ -24,6 +24,8 @@ const SUBJECT: &str = "Repair the instrumentation test harness";
 /// this commit", the way an untagged HEAD behaves.
 const GIT: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GIT_CALLS"
+# Skip the global options and the `-C <path>` that come before the verb.
+while [ "$1" != "-C" ]; do shift; done
 shift 2
 case "$*" in
   "rev-parse --is-inside-work-tree") echo true ;;
@@ -176,6 +178,31 @@ fn the_remote_loses_its_credentials_before_it_reaches_a_header() {
 }
 
 #[test]
+fn a_remote_with_no_path_keeps_its_credentials_out_of_the_repository_name() {
+    let sandbox = Sandbox::new();
+    let git = fake_git(&sandbox);
+    // No path after the host: `{git.repo}` reads the last segment of the URL, and
+    // on `https://token@host` that segment is the token.
+    sandbox.write_config(&settings_config(
+        r#"tags = ["repo:{git.repo}", "remote:{git.remote}"]"#,
+        "",
+    ));
+    let run = run_with_git(
+        &sandbox,
+        &git,
+        &[("GIT_REMOTE", "https://oauth2:sekrit-token@github.com")],
+    );
+    let payload = payload(&run);
+    assert_eq!(payload["repo"], "github.com", "{payload}");
+    assert_eq!(payload["remote"], "https://github.com", "{payload}");
+    assert!(
+        !run.stdout.contains("sekrit-token"),
+        "the credential reached the header: {}",
+        run.stdout
+    );
+}
+
+#[test]
 fn one_fact_is_read_once_even_when_a_template_and_a_tag_both_name_it() {
     let sandbox = Sandbox::new();
     let git = fake_git(&sandbox);
@@ -243,10 +270,57 @@ fn git_is_read_from_the_sessions_own_checkout() {
     run_with_git(&sandbox, &git, &[]);
     let calls = calls(&sandbox);
     assert!(!calls.is_empty());
-    let expected = format!("-C {} ", sandbox.project().display());
+    let expected = format!(
+        "--no-pager -c core.fsmonitor=false -c core.pager=cat -c core.hooksPath=/dev/null \
+         -C {} ",
+        sandbox.project().display()
+    );
     for line in &calls {
         assert!(line.starts_with(&expected), "{line}");
     }
+}
+
+#[test]
+fn the_launch_environment_cannot_point_git_at_another_repository() {
+    let sandbox = Sandbox::new();
+    let git = sandbox.path("bin/fake-git-env");
+    // Reports what it inherited, then answers from the path it was given.
+    sandbox.write_executable(
+        &git,
+        r#"#!/bin/sh
+printf 'GIT_DIR=%s GIT_CONFIG_COUNT=%s\n' "${GIT_DIR-}" "${GIT_CONFIG_COUNT-}" >> "$GIT_CALLS"
+while [ "$1" != "-C" ]; do shift; done
+shift 2
+case "$*" in
+  "rev-parse --is-inside-work-tree") echo true ;;
+  "rev-parse --abbrev-ref HEAD") echo release/2026-10 ;;
+  *) exit 1 ;;
+esac
+"#,
+    );
+    sandbox.write_config(&settings_config(r#"tags = ["branch:{git.branch}"]"#, ""));
+
+    // A `GIT_DIR` and a `GIT_CONFIG_*` pair in the launch environment: both name
+    // another repository and a program for git to run, and neither is the facts'
+    // to inherit.
+    let run = run_with_git(
+        &sandbox,
+        &git,
+        &[
+            ("GIT_DIR", "/srv/elsewhere/.git"),
+            ("GIT_CONFIG_COUNT", "1"),
+            ("GIT_CONFIG_KEY_0", "core.fsmonitor"),
+            ("GIT_CONFIG_VALUE_0", "/srv/elsewhere/hook"),
+        ],
+    );
+    let payload = payload(&run);
+    assert_eq!(payload["branch"], "release/2026-10", "{payload}");
+
+    let log = std::fs::read_to_string(sandbox.path("git-calls")).expect("log");
+    assert!(
+        log.contains("GIT_DIR= GIT_CONFIG_COUNT=\n"),
+        "the redirects reached git: {log}"
+    );
 }
 
 #[test]
@@ -256,6 +330,7 @@ fn not_a_work_tree_is_a_warning_and_not_a_failure() {
     sandbox.write_executable(
         &git,
         r#"#!/bin/sh
+while [ "$1" != "-C" ]; do shift; done
 shift 2
 case "$*" in
   "rev-parse --is-inside-work-tree") echo false ;;

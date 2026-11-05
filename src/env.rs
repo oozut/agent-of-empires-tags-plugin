@@ -50,6 +50,13 @@ impl Env {
     pub fn home(&self) -> Option<&str> {
         self.non_empty("HOME")
     }
+
+    /// Every name in this environment, for a subprocess that must not inherit all
+    /// of it (a `GIT_DIR` in the launch environment would point `git -C <session>`
+    /// at another repository).
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        self.map.keys().map(String::as_str)
+    }
 }
 
 fn lossy(value: OsString) -> String {
