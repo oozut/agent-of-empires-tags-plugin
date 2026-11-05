@@ -35,6 +35,11 @@ type = "string_list"
 help = """
 Tags every session carries, before any rule matches. Rules add to this set.
 
+A `tags_file` entry and a per-session edit replace a same-key entry here; the
+priority order is a per-session edit, then the repo file, then this list, then
+a rule hit. This list shares the five-tag inherited budget; a session edit is
+added on top and is never capped.
+
 A tag is a key and a value, and it is delivered as a JSON object, so a consumer reads
 `tags["team"]` instead of splitting a string:
 
@@ -53,6 +58,36 @@ above and the git facts (`git.branch`, `git.commit`, `git.sha`, `git.tag`,
 `git.describe`, `git.subject`, `git.author`, `git.dirty`, `git.remote`, `git.repo`,
 `git.root`); they are read from the session's checkout only when a tag or a template
 names one. `aoe-llm-tags references` lists every reference with this session's value.
+"""
+
+[[settings]]
+key = "tags_file"
+label = "JSON tags file inside the project"
+type = "string"
+default = ""
+help = """
+A JSON file inside each session's project whose top-level key/value pairs become tags, so a
+repository can declare its own tags and every checkout gets them without a config edit.
+
+The path is relative to the project root (`/w/core`), not the aoe config directory, and it
+cannot leave the project (`..` and absolute paths are refused with a warning). The file is a
+single JSON object; each pair is a tag, with its JSON type kept:
+
+```json
+{"team": "core", "cost": 1.5, "ported": true, "matrix": [1, 2]}
+```
+
+becomes `team:core`, `cost:=1.5`, `ported:=true` and `matrix:=[1,2]`. Keys follow the tag
+grammar (start with a letter or digit, no `:` or `=`, at most 96 characters); a key that does
+not is skipped with a warning. Values can be any JSON value, including a string that starts
+with `=`.
+
+The repo file is the more specific declaration: its entries come first and replace a `tags`
+entry with the same key, while a per-session edit still wins over both. The file's pairs share
+the five-tag *inherited* budget of a header, spent in the order this file, then `tags`, then a
+rule hit; a per-session edit is added on top and is never capped. The file is read at launch,
+so an edit applies to the next session, and a missing or malformed file is a warning in
+`doctor` rather than a failed launch.
 """
 
 [[settings]]

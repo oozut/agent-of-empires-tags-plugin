@@ -624,6 +624,56 @@ fn the_m0_headers_key_is_still_read_as_header_targets() {
 }
 
 #[test]
+fn a_tags_file_in_the_project_adds_every_pair() {
+    // A repo declares its own tags in one JSON object; every top-level key/value
+    // pair becomes a tag with its JSON type intact, and the repo's value wins over
+    // a settings tag with the same key. The file stays inside the project.
+    let sandbox = Sandbox::new();
+    let repo = sandbox.path("repo");
+    sandbox.write_file(
+        &repo.join("aoe-tags.json"),
+        r#"{"team":"core","cost":1.5,"ported":true,"matrix":[1,2]}"#,
+    );
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:global\", \"feature:billing\"]\ntags_file = \"aoe-tags.json\"",
+        "",
+    ));
+    let run = sandbox.run_with(
+        &["hook"],
+        &[
+            ("AOE_BIN", "/nonexistent/aoe"),
+            ("AOE_PROJECT_PATH", repo.to_str().unwrap()),
+        ],
+    );
+    run.assert_ok();
+    assert_eq!(run.lines().len(), 1, "{}", run.stderr);
+    let payload: serde_json::Value =
+        serde_json::from_str(run.lines()[0].split_once('=').unwrap().1).unwrap();
+    assert_eq!(payload["team"], "core");
+    assert_eq!(payload["cost"], 1.5);
+    assert_eq!(payload["ported"], true);
+    assert_eq!(payload["matrix"], serde_json::json!([1, 2]));
+    assert_eq!(payload["feature"], "billing");
+}
+
+#[test]
+fn a_missing_tags_file_is_a_warning_and_the_session_still_starts() {
+    let sandbox = Sandbox::new();
+    let repo = sandbox.path("repo");
+    sandbox.write_config(&settings_config("tags_file = \"nope.json\"", ""));
+    let run = sandbox.run_with(
+        &["hook"],
+        &[
+            ("AOE_BIN", "/nonexistent/aoe"),
+            ("AOE_PROJECT_PATH", repo.to_str().unwrap()),
+        ],
+    );
+    run.assert_ok();
+    assert!(run.stderr.contains("does not exist"), "{}", run.stderr);
+    assert_eq!(run.lines().len(), 1);
+}
+
+#[test]
 fn a_feature_tag_is_a_key_value_entry_at_every_level() {
     // `feature_tag` is one tag, not a second taxonomy: the global config, a
     // profile override and a project form all hold the same `key:value` grammar,

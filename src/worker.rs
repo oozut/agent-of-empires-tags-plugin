@@ -274,6 +274,7 @@ impl Host {
                 .and_then(|v| v.get("value").cloned())
         };
         let tags_val = setting(self, "tags");
+        let tags_file_val = setting(self, "tags_file");
         let targets_val = setting(self, "targets");
         let rules_val = setting(self, "rules");
         let session_tagging_val = setting(self, "session_tagging");
@@ -283,6 +284,7 @@ impl Host {
         let mut table = toml::Table::new();
         for (key, value) in [
             ("tags", tags_val),
+            ("tags_file", tags_file_val),
             ("targets", targets_val),
             ("rules", rules_val),
             ("session_tagging", session_tagging_val),

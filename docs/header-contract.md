@@ -152,6 +152,23 @@ Rules that keep the contract honest:
   payload, and it stays typed all the way to the consumer; a `csv` target flattens it back to
   text, because a comma list has no types.
 
+### A repository's own tags
+
+`tags_file` names a JSON object that lives inside the session's project: the path is relative to
+the project root and cannot leave it. Every top-level pair is one tag with its JSON type intact
+(`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the same grammar as a
+settings tag; a key that does not is skipped with a warning rather than rewritten.
+
+The repo file is one rung below a session's own edit: its entries come first and replace a
+`tags` entry with the same key, while a per-session edit still wins over both. From most to
+least specific, the order is **session edit → `tags_file` → `tags` → rule hit**. The inherited
+tags spend the five-tag budget in that order; a session's own edits are exempt and added on top,
+so a tag typed for one session always travels, even when the inherited set already fills the
+header. A rule adds a key the set does not already have; it never rewrites one a session, file
+or setting already set. The file is read at launch and is configuration rather than a fourth
+delivery channel — a missing or malformed file is a warning `doctor` prints, never a failed
+launch.
+
 ## Who reads it
 
 The same header serves four families of consumer, and the design has to be usable by all of them
