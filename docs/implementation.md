@@ -467,7 +467,10 @@ its own copy (`docs/harness-adapters.md` §Per-session config):
 
 Edit rules for the session copy, all mandatory: build it in this plugin's app dir, write via a
 temp file in the same directory plus rename, re-read and re-parse after writing, export no
-override when nothing could be placed, and prune directories whose session is gone. Undo is
+override when nothing could be placed, and prune directories whose session is gone. The plan is
+built in memory before the disk is touched: with nothing placed, no directory is created and an
+unused copy from an earlier launch is removed. Only the harness config file is copied —
+everything else in a session dir is a symlink to the user's own entry. Undo is
 `rm -rf` of the copy — there is no backup to restore because the original is never modified.
 
 ## Step 9 — M3 page (roadmap-gated)

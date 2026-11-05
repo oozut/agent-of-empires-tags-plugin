@@ -47,11 +47,13 @@ while a list or an object keeps its shape.
 
 `setup --apply` no longer edits any user config: a value rides the launch environment, or the
 hook builds this session's own copy of the harness's config under the plugin's app dir and exports
-the variable that points the harness at it. Verified end to end on this host for `pi` (header
+the variable that points the harness at it. That copy is one file — the harness's config, because
+that is where the tag lives — and every other entry of the user's config dir is linked, not
+duplicated; a launch with nothing to deliver creates nothing at all. Verified end to end on this host for `pi` (header
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 200 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 222 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -75,7 +77,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 200 tests, no network (needs `git` for tests/git_real.rs)
+cargo test --locked                  # 222 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

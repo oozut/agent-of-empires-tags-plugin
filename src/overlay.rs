@@ -189,18 +189,15 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
     let generated = dir.join(&file_name);
     let source_dir = source.parent().map(Path::to_path_buf);
 
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
-    if adapter.write_mode == MODE_OVERLAY_DIR {
-        if let Some(source_dir) = &source_dir {
-            link_siblings(source_dir, &dir, &file_name)?;
-        }
-    }
+    // Build the copy in memory first, and touch the disk only once there is
+    // something to put on it: a launch that delivers nothing must not leave a
+    // session directory — and its links into the user's config, credentials
+    // included — behind for a harness that is never pointed at it.
 
     // No user file yet: this harness is not configured, so there is nothing to
     // copy and nothing honest to say — stay silent instead of warning at launch.
     if !source.exists() {
-        let _ = std::fs::remove_file(&generated);
+        discard(&dir);
         return Ok(Overlay {
             dir,
             file: None,
@@ -229,7 +226,7 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
     // one: an empty plan writes no file and exports no override.
     let placed = targets.len().saturating_sub(skipped.len());
     if placed == 0 {
-        let _ = std::fs::remove_file(&generated);
+        discard(&dir);
         return Ok(Overlay {
             dir,
             file: None,
@@ -238,7 +235,17 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
         });
     }
 
+    // The one thing that is copied is the harness's own config file, because
+    // that is where the tag has to live. Everything else in the session dir is
+    // a link to the user's entry, so no other content is duplicated.
     let text = doc.render()?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
+    if adapter.write_mode == MODE_OVERLAY_DIR {
+        if let Some(source_dir) = &source_dir {
+            link_siblings(source_dir, &dir, &file_name)?;
+        }
+    }
     write_atomic(&generated, &text)
         .map_err(|err| format!("{} could not be written: {err}", generated.display()))?;
 
@@ -283,6 +290,9 @@ fn native_env(adapter: &Adapter, targets: &[Resolved]) -> Vec<(String, String)> 
 /// Link every entry of the user's config dir into the session dir, except the
 /// file this plugin generates. Writes through a link land in the user's file
 /// (`writeFileSync` truncates the target), so auth refresh keeps working.
+///
+/// A link, not a copy: the user's entry stays the only copy of its content, so
+/// credentials, session stores and caches are never duplicated into the app dir.
 fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result<(), String> {
     let entries = match std::fs::read_dir(source_dir) {
         Ok(entries) => entries,
@@ -312,6 +322,13 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
     let tmp = path.with_extension("aoe-llm-tags.tmp");
     std::fs::write(&tmp, text)?;
     std::fs::rename(&tmp, path)
+}
+
+/// Remove a session copy this launch will not use: it would carry nothing, or
+/// the file it is built from is gone. A copy that is not used is not left on
+/// disk either.
+fn discard(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Remove session dirs that belong to no live session. Returns how many went.

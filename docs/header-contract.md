@@ -206,7 +206,10 @@ Three paths, all fed by the same resolved payload:
 2. **A per-session file** (`overlay_file` / `overlay_dir`). For a harness whose config can only
    hold a literal, the plugin builds a generated config inside the session's own directory and
    points the harness at it with an environment variable. The user's config is never touched, and
-   the copy is deleted when the session is gone. A copy that would carry nothing is not used.
+   the copy is deleted when the session is gone. The copy is one file — the harness config, which
+   is what carries the tag — and the rest of the user's config dir is linked, never duplicated.
+   A copy that would carry nothing is not built at all, so no session directory is left behind
+   for a harness that was never pointed at it.
 3. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
    directly (`!aoe-llm-tags value X-AoE-Session`). Same values, one process later, and subject to
    the harness's own caching.

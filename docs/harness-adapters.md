@@ -159,9 +159,16 @@ Properties that follow, and that the tests pin down:
   backup to restore because the original was never touched.
 - **A copy cannot outlive its session.** The worker prunes `sessions/` against the host's live
   session list, and `doctor` reports what is there.
-- **A copy that carries nothing is not used.** If the writer has nowhere to put any target
-  (no provider with models, no provider table), the hook exports no override, so the harness
-  keeps reading its real config instead of an empty one.
+- **A copy that carries nothing is not used, and not built.** If the writer has nowhere to put
+  any target (no provider with models, no provider table), the hook exports no override, so the
+  harness keeps reading its real config instead of an empty one — and the session directory is
+  never created, so a launch that delivers nothing leaves nothing behind (an unused copy from an
+  earlier launch is removed). `sessions/` therefore holds only copies a harness is actually
+  pointed at.
+- **Only the config file is copied.** The generated config is the one thing whose content is
+  duplicated, because that is where the tag has to live. Every other entry of the user's config
+  dir — `auth.json`, the session store, caches, backups — is linked, not copied, so a session's
+  directory never becomes a second copy of the user's credentials.
 - **The shape is preserved before it is modified.** The copy starts as a parse of the user's
   file; the TOML writer edits the document so the user's comments survive.
 
