@@ -97,7 +97,6 @@ and the git facts, read from the session's own checkout:
 
 `{git.branch}` `{git.commit}` `{git.sha}` `{git.tag}` `{git.describe}` `{git.subject}`
 `{git.author}` `{git.dirty}` `{git.remote}` `{git.repo}` `{git.root}`
-
 `{git.branch}` comes from git itself (`rev-parse --abbrev-ref HEAD`, or the short SHA on a
 detached HEAD), `{git.commit}` is the abbreviated SHA and `{git.sha}` the full one; `{branch}` is
 untouched — it stays whatever the session manager reports, so an existing template keeps its
@@ -106,6 +105,14 @@ meaning. `{git.tag}` and `{git.describe}` are empty when no tag names the commit
 clean tree, not an empty string — because "clean" is a fact and an empty value would read as
 "unknown". `{git.repo}` names the repository the checkout belongs to, so a linked worktree
 reports `android-keyboard` rather than the worktree's own directory name.
+
+**Only the session's own checkout.** `<project>/.git` has to be there before anything runs — a
+directory in a clone, a file in a linked worktree or a submodule. What is inside it never matters:
+an empty `.git` and a repository with no commits are checkouts too, and their facts are simply
+empty. A directory that is merely *near* a repository gets no git facts at all: the resolver reads
+the path the session names, not whatever repository sits above it, so a home directory that is
+itself a dotfiles clone cannot make a plain project report `main`. A subdirectory of a checkout is
+refused for the same reason — the session's path is the checkout.
 
 **Nothing runs unless a reference is named**: a launch whose templates and tags mention no git fact
 starts no `git` process at all, and a launch that names several pays one timeout budget for all of
@@ -232,6 +239,12 @@ Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`:
 | Session pane (`llm_tags_pane`) | Lists each tag with its origin, and the values this session would send. Clicking a tag drops it for this session; the action button opens the editor page. |
 | **LLM Tags** page (`ui/tags.html`) | Pick a session, then add/replace a tag, drop one, write or clear a literal token, or reset every edit. Shows the resulting wire values. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard. |
+
+The token is written but never read back into the UI. A surface is told that one is set, and the
+target row, the pane and the session badge say *that* it stands in for the value rather than what
+it says: `ui.state.set` payloads are kept by the host and rendered to anyone who can see the
+session, so a secret there would be a secret in a dashboard. `aoe-llm-tags tag --show` prints it in
+the user's own terminal, and the session file that holds it is `0600` in a `0700` directory.
 
 The file holds the same tag grammar the settings use, in three keys:
 
