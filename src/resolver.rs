@@ -11,8 +11,9 @@
 //! of `group`/`title` for structured host sessions.
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -29,8 +30,13 @@ pub const TAG_CAP: usize = 5;
 /// settings, not the delivered value (`VALUE_MAX_BYTES` still clamps that).
 pub const TAG_MAX_CHARS: usize = 96;
 /// A `tags_file` is a small declaration, not a data dump; the cap keeps a hook
-/// from reading a repository file it has no business reading.
+/// from reading a repository file it has no business reading, and it is applied
+/// to the *read* (`take`), not to whatever `metadata` claims the size is.
 pub const TAGS_FILE_MAX_BYTES: u64 = 64 * 1024;
+/// A string from a `tags_file` is one field of one header, not a document:
+/// longer than this it is trimmed. A list or an object is left whole — it is a
+/// structure rather than text, and the file cap already bounds it.
+pub const TAGS_FILE_STRING_MAX_CHARS: usize = 256;
 pub const VALUE_MAX_BYTES: usize = 800;
 pub const SHORT_ID_PREFIX: &str = "S-";
 pub const SHORT_ID_CHARS: usize = 4;
@@ -412,12 +418,27 @@ impl Tag {
         })
     }
 
-    /// The tag as written in settings, for the `csv` format and `{tags}`.
+    /// The tag as one `csv` field, for the `csv` format and `{tags}`.
+    ///
+    /// A value is free text (`{"team":"core,platform"}` is a perfectly good entry
+    /// from a repo's `tags_file`), so a field that would otherwise split the list
+    /// is quoted and its own quotes doubled: `"team:core,platform"`. A consumer
+    /// that splits on the comma alone still sees two fields — a format with an
+    /// escape cannot save a parser that ignores it, and `json` is the format for
+    /// those — but a CSV parser now reads the list the way it was written.
     pub fn csv(&self) -> String {
-        match &self.value {
+        let field = match &self.value {
             Value::Bool(true) => self.key.clone(),
             Value::String(text) => format!("{}:{text}", self.key),
             other => format!("{}:{other}", self.key),
+        };
+        if field
+            .chars()
+            .any(|ch| matches!(ch, ',' | '"' | '\n' | '\r'))
+        {
+            format!("\"{}\"", field.replace('"', "\"\""))
+        } else {
+            field
         }
     }
 
@@ -493,14 +514,9 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
     }
 
     let path = Path::new(project_path).join(relative);
-    match std::fs::metadata(&path) {
-        Ok(meta) if meta.len() > TAGS_FILE_MAX_BYTES => {
-            warnings.push(format!(
-                "settings: tags_file {} is larger than {TAGS_FILE_MAX_BYTES} bytes; no tags loaded",
-                path.display()
-            ));
-            return (Vec::new(), warnings);
-        }
+
+    // Existence first: a file that is not there costs no open and no read.
+    match std::fs::symlink_metadata(&path) {
         Ok(_) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             warnings.push(format!(
@@ -519,8 +535,86 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
         }
     }
 
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
+    // The repository owns this path, so it is untrusted: the file it resolves to
+    // has to stay inside the project. Refusing `..` is not enough — a symlink is
+    // how a relative path leaves the tree without ever containing one — so the
+    // *canonical* target is what gets checked.
+    let root = match std::fs::canonicalize(project_path) {
+        Ok(root) => root,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: the project {} cannot be resolved ({err}); \
+                 no tags loaded",
+                configured,
+                Path::new(project_path).display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    let resolved = match std::fs::canonicalize(&path) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: cannot be resolved ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    if !resolved.starts_with(&root) {
+        warnings.push(format!(
+            "settings: tags_file {} resolves to {}, which is not inside the project {}; \
+             no tags loaded",
+            configured,
+            resolved.display(),
+            root.display()
+        ));
+        return (Vec::new(), warnings);
+    }
+
+    // A regular file or nothing: a FIFO has no size to trust and never reaches
+    // EOF, a device never runs out of bytes, and a directory is not a document.
+    // The check is on the resolved path, so no open happens for a file this
+    // launch has no business reading.
+    let is_file = match std::fs::metadata(&resolved) {
+        Ok(meta) => meta.is_file(),
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: cannot be read ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    if !is_file {
+        warnings.push(format!(
+            "settings: tags_file {} is not a regular file; no tags loaded",
+            path.display()
+        ));
+        return (Vec::new(), warnings);
+    }
+
+    // Read through the cap instead of trusting `metadata().len()`: a growing file
+    // reports the length it had a moment ago, and this is the read that must be
+    // bounded. `take` stops one byte past the cap, which is what "too large" is.
+    let raw = match read_capped(&resolved, TAGS_FILE_MAX_BYTES) {
+        Ok(bytes) if bytes.len() as u64 > TAGS_FILE_MAX_BYTES => {
+            warnings.push(format!(
+                "settings: tags_file {} is larger than {TAGS_FILE_MAX_BYTES} bytes; no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                warnings.push(format!(
+                    "settings: tags_file {} is not valid UTF-8; no tags loaded",
+                    path.display()
+                ));
+                return (Vec::new(), warnings);
+            }
+        },
         Err(err) => {
             warnings.push(format!(
                 "settings: tags_file {}: cannot be read ({err}); no tags loaded",
@@ -560,10 +654,71 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
         }
         tags.push(Tag {
             key: key.clone(),
-            value: value.clone(),
+            value: sanitize_file_value(value.clone(), &path, key, &mut warnings),
         });
     }
     (tags, warnings)
+}
+
+/// Read at most one byte past `limit`, so the caller can tell "exactly at the
+/// cap" from "over it" without reading the rest. The file is already known to be
+/// a regular file inside the project; the cap is still applied here because this
+/// is the call that would block or grow.
+fn read_capped(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Clean one value from the repository's file before it can reach a header.
+///
+/// The file is repository content, so it is sanitised here and not only by the
+/// resolver's clamp later: every string is passed through the same sanitiser the
+/// resolver uses — control characters dropped and surrounding whitespace trimmed
+/// — at every depth (a newline in a value is what splits a `csv` list or a
+/// `KEY=VALUE` line), and a top-level *string* is additionally trimmed to
+/// [`TAGS_FILE_STRING_MAX_CHARS`]. A list or an object keeps its type and its
+/// length — it is a structure, not text, and the file cap already bounds it.
+fn sanitize_file_value(value: Value, path: &Path, key: &str, warnings: &mut Vec<String>) -> Value {
+    let mut value = sanitize_json_strings(value);
+    if let Value::String(text) = &value {
+        let trimmed = truncate_chars(text, TAGS_FILE_STRING_MAX_CHARS);
+        if trimmed != *text {
+            warnings.push(format!(
+                "settings: tags_file {} key {key:?} is longer than \
+                 {TAGS_FILE_STRING_MAX_CHARS} characters; trimmed",
+                path.display()
+            ));
+            value = Value::String(trimmed);
+        }
+    }
+    value
+}
+
+/// The same sanitiser the resolver applies to a rendered value, at every depth:
+/// a nested string reaches the header inside the payload JSON just as a top-level
+/// one does.
+fn sanitize_json_strings(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(sanitize_value(&text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_json_strings).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (sanitize_value(&key), sanitize_json_strings(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// The first `limit` characters — a character count, like [`TAG_MAX_CHARS`], so a
+/// multi-byte value is never cut mid-character.
+fn truncate_chars(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((end, _)) => text[..end].to_string(),
+        None => text.to_string(),
+    }
 }
 
 /// Fields [`payload`] derives from the session. A tag or a `feature_tag` naming
@@ -1111,6 +1266,43 @@ pub fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// How much of a child's output is kept. A lookup that answers with more than
+/// this is not answering the question that was asked, and pulling it into memory
+/// without a bound is how one wedged subprocess takes the launch down with it.
+pub const OUTPUT_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// What the drains get to hand over once the child is gone.
+///
+/// A child that exits closes its own pipes, so a successful lookup spends none of
+/// this. It is only ever paid when a *grandchild* still holds the write end open —
+/// the case that used to hold the launch past its budget, because the reader
+/// thread could not finish and the caller joined it.
+const DRAIN_GRACE: Duration = Duration::from_millis(250);
+
+/// Read one pipe to the end, keeping at most [`OUTPUT_MAX_BYTES`] of it.
+///
+/// Past the cap the bytes are read and dropped rather than left in the pipe: a
+/// child blocked on a full pipe never exits, and the wait loop would then spend
+/// the whole budget on a child that is only waiting for us.
+fn drain(mut stream: impl Read, done: mpsc::Sender<Vec<u8>>) {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => {
+                if buf.len() < OUTPUT_MAX_BYTES {
+                    let room = OUTPUT_MAX_BYTES - buf.len();
+                    buf.extend_from_slice(&chunk[..read.min(room)]);
+                }
+            }
+            Err(err) if err.kind() == ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
+    let _ = done.send(buf);
+}
+
 /// Run one read-only subprocess and return its stdout as text. Never blocks long.
 ///
 /// Shared by the `aoe` query and the `git` facts: both are read-only lookups the
@@ -1123,12 +1315,30 @@ pub fn run_text(
     args: &[String],
     timeout: Duration,
 ) -> Result<String, AoeError> {
+    run_text_clean(bin, verb, args, &[], timeout)
+}
+
+/// [`run_text`], removing `drop` from the child's environment.
+///
+/// The launch environment is the host's, not the command's: a `GIT_DIR` inherited
+/// from it would send `git -C <session>` to a repository the session does not own,
+/// whatever the git facts checked before spawning.
+pub fn run_text_clean(
+    bin: &str,
+    verb: &str,
+    args: &[String],
+    drop: &[&str],
+    timeout: Duration,
+) -> Result<String, AoeError> {
     let mut command = std::process::Command::new(bin);
     command
         .args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    for name in drop {
+        command.env_remove(name);
+    }
     let mut child = command.spawn().map_err(|source| AoeError::Spawn {
         bin: bin.to_string(),
         source,
@@ -1137,56 +1347,54 @@ pub fn run_text(
     // Both pipes are drained on their own threads: `aoe list --json` can exceed
     // the pipe buffer, and a child blocked on a full pipe never exits, so reading
     // only after `try_wait` would turn a slow query into a guaranteed timeout.
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
+    //
+    // The threads are detached and report through a channel, not joined: joining
+    // a reader whose pipe a grandchild still holds is exactly the wait the budget
+    // exists to avoid, and it made the timeout advisory rather than real.
+    let (out_tx, out_rx) = mpsc::channel();
+    let (err_tx, err_rx) = mpsc::channel();
+    if let Some(stream) = child.stdout.take() {
+        std::thread::spawn(move || drain(stream, out_tx));
+    }
+    if let Some(stream) = child.stderr.take() {
+        std::thread::spawn(move || drain(stream, err_tx));
+    }
+
     let deadline = Instant::now() + timeout;
-    let (status, timed_out, out_buf, err_buf) = std::thread::scope(|scope| {
-        let drain = |mut stream: std::process::ChildStdout| {
-            scope.spawn(move || {
-                let mut buf = Vec::new();
-                let _ = stream.read_to_end(&mut buf);
-                buf
-            })
-        };
-        let out_handle = stdout.map(drain);
-        let err_handle = stderr.map(|mut stream: std::process::ChildStderr| {
-            scope.spawn(move || {
-                let mut buf = Vec::new();
-                let _ = stream.read_to_end(&mut buf);
-                buf
-            })
-        });
-        let mut timed_out = false;
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break Some(status),
-                Ok(None) => {}
-                Err(err) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return (Err(err), false, Vec::new(), Vec::new());
-                }
-            }
-            if Instant::now() >= deadline {
+    let mut timed_out = false;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {}
+            Err(err) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                timed_out = true;
-                break None;
+                return Err(AoeError::Spawn {
+                    bin: bin.to_string(),
+                    source: err,
+                });
             }
-            std::thread::sleep(Duration::from_millis(5));
-        };
-        let out_buf = out_handle
-            .map(|handle| handle.join().unwrap_or_default())
-            .unwrap_or_default();
-        let err_buf = err_handle
-            .map(|handle| handle.join().unwrap_or_default())
-            .unwrap_or_default();
-        (Ok(status), timed_out, out_buf, err_buf)
-    });
-    let status = status.map_err(|source| AoeError::Spawn {
-        bin: bin.to_string(),
-        source,
-    })?;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            timed_out = true;
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    // The decision is made at the deadline; the drains only get a grace period to
+    // hand over what they have already read. A reader still blocked when it runs
+    // out is left behind — it exits by itself if the pipe ever closes, and its
+    // buffer is bounded either way.
+    let drain_deadline = Instant::now() + DRAIN_GRACE;
+    let out_buf = out_rx
+        .recv_timeout(drain_deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
+    let err_buf = err_rx
+        .recv_timeout(drain_deadline.saturating_duration_since(Instant::now()))
+        .unwrap_or_default();
 
     if timed_out || status.is_none() {
         return Err(AoeError::TimedOut {
@@ -1463,7 +1671,12 @@ pub fn valid_header_name(name: &str) -> bool {
         && name.len() <= 64
 }
 
-fn valid_env_name(name: &str) -> bool {
+/// An environment variable name: a letter or `_`, then letters, digits or `_`.
+///
+/// The hook prints `NAME=value` lines and the mapping line for a `custom_headers_env`
+/// harness is a shell command that reads `$NAME`, so a name is not free text: a
+/// `;` or a newline in it would turn one exported variable into a command.
+pub fn valid_env_name(name: &str) -> bool {
     let mut chars = name.chars();
     let Some(first) = chars.next() else {
         return false;
@@ -1793,8 +2006,12 @@ pub fn snapshot_with_table(
     // `apply` puts them in front of everything inherited: a tag typed for this
     // session is the most specific thing there is.
     if !facts.id.is_empty() {
-        let app_dir = settings::app_dir(env);
-        crate::session_tags::apply(&mut configured, &app_dir, &facts.id);
+        match settings::app_dir(env) {
+            Ok(app_dir) => crate::session_tags::apply(&mut configured, &app_dir, &facts.id),
+            Err(message) => configured
+                .warnings
+                .push(format!("overrides: {message}; no session edits are read")),
+        }
     }
     warn_if_tags_overflow(&mut configured);
 
@@ -2048,6 +2265,17 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
                 continue;
             }
         };
+        // A name is carried into `NAME=value` lines and into the shell command a
+        // guarded harness runs, so it is checked where it is accepted rather than
+        // only where it is used.
+        if !valid_env_name(&env_var) {
+            warnings.push(format!(
+                "settings: {label}[{index}] ({name}) env_var {env_var:?} is not a valid \
+                 environment variable name (a letter or `_`, then letters, digits or `_`); \
+                 skipping it"
+            ));
+            continue;
+        }
         let param = match row.get("param") {
             None => String::new(),
             Some(toml::Value::String(text)) => text.clone(),
@@ -2066,9 +2294,28 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
             ));
             continue;
         }
+        // A literal used to be written out as it was typed, so a newline in one
+        // added an extra `NAME=value` line to the hook's output — a variable the
+        // user never set — and a `\r` broke the header list an `env_only` harness
+        // reads. It goes through the same cleaning and the same cap as every other
+        // value now, at the point where it is accepted.
         let literal = match row.get("literal") {
             None => String::new(),
-            Some(toml::Value::String(text)) => text.clone(),
+            Some(toml::Value::String(text)) => {
+                let cleaned = sanitize_value(text);
+                let (cleaned, truncated) = clamp_bytes(&cleaned, VALUE_MAX_BYTES);
+                if cleaned != *text {
+                    warnings.push(format!(
+                        "settings: {label}[{index}] ({name}) literal {}",
+                        if truncated {
+                            format!("is longer than {VALUE_MAX_BYTES} bytes; trimmed")
+                        } else {
+                            "has control characters or surrounding spaces; cleaned up".to_string()
+                        }
+                    ));
+                }
+                cleaned
+            }
             Some(_) => {
                 warnings.push(format!(
                     "settings: {label}[{index}] ({name}) literal is not a string; ignoring it"
@@ -2511,6 +2758,134 @@ mod tests {
     }
 
     #[test]
+    fn a_tags_file_that_is_not_a_regular_file_is_refused_without_being_opened() {
+        let dir = tempdir();
+        let project = dir.path.to_str().unwrap();
+        // A directory stands in for every non-regular type: the point is that the
+        // type is checked before the read, so a FIFO (which would block the hook
+        // until a writer appears) or a device never reaches an `open`.
+        std::fs::create_dir(dir.path.join("tags.json")).unwrap();
+        let (tags, warnings) = load_tags_file(project, "tags.json");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not a regular file")),
+            "{warnings:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tags_file_symlink_may_not_point_out_of_the_project() {
+        let dir = tempdir();
+        let project = dir.path.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let outside = dir.path.join("outside.json");
+        std::fs::write(&outside, r#"{"token":"exfiltrated"}"#).unwrap();
+
+        std::os::unix::fs::symlink(&outside, project.join("tags.json")).unwrap();
+        let (tags, warnings) = load_tags_file(project.to_str().unwrap(), "tags.json");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not inside the project")),
+            "{warnings:?}"
+        );
+
+        // A link that stays inside the project is still a file inside the project.
+        std::fs::write(project.join("real.json"), r#"{"token":"ours"}"#).unwrap();
+        std::fs::remove_file(project.join("tags.json")).unwrap();
+        std::os::unix::fs::symlink(project.join("real.json"), project.join("tags.json")).unwrap();
+        let (tags, warnings) = load_tags_file(project.to_str().unwrap(), "tags.json");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(tags.len(), 1, "{tags:?}");
+    }
+
+    #[test]
+    fn a_tags_file_over_the_cap_is_refused_by_the_read_not_by_its_metadata() {
+        let dir = tempdir();
+        let filler = "x".repeat(TAGS_FILE_MAX_BYTES as usize);
+        std::fs::write(
+            dir.path.join("tags.json"),
+            format!(r#"{{"note":"{filler}"}}"#),
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("is larger than")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_tags_file_string_is_trimmed_but_a_list_or_object_keeps_its_shape() {
+        let dir = tempdir();
+        let long = "y".repeat(TAGS_FILE_STRING_MAX_CHARS * 2);
+        std::fs::write(
+            dir.path.join("tags.json"),
+            serde_json::json!({
+                "note": long.clone(),
+                "matrix": [long.clone(), long.clone()],
+                "meta": { "k": long.clone() },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        let pairs: BTreeMap<String, Value> =
+            tags.into_iter().map(|tag| (tag.key, tag.value)).collect();
+
+        assert_eq!(
+            pairs["note"],
+            Value::from("y".repeat(TAGS_FILE_STRING_MAX_CHARS)),
+            "a string is trimmed to the cap"
+        );
+        assert_eq!(
+            pairs["matrix"],
+            serde_json::json!([long.clone(), long.clone()]),
+            "a list is a structure, not text, and keeps its length"
+        );
+        assert_eq!(
+            pairs["meta"],
+            serde_json::json!({ "k": long.clone() }),
+            "an object keeps its length too"
+        );
+        assert_eq!(
+            warnings.len(),
+            1,
+            "one warning, for the trimmed string: {warnings:?}"
+        );
+        assert!(warnings[0].contains("trimmed"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_tags_file_value_loses_its_control_characters_at_every_depth() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.path.join("tags.json"),
+            serde_json::json!({
+                "note": "a\nb\tc\u{0}d\u{7f}e",
+                "meta": { "k": "x\ny" },
+                "matrix": ["p\rq"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let pairs: BTreeMap<String, Value> =
+            tags.into_iter().map(|tag| (tag.key, tag.value)).collect();
+        assert_eq!(pairs["note"], Value::from("abcde"));
+        assert_eq!(pairs["meta"], serde_json::json!({ "k": "xy" }));
+        assert_eq!(pairs["matrix"], serde_json::json!(["pq"]));
+    }
+
+    #[test]
     fn the_repo_tags_file_wins_over_a_same_key_settings_tag() {
         let dir = tempdir();
         std::fs::write(dir.path.join("tags.json"), r#"{"team":"repo","cost":1.5}"#).unwrap();
@@ -2556,8 +2931,8 @@ mod tests {
             path: dir.path.display().to_string(),
             ..facts()
         };
-        crate::session_tags::set_tag(&crate::settings::app_dir(&env), &facts.id, "hand:written")
-            .expect("session edit");
+        let app_dir = crate::settings::app_dir(&env).expect("app dir");
+        crate::session_tags::set_tag(&app_dir, &facts.id, "hand:written").expect("session edit");
         let snap = snapshot_with_table(&Flags::default(), &env, None, Some(table), Some(facts));
 
         // Seven configured tags, five carried: the manual one is first, then the
@@ -2848,5 +3223,132 @@ mod tests {
         let (out, missing) = render_template("{X-Aoe}", &fields);
         assert_eq!(out, "{X-Aoe}");
         assert!(missing.is_empty(), "{missing:?}");
+    }
+
+    #[test]
+    fn an_env_var_that_is_not_a_name_is_refused_where_it_is_written() {
+        // The hook prints `NAME=value` and the `custom_headers_env` line of a
+        // guarded harness runs a shell command that reads `$NAME`, so a `;` or a
+        // `$(` here is a command, not a variable name.
+        for bad in ["AOE; reboot", "$(id)", "AOE HDR", "9AOE", ""] {
+            let table: toml::Table = format!(
+                r#"
+                [[targets]]
+                name = "X-AoE-Tags"
+                env_var = {bad:?}
+                template = "{{team}}"
+
+                [[targets]]
+                name = "X-AoE-Session"
+                env_var = "AOE_HDR_X_AOE_SESSION"
+                template = "{{session_id}}"
+                "#
+            )
+            .parse()
+            .unwrap();
+            let mut warnings = Vec::new();
+            let parsed = Settings::from_table(&table, std::mem::take(&mut warnings));
+            assert_eq!(
+                parsed.targets.len(),
+                1,
+                "{bad:?} was kept: {:?}",
+                parsed.targets
+            );
+            assert_eq!(parsed.targets[0].env_var, "AOE_HDR_X_AOE_SESSION");
+            warnings.extend(parsed.warnings);
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.contains("is not a valid environment variable name")),
+                "{bad:?}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_with_a_newline_is_cleaned_up_before_it_can_add_a_line() {
+        // Written out as typed, a newline added a second `NAME=value` line to the
+        // hook's output — a variable the user never set — and a `\r` broke the
+        // header list an `env_only` harness reads.
+        let table: toml::Table = r#"
+            [[targets]]
+            name = "X-AoE-Tags"
+            literal = "  a\r\nb  "
+        "#
+        .parse()
+        .unwrap();
+        let warnings = Vec::new();
+        let parsed = Settings::from_table(&table, warnings);
+        assert_eq!(parsed.targets[0].literal, "ab");
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("cleaned up")),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[test]
+    fn a_literal_is_capped_like_every_other_value() {
+        let long = "a".repeat(VALUE_MAX_BYTES + 40);
+        let table: toml::Table =
+            format!("[[targets]]\nname = \"X-AoE-Tags\"\nliteral = \"{long}\"\n")
+                .parse()
+                .unwrap();
+        let parsed = Settings::from_table(&table, Vec::new());
+        assert_eq!(parsed.targets[0].literal.len(), VALUE_MAX_BYTES);
+        assert!(
+            parsed
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("is longer than")),
+            "{:?}",
+            parsed.warnings
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lookup_that_floods_stdout_is_read_up_to_the_cap_and_no_further() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir();
+        let script = dir.path.join("flood");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\0' 'a'\n",
+                OUTPUT_MAX_BYTES * 2
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let out = run_text(
+            script.to_str().unwrap(),
+            "flood",
+            &[],
+            Duration::from_secs(10),
+        )
+        .expect("the command succeeds");
+        assert_eq!(
+            out.len(),
+            OUTPUT_MAX_BYTES,
+            "the cap bounds what one lookup can cost"
+        );
+    }
+
+    #[test]
+    fn a_comma_in_a_csv_field_is_quoted_so_it_cannot_forge_a_pair() {
+        // `csv` is the format a consumer splits on `,`: an unquoted comma in a
+        // value would arrive as a second key it never sent.
+        let unforged = Tag::parse("team:x,org:evil").unwrap();
+        assert_eq!(unforged.csv(), "\"team:x,org:evil\"");
+        let quoted = Tag::parse("note:he said \"hi\"").unwrap();
+        assert_eq!(quoted.csv(), "\"note:he said \"\"hi\"\"\"");
+        // Nothing to escape: no quotes, so the common case stays plain.
+        assert_eq!(Tag::parse("team:core").unwrap().csv(), "team:core");
+        assert_eq!(Tag::parse("platform").unwrap().csv(), "platform");
     }
 }

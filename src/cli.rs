@@ -314,7 +314,15 @@ fn tag_cmd(
     env: &Env,
 ) -> i32 {
     let flags = args.flags(env);
-    let app_dir = crate::settings::app_dir(env);
+    // A session's edits live in the app dir; without one there is nothing to read
+    // or write and a guess would land in the current directory.
+    let app_dir = match crate::settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            warn(&message);
+            return EXIT_FAIL;
+        }
+    };
     let mut session = flags.session.clone();
     let write = set.is_some() || unset.is_some() || token.is_some() || clear_token || git || reset;
     if write && session.is_empty() {
@@ -609,7 +617,10 @@ fn classify_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {
         crate::adapters::match_tool(&adapters, &snap.facts.tool)
     };
     let live = crate::substrate::live_sessions(env);
-    let mut cache = crate::substrate::Cache::load(&crate::settings::app_dir(env));
+    let mut cache = match crate::settings::app_dir(env) {
+        Ok(app_dir) => crate::substrate::Cache::load(&app_dir),
+        Err(_) => crate::substrate::Cache::disabled(),
+    };
     let findings = crate::substrate::classify(
         adapter,
         &snap.settings.targets,

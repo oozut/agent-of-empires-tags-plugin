@@ -29,7 +29,8 @@ struct Wire {
     config_file: bool,
     last_verified: &'static str,
     settings: &'static str,
-    session_json: &'static str,
+    /// A session row to answer with; `None` is the sandbox's own fixture row.
+    session_json: Option<&'static str>,
 }
 
 impl Default for Wire {
@@ -45,7 +46,7 @@ impl Default for Wire {
             config_file: true,
             last_verified: "",
             settings: "",
-            session_json: common::SESSION_JSON,
+            session_json: None,
         }
     }
 }
@@ -53,7 +54,13 @@ impl Default for Wire {
 impl Wire {
     fn apply(&self, sandbox: &mut Sandbox) {
         let aoe = sandbox.path("bin/aoe-doctor");
-        sandbox.fake_aoe_at(&aoe, self.session_json);
+        sandbox.fake_aoe_at(
+            &aoe,
+            &self
+                .session_json
+                .map(str::to_string)
+                .unwrap_or_else(|| sandbox.session_json()),
+        );
         let broken = sandbox.path("gone/bin/aoe");
         sandbox.env.insert(
             "AOE_BIN".to_string(),

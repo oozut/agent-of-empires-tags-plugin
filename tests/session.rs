@@ -107,6 +107,30 @@ fn the_token_override_stands_in_for_the_payload() {
 }
 
 #[test]
+fn the_session_file_holding_a_token_is_private() {
+    let sandbox = Sandbox::new();
+    sandbox
+        .run(&["tag", "--session", "cf11af87da7e4bf0", "--token", "sk-live"])
+        .assert_ok();
+    let path = overrides_path(&sandbox, "cf11af87da7e4bf0");
+    let body = std::fs::read_to_string(&path).expect("overrides.toml");
+    assert!(body.contains("sk-live"), "{body}");
+
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |path: &std::path::Path| -> u32 {
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    // The token is in this file, so neither it nor its directory is readable by
+    // another account on the machine.
+    assert_eq!(mode(&path), 0o600, "{}", path.display());
+    assert_eq!(mode(path.parent().expect("dir")), 0o700);
+}
+
+#[test]
 fn a_target_with_a_template_keeps_it_and_ignores_the_token() {
     let sandbox = Sandbox::new();
     sandbox.write_config(&common::settings_config(common::TWO_HEADERS, ""));
@@ -158,23 +182,38 @@ fn an_edit_without_a_session_is_a_usage_error_rather_than_a_guess() {
 }
 
 #[test]
-fn editing_a_session_that_is_gone_is_fine_and_pruning_takes_the_edits_with_it() {
+fn editing_a_session_that_is_gone_is_fine_and_pruning_leaves_the_edits_alone() {
     let sandbox = Sandbox::new();
     sandbox.run(&["tag", "--set", "team:core"]).assert_ok();
-    assert!(overrides_path(&sandbox, "cf11af87da7e4bf0").exists());
-    // `overlay::prune` is what the worker runs on every host event; a session
-    // the host no longer lists takes its overrides with it, so an edit cannot
-    // outlive the session it belongs to.
+    let overrides = overrides_path(&sandbox, "cf11af87da7e4bf0");
+    assert!(overrides.exists());
+    // The session's directory also holds a generated harness copy, which is what
+    // pruning is for.
     let app_dir = sandbox.path("config/agent-of-empires");
+    let copy = app_dir.join("sessions").join("cf11af87da7e4bf0").join("pi");
+    std::fs::create_dir_all(&copy).expect("copy");
+    std::fs::write(copy.join("models.json"), "{}").expect("copy file");
+
+    // `overlay::prune` is what the worker runs on every host event.
     let removed = llm_tags::overlay::prune(&app_dir, &[]);
     assert_eq!(
         removed, 0,
         "an empty live list is not evidence of staleness"
     );
+
     let removed = llm_tags::overlay::prune(&app_dir, &["0123456789abcdef".to_string()]);
-    assert_eq!(removed, 1);
+    assert_eq!(removed, 1, "the generated copy is not a session");
+    assert!(!copy.exists(), "the generated copy outlived its session");
+    // A host list that has not caught up (a failed read, a restart) must not be
+    // able to delete a tag someone typed: the edits are not a copy of anything,
+    // they are the only place this session's tags exist.
+    assert!(overrides.exists(), "pruning took the user's edits");
     assert!(
-        !overrides_path(&sandbox, "cf11af87da7e4bf0").exists(),
-        "the override outlived its session"
+        !app_dir
+            .join("sessions")
+            .join("cf11af87da7e4bf0")
+            .join("pi")
+            .exists(),
+        "the copy is still there"
     );
 }

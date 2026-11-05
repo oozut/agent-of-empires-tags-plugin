@@ -19,8 +19,11 @@
 //! token = '{"team":"platform"}'              # a literal value for this session
 //! ```
 //!
-//! `overlay::prune` already deletes a session's directory once the host no
-//! longer lists it, so these edits cannot outlive their session either.
+//! Nothing here is a copy of anything, which is why `overlay::prune` removes the
+//! generated harness configs of a session the host no longer lists but leaves this
+//! file: a host list that has not caught up (a failed read, a restart) must not be
+//! able to delete a tag someone typed. `setup --undo` is the way to remove it, and
+//! it says what it removed.
 
 use std::path::{Path, PathBuf};
 
@@ -181,7 +184,9 @@ pub fn save(app_dir: &Path, session_id: &str, overrides: &Overrides) -> Result<(
         };
     }
     let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)
+    // `0700`: this file can carry the session's literal token, so it is not left
+    // for another account on the machine to read (see [`crate::private`]).
+    crate::private::create_dir(dir)
         .map_err(|err| format!("cannot create {}: {err}", dir.display()))?;
     let mut text = String::from(
         "# Per-session LLM Tags edits, written by the plugin's own UI and `tag` command.\n\
@@ -203,10 +208,8 @@ pub fn save(app_dir: &Path, session_id: &str, overrides: &Overrides) -> Result<(
     if !overrides.token.is_empty() {
         text.push_str(&format!("token = {:?}\n", overrides.token));
     }
-    let temp = path.with_extension("toml.tmp");
-    std::fs::write(&temp, text).map_err(|err| format!("cannot write {}: {err}", temp.display()))?;
-    std::fs::rename(&temp, &path)
-        .map_err(|err| format!("cannot replace {}: {err}", path.display()))?;
+    crate::private::write_atomic(&path, &text)
+        .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
     Ok(())
 }
 

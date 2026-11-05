@@ -393,7 +393,13 @@ pub fn overlay_for(
 /// the first step of an uninstall, so it also names what a user still has to
 /// delete by hand (see [`report_left_to_the_user`]).
 pub fn undo_cmd(flags: &Flags, env: &Env, all: bool) -> i32 {
-    let app_dir = settings::app_dir(env);
+    let app_dir = match settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            crate::cli::warn(&message);
+            return crate::cli::EXIT_FAIL;
+        }
+    };
     if all {
         let sessions = crate::overlay::all_sessions(&app_dir);
         let mut removed = 0;
@@ -440,8 +446,8 @@ pub fn undo_cmd(flags: &Flags, env: &Env, all: bool) -> i32 {
 /// fails at request time — the harness cannot resolve `$AOE_LLM_TAGS` because
 /// nothing mints it any more — rather than quietly sending nothing.
 pub fn report_left_to_the_user(flags: &Flags, env: &Env) {
-    let app_dir = settings::app_dir(env);
-    let config = settings::load_config(&flags.profile, Some(&app_dir), env);
+    let app_dir = settings::app_dir(env).ok();
+    let config = settings::load_config(&flags.profile, app_dir.as_deref(), env);
     let mut left: Vec<String> = Vec::new();
 
     let hooks: Vec<&str> = HOOK_KEYS

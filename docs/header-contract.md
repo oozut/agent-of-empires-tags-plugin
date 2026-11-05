@@ -82,10 +82,10 @@ A target chooses **where** the payload travels and **what** of it travels there.
 |---|---|
 | `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
 | `name` | Wire name: a header name, a query parameter, or the body field to set. |
-| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. |
+| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. A field holding a comma, a quote or a line break is quoted (`"team:x,org:evil"`, internal quotes doubled), so a value cannot forge a pair the sender never wrote. |
 | `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, `{tags_b64}`, or one field such as `{feature}`. |
-| `literal` | Written as-is instead of the rendered template. |
-| `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. |
+| `literal` | Used instead of the rendered template, for a harness that does not expand `$NAME` in that position. Not a bypass: it is cleaned like every other value (control characters dropped, surrounding whitespace trimmed) and capped at 800 bytes where the settings are parsed, because a newline written as-is added a `NAME=value` line nobody set and a carriage return broke an `env_only` header list. |
+| `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. A pinned name has to be one — a letter or `_`, then letters, digits or `_` — or the row is refused: the name travels into `NAME=value` lines and into the shell command an `env_only` harness runs, where a `;` is a second command. |
 | `enabled` | Lets a set ship dormant (`X-AoE-Group` off by default, since group names are user prose and may be sensitive). |
 
 Template fields, resolved from the session manager first and the hook environment second:
@@ -97,21 +97,40 @@ and the git facts, read from the session's own checkout:
 
 `{git.branch}` `{git.commit}` `{git.sha}` `{git.tag}` `{git.describe}` `{git.subject}`
 `{git.author}` `{git.dirty}` `{git.remote}` `{git.repo}` `{git.root}`
-
 `{git.branch}` comes from git itself (`rev-parse --abbrev-ref HEAD`, or the short SHA on a
 detached HEAD), `{git.commit}` is the abbreviated SHA and `{git.sha}` the full one; `{branch}` is
 untouched — it stays whatever the session manager reports, so an existing template keeps its
 meaning. `{git.tag}` and `{git.describe}` are empty when no tag names the commit, and
-`{git.remote}` drops any credentials in the URL. `{git.dirty}` always answers — `false` for a
+`{git.remote}` drops any credentials in the URL. `{git.repo}` goes through the same scrub before
+it takes the last path segment, so a remote with no path at all (`https://token@host`) names its
+host instead of its token. `{git.dirty}` always answers — `false` for a
 clean tree, not an empty string — because "clean" is a fact and an empty value would read as
 "unknown". `{git.repo}` names the repository the checkout belongs to, so a linked worktree
 reports `android-keyboard` rather than the worktree's own directory name.
 
+**Only the session's own checkout.** `<project>/.git` has to be there before anything runs — a
+directory in a clone, a file in a linked worktree or a submodule. What is inside it never matters:
+an empty `.git` and a repository with no commits are checkouts too, and their facts are simply
+empty. A directory that is merely *near* a repository gets no git facts at all: the resolver reads
+the path the session names, not whatever repository sits above it, so a home directory that is
+itself a dotfiles clone cannot make a plain project report `main`. A subdirectory of a checkout is
+refused for the same reason — the session's path is the checkout.
+
 **Nothing runs unless a reference is named**: a launch whose templates and tags mention no git fact
 starts no `git` process at all, and a launch that names several pays one timeout budget for all of
 them, shared with the session-manager lookups — a `git` that hangs costs one wait, not one per
-fact. `AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be
-read is empty and a warning, never a failed launch.
+fact. The budget is a real one: the pipes are read on detached threads, so a grandchild that
+inherits stdout cannot hold the launch past it, and each lookup's output is capped at 4 MiB.
+`AOE_GIT_BIN` overrides the binary for a wrapper or a test double. A git fact that cannot be read
+is empty and a warning, never a failed launch.
+
+**A checkout is data, not code.** Every call carries `--no-pager` and pins the configuration keys
+that can start a program — `core.fsmonitor` (which `git status` runs, and `{git.dirty}` asks for
+exactly that) and `core.pager` — on the command line, where the repository cannot reach them. The
+launch environment is scrubbed the other way round: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`,
+`GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_COMMON_DIR`, `GIT_NAMESPACE` and
+the `GIT_CONFIG_*` family are removed from the child, because they would point `git -C <session>`
+at another tree or feed it config this plugin never chose.
 
 ### References as tag values
 
@@ -150,14 +169,25 @@ Rules that keep the contract honest:
   JSON. A key or value outside the grammar is dropped with a warning rather than written.
 - **Values are typed.** `:=` is the only way to get a number, boolean or nested value into a
   payload, and it stays typed all the way to the consumer; a `csv` target flattens it back to
-  text, because a comma list has no types.
+  text, because a comma list has no types, and a field with a comma, a quote or a line break in
+  it is quoted so it cannot pass for two fields.
 
 ### A repository's own tags
 
 `tags_file` names a JSON object that lives inside the session's project: the path is relative to
-the project root and cannot leave it. Every top-level pair is one tag with its JSON type intact
-(`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the same grammar as a
-settings tag; a key that does not is skipped with a warning rather than rewritten.
+the project root and cannot leave it, even through a symlink — the resolved path is what is
+checked, because `..` is not the only way out of a tree. Every top-level pair is one tag with its
+JSON type intact (`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the
+same grammar as a settings tag; a key that does not is skipped with a warning rather than
+rewritten.
+
+The file is repository content, so it is read as untrusted input. It has to exist before anything
+is opened; only a regular file is read, so a FIFO or a device cannot stall the launch; the 64 KiB
+cap is applied to the read itself rather than to the length `stat` reports, since that length is a
+claim rather than a bound. Values are sanitised before they can reach a header: every string has
+its control characters dropped and its surrounding whitespace trimmed, and a **string** value is
+additionally trimmed to 256 characters. A list or an object is left alone — it is a structure
+rather than text, and the file cap already bounds it.
 
 The repo file is one rung below a session's own edit: its entries come first and replace a
 `tags` entry with the same key, while a per-session edit still wins over both. From most to
@@ -196,7 +226,10 @@ Three paths, all fed by the same resolved payload:
 2. **A per-session file** (`overlay_file` / `overlay_dir`). For a harness whose config can only
    hold a literal, the plugin builds a generated config inside the session's own directory and
    points the harness at it with an environment variable. The user's config is never touched, and
-   the copy is deleted when the session is gone. A copy that would carry nothing is not used.
+   the copy is deleted when the session is gone. The copy is one file — the harness config, which
+   is what carries the tag — and the rest of the user's config dir is linked, never duplicated.
+   A copy that would carry nothing is not built at all, so no session directory is left behind
+   for a harness that was never pointed at it.
 3. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
    directly (`!aoe-llm-tags value X-AoE-Session`). Same values, one process later, and subject to
    the harness's own caching.
@@ -212,13 +245,24 @@ config-write RPC, and the editor below writes only inside the session's own dire
 sessions can therefore carry different tags at the same time without a rule, a profile or a
 config edit between them.
 
-Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`:
+Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`, where `<app dir>` is
+`$XDG_CONFIG_HOME/agent-of-empires` when that names an absolute path and `<HOME>/.config/
+agent-of-empires` otherwise. When neither does, there is no app dir and no session store: the
+commands that write one say so and exit 1, and the hook skips the session's edits with a warning
+and sends the header anyway. It never falls back to a path relative to the launch directory, which
+would let a checked-out repository ship the file that configures it.
 
 | Surface | What it does |
 |---|---|
 | Session pane (`llm_tags_pane`) | Lists each tag with its origin, and the values this session would send. Clicking a tag drops it for this session; the action button opens the editor page. |
 | **LLM Tags** page (`ui/tags.html`) | Pick a session, then add/replace a tag, drop one, write or clear a literal token, or reset every edit. Shows the resulting wire values. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard. |
+
+The token is written but never read back into the UI. A surface is told that one is set, and the
+target row, the pane and the session badge say *that* it stands in for the value rather than what
+it says: `ui.state.set` payloads are kept by the host and rendered to anyone who can see the
+session, so a secret there would be a secret in a dashboard. `aoe-llm-tags tag --show` prints it in
+the user's own terminal, and the session file that holds it is `0600` in a `0700` directory.
 
 The file holds the same tag grammar the settings use, in three keys:
 
@@ -257,9 +301,12 @@ control's spinner clears), and the next `/api/plugins/ui-state` read carried the
 again. `tools/drive-worker.py` reproduces the same conversation without a browser, which is what
 makes the payload shape checkable on a machine with no dashboard open.
 
-The store is deleted with the session. `overlay::prune` runs on every host event and removes any
-session directory the host no longer lists — which takes `overrides.toml` with it — and it treats
-an empty live list as a failed query rather than as evidence that every session is gone.
+`overlay::prune` runs on every host event and removes the generated harness copies of a session
+directory the host no longer lists, and it treats an empty live list as a failed query rather than
+as evidence that every session is gone. It leaves `overrides.toml` alone: that file is not a copy
+of anything, it is the only record of what someone typed, so a host list that has merely not caught
+up (a failed read, a restart mid-sweep) cannot delete a tag. `setup --undo` is how a session's
+edits are removed, and it says what it removed.
 
 ## What the plugin does not decide
 

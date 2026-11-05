@@ -127,8 +127,14 @@ value; a file that cannot be parsed is a warning and is ignored (profile → glo
 
 `tags_file` is the one setting whose value is a path. It is read at launch from
 `<project path>/<value>` (relative, and it must stay inside the project), and every top-level
-pair of that JSON object becomes a tag with its JSON type intact. The file's entries come first
-and replace a `settings.tags` entry with the same key; `session_tags::apply` still runs after
+pair of that JSON object becomes a tag with its JSON type intact. Because the file is repository
+content it is read defensively: the path is resolved first and refused if the result is outside
+the project (a symlink out of the tree cannot be seen by a `..` check), only a regular file is
+read (a FIFO would block the hook instead of failing it), the 64 KiB cap is applied to the read
+rather than to the reported file length, every string has its control characters dropped and its
+surrounding whitespace trimmed, and a string value is additionally trimmed to 256 characters —
+a list or an object keeps its shape and its length. The file's entries come first and replace a
+`settings.tags` entry with the same key; `session_tags::apply` still runs after
 and puts a session's own edit in front of everything. That gives one priority order — a session
 edit, then the repo file, then `settings.tags`, then a rule hit. `matched_tags` spends the
 five-tag budget on the inherited tags in that order and adds the session's edits on top:
@@ -259,7 +265,7 @@ platforms = ["linux", "macos"]
 The released manifest differs in exactly two lines (`kind = "release-binary"`, `bin =
 "aoe-llm-tags-worker"` instead of `command`), see step 10 and `parameters.md` §11.
 
-At M1 add, in one update: `session.read`/`net` to `capabilities`, `[[ui]] row-badge`/`pane`, and `[[settings]]` for `headers`
+At M1 add, in one update: `session.read` to `capabilities`, `[[ui]] row-badge`/`pane`, and `[[settings]]` for `headers` (`net` is not part of the set: the plugin never makes a request of its own)
 (`object_list`, `item_id_key = "header"`), `rules`, `session_tagging`, `feature_tag`
 (`per_project = true` → `api_version >= 18`, satisfied), `session_signature`.
 
@@ -461,8 +467,20 @@ its own copy (`docs/harness-adapters.md` §Per-session config):
 
 Edit rules for the session copy, all mandatory: build it in this plugin's app dir, write via a
 temp file in the same directory plus rename, re-read and re-parse after writing, export no
-override when nothing could be placed, and prune directories whose session is gone. Undo is
+override when nothing could be placed, and prune directories whose session is gone. The plan is
+built in memory before the disk is touched: with nothing placed, no directory is created and an
+unused copy from an earlier launch is removed. Only the harness config file is copied —
+everything else in a session dir is a symlink to the user's own entry. Undo is
 `rm -rf` of the copy — there is no backup to restore because the original is never modified.
+Pruning takes the generated copy and leaves `overrides.toml` behind (see `header-contract.md`
+§Per-session edits): the edits are not a copy, and a stale host list must not delete them.
+
+Both writers (`src/private.rs`) keep what they write to the user: the session directory is `0700`
+and every file the plugin creates is `0600`, because the one copied file can carry a provider key
+the harness needs to authenticate and `overrides.toml` can carry the session's literal token. The
+mode is re-applied on every write, so a directory left open by an older build is tightened too; a
+session file is written through a `create_new` temporary, which also means a link planted at that
+name cannot redirect the write.
 
 ## Step 9 — M3 page (roadmap-gated)
 

@@ -10,7 +10,8 @@ request, including a sandboxed leg via podman) still holds; M2 changed *what* tr
 
 Editing a tag is a **per-session** operation, in the UI and on the command line: the session pane
 and the **LLM Tags** page list every tag with where it came from, let you add, replace or drop one,
-and let you write a literal token for that session — and every write lands in
+and let you write a literal token for that session (never read back into the page: the surfaces say
+*that* one is set, not what it says) — and every write lands in
 `<app dir>/sessions/<session id>/overrides.toml`. The global settings are read by the plugin and
 never rewritten, so two sessions can carry different tags at the same time with no rule and no
 config edit between them. The same edit from a shell:
@@ -39,15 +40,21 @@ per-session edit still wins over both. From most to least specific the order is 
 while a session's own edits are exempt and added on top — a tag typed for one session always
 travels. A rule adds a key rather than rewriting one that is already set. Unlike the other
 settings this file lives with the code, so a checkout carries its own attribution; a missing or
-malformed file is a `doctor` warning, not a failed launch.
+malformed file is a `doctor` warning, not a failed launch. Since it is repository content it is
+read defensively: the path may not resolve outside the project (a symlink counts), only a regular
+file is read, the 64 KiB cap applies to the read itself, every string has its control characters
+dropped and its whitespace trimmed, and a string value is additionally trimmed to 256 characters
+while a list or an object keeps its shape.
 
 `setup --apply` no longer edits any user config: a value rides the launch environment, or the
 hook builds this session's own copy of the harness's config under the plugin's app dir and exports
-the variable that points the harness at it. Verified end to end on this host for `pi` (header
+the variable that points the harness at it. That copy is one file — the harness's config, because
+that is where the tag lives — and every other entry of the user's config dir is linked, not
+duplicated; a launch with nothing to deliver creates nothing at all. Verified end to end on this host for `pi` (header
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 200 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 244 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -71,7 +78,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 200 tests, no network (needs `git` for tests/git_real.rs)
+cargo test --locked                  # 244 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 
@@ -144,13 +151,14 @@ Plan (what ships when, and with which values):
 
 | Path | Contents |
 |---|---|
-| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read", "net"]`, one `status` command, `[runtime]` + source-install build step |
+| `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read"]` (no `net`: the plugin hands the harness a header and never opens a connection itself), one `status` command, `[runtime]` + source-install build step |
 | `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
 | `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `classify` / `tag` / `verify` (stub) |
 | `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the badge, pane and editor page, and applies the pane's per-session edits) |
 | `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
 | `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the page that writes them; the only writer, and it never touches the settings |
 | `src/settings.rs` | Where the settings live and how a profile overrides them (arrays replace, objects recurse) |
+| `src/private.rs` | What the plugin writes is the user's alone: `0700` directories and `0600` files, because a session copy and a session file can each carry a secret |
 | `src/adapters.rs`, `adapters.toml` | Per-harness header mechanism, as data; the file is embedded, so an install without it still works |
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |

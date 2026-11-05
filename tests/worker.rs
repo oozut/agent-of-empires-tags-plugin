@@ -230,6 +230,16 @@ impl Wire {
             .unwrap_or_else(|| panic!("no pane was pushed for {session}"))
     }
 
+    /// Every payload pushed so far, as one string: a value that must not leave the
+    /// session file has no business anywhere in here.
+    fn pushed_text(&self) -> String {
+        self.pushes
+            .iter()
+            .map(|params| params.to_string())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// Read pushes until the editor page's payload arrives, answering each call.
     fn wait_page(&mut self) -> Value {
         for _ in 0..400 {
@@ -271,7 +281,7 @@ fn settings_of(sandbox: &Sandbox) -> BTreeMap<String, Value> {
 
 fn overrides_path(sandbox: &Sandbox, session: &str) -> PathBuf {
     let env = llm_tags::env::Env::new(sandbox.env.clone());
-    let app_dir = llm_tags::settings::app_dir(&env);
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
     llm_tags::session_tags::path(&app_dir, session)
 }
 
@@ -476,7 +486,7 @@ fn two_sessions_keep_their_own_edits() {
             .unwrap_or_else(|| panic!("no {id} in {page}"));
         assert_eq!(tag(&tags_of(session), "team")["value"], json!(expected));
         let env = llm_tags::env::Env::new(sandbox.env.clone());
-        let app_dir = llm_tags::settings::app_dir(&env);
+        let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
         let (edits, warnings) = llm_tags::session_tags::load(&app_dir, id);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
@@ -485,6 +495,53 @@ fn two_sessions_keep_their_own_edits() {
             "{id} carries someone else's edit"
         );
     }
+}
+
+#[test]
+fn a_token_override_is_never_published() {
+    const SECRET: &str = "sk-live-3f9c2a1b-do-not-publish";
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    // The default target has no template, so the token is what it renders: the row
+    // that shows the wire value would otherwise be the token itself.
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+
+    wire.notify("token.set", json!({"token": SECRET, "session_id": SESSION}));
+    let page = wire.wait_page();
+    let session = &page["sessions"][0];
+    // The page learns that a token is set and nothing about what it says: the host
+    // keeps every `ui.state.set` payload and renders it to everyone who can see
+    // the session, so the value stays in the session file.
+    assert_eq!(session["token_set"], json!(true), "{session}");
+    assert!(session.get("token").is_none(), "{session}");
+    assert_eq!(
+        session["targets"][0]["value"],
+        json!("(the session's token, not shown here)"),
+        "{session}"
+    );
+    // The pane names it too, in the row that would otherwise show it.
+    let pane = wire.pane(SESSION).to_string();
+    assert!(!pane.contains(SECRET), "{pane}");
+    assert!(pane.contains("not shown here"), "{pane}");
+    let pushed = wire.pushed_text();
+    assert!(
+        !pushed.contains(SECRET),
+        "the value was published: {pushed}"
+    );
+    assert!(pushed.contains("a token override is set"), "{pushed}");
+    assert!(!wire.log().contains(SECRET), "{}", wire.log());
+
+    // It is kept, though: it is what the launch sends instead of the payload.
+    let env = llm_tags::env::Env::new(sandbox.env.clone());
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
+    let (edits, _) = llm_tags::session_tags::load(&app_dir, SESSION);
+    assert_eq!(edits.token, SECRET);
+
+    // Clearing it takes that back, still without publishing it.
+    wire.notify("token.clear", json!({"session_id": SESSION}));
+    let page = wire.wait_page();
+    assert_eq!(page["sessions"][0]["token_set"], json!(false));
+    assert!(!wire.pushed_text().contains(SECRET));
 }
 
 #[test]

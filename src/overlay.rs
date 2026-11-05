@@ -127,7 +127,9 @@ pub fn resolved_targets(snap: &Snapshot) -> (Vec<Resolved>, Vec<(String, String)
 /// Build this session's artifact. Idempotent: an existing overlay is rebuilt
 /// from the user's config, so a changed tag set never leaves a stale value.
 pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Overlay, String> {
-    let app_dir = settings::app_dir(env);
+    // No app dir, no copy: the alternative is writing the session's config
+    // somewhere relative to the launch directory.
+    let app_dir = settings::app_dir(env)?;
     let dir = session_dir(&app_dir, &snap.facts.id, &adapter.agent);
     let (targets, mut skipped) = resolved_targets(snap);
 
@@ -189,18 +191,15 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
     let generated = dir.join(&file_name);
     let source_dir = source.parent().map(Path::to_path_buf);
 
-    std::fs::create_dir_all(&dir)
-        .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
-    if adapter.write_mode == MODE_OVERLAY_DIR {
-        if let Some(source_dir) = &source_dir {
-            link_siblings(source_dir, &dir, &file_name)?;
-        }
-    }
+    // Build the copy in memory first, and touch the disk only once there is
+    // something to put on it: a launch that delivers nothing must not leave a
+    // session directory — and its links into the user's config, credentials
+    // included — behind for a harness that is never pointed at it.
 
     // No user file yet: this harness is not configured, so there is nothing to
     // copy and nothing honest to say — stay silent instead of warning at launch.
     if !source.exists() {
-        let _ = std::fs::remove_file(&generated);
+        discard(&dir);
         return Ok(Overlay {
             dir,
             file: None,
@@ -229,7 +228,7 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
     // one: an empty plan writes no file and exports no override.
     let placed = targets.len().saturating_sub(skipped.len());
     if placed == 0 {
-        let _ = std::fs::remove_file(&generated);
+        discard(&dir);
         return Ok(Overlay {
             dir,
             file: None,
@@ -238,8 +237,20 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
         });
     }
 
+    // The one thing that is copied is the harness's own config file, because
+    // that is where the tag has to live. Everything else in the session dir is
+    // a link to the user's entry, so no other content is duplicated.
     let text = doc.render()?;
-    write_atomic(&generated, &text)
+    // `0700`: the copy below can carry a provider key, so the directory it lives
+    // in is this user's alone (see [`crate::private`]).
+    crate::private::create_dir(&dir)
+        .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
+    if adapter.write_mode == MODE_OVERLAY_DIR {
+        if let Some(source_dir) = &source_dir {
+            link_siblings(source_dir, &dir, &file_name)?;
+        }
+    }
+    crate::private::write_atomic(&generated, &text)
         .map_err(|err| format!("{} could not be written: {err}", generated.display()))?;
 
     Ok(Overlay {
@@ -283,6 +294,9 @@ fn native_env(adapter: &Adapter, targets: &[Resolved]) -> Vec<(String, String)> 
 /// Link every entry of the user's config dir into the session dir, except the
 /// file this plugin generates. Writes through a link land in the user's file
 /// (`writeFileSync` truncates the target), so auth refresh keeps working.
+///
+/// A link, not a copy: the user's entry stays the only copy of its content, so
+/// credentials, session stores and caches are never duplicated into the app dir.
 fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result<(), String> {
     let entries = match std::fs::read_dir(source_dir) {
         Ok(entries) => entries,
@@ -308,10 +322,11 @@ fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result
 
 /// Write via a temp file in the same directory, then rename: a hook that dies
 /// mid-write cannot leave a half config for a harness to read.
-fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
-    let tmp = path.with_extension("aoe-llm-tags.tmp");
-    std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, path)
+/// Remove a session copy this launch will not use: it would carry nothing, or
+/// the file it is built from is gone. A copy that is not used is not left on
+/// disk either.
+fn discard(dir: &Path) {
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Remove session dirs that belong to no live session. Returns how many went.
@@ -320,7 +335,7 @@ fn write_atomic(path: &Path, text: &str) -> std::io::Result<()> {
 /// config behind for long.
 pub fn prune(app_dir: &Path, live: &[String]) -> usize {
     // An empty list is a failed query, not a host with no sessions: pruning on
-    // it would delete every session's copy — and its overrides — on one bad read.
+    // it would delete every session's copy on one bad read.
     if live.is_empty() {
         return 0;
     }
@@ -334,10 +349,40 @@ pub fn prune(app_dir: &Path, live: &[String]) -> usize {
         if live.iter().any(|id| sanitize(id) == name) {
             continue;
         }
-        if std::fs::remove_dir_all(entry.path()).is_ok() {
+        if remove_generated(&entry.path()) {
             removed += 1;
         }
     }
+    removed
+}
+
+/// Delete the generated harness copies inside one session dir, and the dir when
+/// nothing is left in it.
+///
+/// `overrides.toml` is not a copy of anything: it is the only place a session's
+/// own tags and its literal token exist. A host list that has merely not caught up
+/// (a read that failed, a host that was restarted) must not take them with it, so
+/// the file stays and the directory stays with it — `setup --undo` is the way to
+/// remove an edit, and it says so.
+fn remove_generated(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut removed = false;
+    for entry in entries.flatten() {
+        if entry.file_name() == crate::session_tags::FILE {
+            continue;
+        }
+        let path = entry.path();
+        let gone = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path).is_ok(),
+            Ok(_) => std::fs::remove_file(&path).is_ok(),
+            Err(_) => false,
+        };
+        removed |= gone;
+    }
+    // Fails while `overrides.toml` is still there, which is the point.
+    let _ = std::fs::remove_dir(dir);
     removed
 }
 

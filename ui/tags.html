@@ -143,7 +143,8 @@
       <p class="note">
         Replaces what a target with no template renders — the JSON payload or the csv list,
         depending on the target. A target with its own template (<span class="mono">{session_id}</span>)
-        is unaffected.
+        is unaffected. Once saved the value is not shown again on this page: the session
+        file holds it and <span class="mono">aoe-llm-tags tag --show</span> reads it.
       </p>
       <div class="row" style="margin-top: 10px">
         <button id="savetoken" class="primary">Save token</button>
@@ -385,7 +386,7 @@
         }
         const parts = [];
         if ((session.unset || []).length) parts.push(`dropped here: ${session.unset.join(", ")}`);
-        if (session.token) parts.push("a token override is in place");
+        if (session.token_set) parts.push("a token override is in place");
         document.getElementById("tagsub").textContent = parts.join(" · ");
 
         for (const target of session.targets || []) {
@@ -406,7 +407,13 @@
           ? "Values are what the hook exports for this session, already merged with the edits above."
           : "No target is enabled for this session.";
 
-        document.getElementById("token").value = session.token || "";
+        // The page never receives the token: it only learns that one is set, so
+        // the box starts empty and typing replaces it. `Clear token` removes it.
+        const tokenBox = document.getElementById("token");
+        tokenBox.value = "";
+        tokenBox.placeholder = session.token_set
+          ? "A token is set (not shown). Type a new value to replace it, or Clear."
+          : '{"team":"platform"}';
       }
 
       // ---- writes -----------------------------------------------------------
@@ -453,8 +460,13 @@
         document.getElementById("key").value = "";
         document.getElementById("value").value = "";
       };
-      document.getElementById("savetoken").onclick = () =>
-        edit("token.set", { token: document.getElementById("token").value });
+      document.getElementById("savetoken").onclick = () => {
+        const box = document.getElementById("token");
+        const sent = edit("token.set", { token: box.value });
+        // Nothing to keep in the DOM once it is on its way.
+        box.value = "";
+        return sent;
+      };
       document.getElementById("cleartoken").onclick = () => edit("token.clear", {});
       document.getElementById("reference").onchange = (event) => {
         if (event.target.value) insertReference(event.target.value);

@@ -98,6 +98,17 @@ pub struct Cache {
 }
 
 impl Cache {
+    /// A cache with nowhere to live: every answer is recomputed and nothing is
+    /// written. This is what a host with no app dir gets, rather than a relative
+    /// path under whatever directory the process was started in.
+    pub fn disabled() -> Self {
+        Self {
+            path: PathBuf::new(),
+            entries: BTreeMap::new(),
+            dirty: false,
+        }
+    }
+
     /// `<app dir>/cache/substrates.json`; a missing or broken cache is empty, never fatal.
     pub fn load(app_dir: &Path) -> Self {
         let path = app_dir.join("cache").join("substrates.json");
@@ -157,7 +168,7 @@ impl Cache {
     /// Write the cache back if this run changed it. A failure is not an error:
     /// the cache only saves work, it never decides a verdict.
     pub fn save(&self) {
-        if !self.dirty {
+        if !self.dirty || self.path.as_os_str().is_empty() {
             return;
         }
         let entries: BTreeMap<String, serde_json::Value> = self
@@ -433,7 +444,10 @@ fn session_finding(adapter: &Adapter, env: &Env, session_id: &str) -> Option<Fin
     if !crate::overlay::can_write(adapter) {
         return None;
     }
-    let dir = crate::overlay::session_dir(&settings::app_dir(env), session_id, &adapter.agent);
+    let Ok(app_dir) = settings::app_dir(env) else {
+        return None;
+    };
+    let dir = crate::overlay::session_dir(&app_dir, session_id, &adapter.agent);
     if !dir.is_dir() {
         return None;
     }
@@ -467,7 +481,10 @@ fn session_finding(adapter: &Adapter, env: &Env, session_id: &str) -> Option<Fin
 
 /// Copies left behind for sessions the host no longer has.
 fn stale_copies(env: &Env, _adapter: Option<&Adapter>, live: &[String]) -> Vec<Finding> {
-    let root = settings::app_dir(env).join("sessions");
+    let Ok(app_dir) = settings::app_dir(env) else {
+        return Vec::new();
+    };
+    let root = app_dir.join("sessions");
     let Ok(entries) = std::fs::read_dir(&root) else {
         return Vec::new();
     };
@@ -615,7 +632,7 @@ mod tests {
         let (rows, _) = adapters::load(None);
         let pi = rows.iter().find(|row| row.agent == "pi").expect("pi row");
         let targets = vec![Target::new("X-AoE-Tags", "", "AOE_HDR_X_AOE_TAGS")];
-        let mut cache = Cache::load(&settings::app_dir(&env));
+        let mut cache = Cache::load(&settings::app_dir(&env).expect("app dir"));
         let findings = classify(Some(pi), &targets, &env, "s1", &[], &mut cache);
         let user = findings
             .iter()

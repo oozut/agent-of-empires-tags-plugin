@@ -7,10 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, DEFAULT_PAYLOAD, PLUGIN_ID, SESSION_JSON};
-
-/// The default target carries one JSON object, not a flat string.
-const DEFAULT_VALUE: &str = DEFAULT_PAYLOAD;
+use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -22,7 +19,8 @@ fn hook_prints_one_name_value_line() {
     let run = hook(&sandbox);
     run.assert_ok();
     // NAME is the environment variable: aoe parses hook stdout as KEY=VALUE.
-    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={DEFAULT_VALUE}")]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={default_value}")]);
     assert_eq!(run.stderr, "");
 }
 
@@ -45,7 +43,7 @@ fn the_session_row_beats_the_environment() {
     run.assert_ok();
     assert_eq!(
         run.lines(),
-        vec!["P=/var/lib/aoe/android-keyboard-worktrees/lithuanians"]
+        vec![format!("P={}", sandbox.project().display())]
     );
 }
 
@@ -79,7 +77,8 @@ fn malformed_settings_do_not_abort_the_session() {
     run.assert_ok();
     assert!(run.stderr.contains("malformed TOML"), "{}", run.stderr);
     // The built-in default header still renders, so a broken file degrades instead of failing.
-    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={DEFAULT_VALUE}")]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={default_value}")]);
 }
 
 #[test]
@@ -114,7 +113,8 @@ fn value_prints_the_bare_value() {
     let sandbox = Sandbox::new();
     let run = sandbox.run(&["value"]);
     run.assert_ok();
-    assert_eq!(run.lines(), vec![DEFAULT_VALUE]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![default_value]);
 }
 
 #[test]
@@ -131,7 +131,8 @@ fn value_is_case_insensitive_about_the_name() {
     let sandbox = Sandbox::new();
     let run = sandbox.run(&["value", "x-aoe-tags"]);
     run.assert_ok();
-    assert_eq!(run.lines(), vec![DEFAULT_VALUE]);
+    let default_value = sandbox.default_payload();
+    assert_eq!(run.lines(), vec![default_value]);
 }
 
 // --- setup ------------------------------------------------------------------
@@ -726,4 +727,49 @@ fn a_feature_tag_is_a_key_value_entry_at_every_level() {
     let payload = &run.lines()[0];
     assert!(payload.contains(r#""epic":"checkout""#), "{payload}");
     assert!(!payload.contains(r#""feature":"#), "{payload}");
+}
+
+#[test]
+fn without_a_home_a_command_refuses_instead_of_writing_beside_the_checkout() {
+    let sandbox = Sandbox::new();
+    // Somewhere a checked-out repository could edit, and where a relative
+    // `.config/agent-of-empires` would land if the plugin guessed.
+    let cwd = sandbox.path("checkout");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+
+    let run = sandbox.run_within(
+        &cwd,
+        &["tag", "--set", "team:core"],
+        &[("HOME", ""), ("XDG_CONFIG_HOME", "")],
+    );
+    run.assert_code(1);
+    assert!(
+        run.stderr.contains("XDG_CONFIG_HOME"),
+        "the message says what is missing: {}",
+        run.stderr
+    );
+    assert!(
+        std::fs::read_dir(&cwd).expect("cwd").next().is_none(),
+        "the command wrote into the directory it was started in"
+    );
+}
+
+#[test]
+fn a_launch_without_a_home_still_sends_its_header() {
+    let sandbox = Sandbox::new();
+    // No app dir means no session edits to read, which is a warning and not a
+    // failed launch: the hook's job is to export a value either way.
+    let run = sandbox.run_with(&["hook"], &[("HOME", ""), ("XDG_CONFIG_HOME", "")]);
+    run.assert_ok();
+    assert_eq!(run.lines().len(), 1, "{}", run.stdout);
+    assert!(
+        run.lines()[0].starts_with("AOE_LLM_TAGS="),
+        "{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains("no session edits are read"),
+        "the warning says the edits were skipped: {}",
+        run.stderr
+    );
 }

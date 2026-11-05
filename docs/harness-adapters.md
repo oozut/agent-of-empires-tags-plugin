@@ -158,10 +158,23 @@ Properties that follow, and that the tests pin down:
 - **Nothing is written outside the app dir.** `setup --undo` deletes the copy; there is no
   backup to restore because the original was never touched.
 - **A copy cannot outlive its session.** The worker prunes `sessions/` against the host's live
-  session list, and `doctor` reports what is there.
-- **A copy that carries nothing is not used.** If the writer has nowhere to put any target
-  (no provider with models, no provider table), the hook exports no override, so the harness
-  keeps reading its real config instead of an empty one.
+  session list, and `doctor` reports what is there. Pruning removes the generated copy and leaves
+  the session's `overrides.toml` in place: that file is not a copy, it is the only place a
+  session's own tags exist, so a list that has not caught up must not take them.
+- **A copy that carries nothing is not used, and not built.** If the writer has nowhere to put
+  any target (no provider with models, no provider table), the hook exports no override, so the
+  harness keeps reading its real config instead of an empty one — and the session directory is
+  never created, so a launch that delivers nothing leaves nothing behind (an unused copy from an
+  earlier launch is removed). `sessions/` therefore holds only copies a harness is actually
+  pointed at.
+- **Only the config file is copied.** The generated config is the one thing whose content is
+  duplicated, because that is where the tag has to live. Every other entry of the user's config
+  dir — `auth.json`, the session store, caches, backups — is linked, not copied, so a session's
+  directory never becomes a second copy of the user's credentials.
+- **What is copied is private.** That one file carries what the harness needs to authenticate, a
+  provider `apiKey` included, so it is written `0600` inside a `0700` directory whatever mode the
+  file it came from had. Nothing is stripped: a harness that cannot authenticate cannot launch, and
+  the mode is the guarantee instead. A `0644` source becomes a `0600` copy.
 - **The shape is preserved before it is modified.** The copy starts as a parse of the user's
   file; the TOML writer edits the document so the user's comments survive.
 

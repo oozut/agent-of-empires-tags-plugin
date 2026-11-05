@@ -4,7 +4,10 @@ version = "0.1.0"
 api_version = 18
 aoe_version = ">=1.21.0, <2.0.0"
 description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."
-capabilities = ["runtime.worker", "session.read", "net"]
+# Least privilege: the worker and the session rows it reads, and nothing else. The
+# plugin never opens a connection itself — the harness does, with the header this
+# plugin hands it — so `net` is not declared. Take it in the change that needs it.
+capabilities = ["runtime.worker", "session.read"]
 
 [[commands]]
 id = "status"

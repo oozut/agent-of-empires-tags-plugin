@@ -128,6 +128,169 @@ fn nothing_is_redirected_when_the_harness_cannot_carry_the_target() {
 }
 
 #[test]
+fn a_launch_that_delivers_nothing_leaves_nothing_behind() {
+    // Nothing to place: no session directory at all, and in particular no links
+    // into the user's config dir (auth.json is the kind of thing that lives
+    // there) for a harness that is never pointed at it.
+    let sandbox = Sandbox::new();
+    sandbox.write_pi_models(r#"{"providers":{}}"#);
+    sandbox.write_file(
+        &sandbox.path("home/.pi/agent/auth.json"),
+        r#"{"token":"sk-live"}"#,
+    );
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(emitted(&run.lines(), "PI_CODING_AGENT_DIR"), None);
+    assert!(
+        !sandbox.path("config/agent-of-empires/sessions").exists(),
+        "a copy that carries nothing is not built either"
+    );
+
+    // And a harness that is not configured at all is the same case: no file to
+    // start from, so nothing is created.
+    let bare = Sandbox::new();
+    let run = bare.run(&["hook"]);
+    run.assert_ok();
+    assert!(!bare.path("config/agent-of-empires/sessions").exists());
+}
+
+#[test]
+fn a_copy_that_is_no_longer_used_does_not_stay_on_disk() {
+    // A copy from an earlier launch must not outlive the launch that stops
+    // delivering: the session's own overrides are the user's, and stay.
+    let sandbox = Sandbox::new();
+    sandbox.write_pi_models(
+        r#"{"providers":{"litellm":{"baseUrl":"http://h/v1","models":[{"id":"m1"}]}}}"#,
+    );
+    let first = sandbox.run(&["hook"]);
+    first.assert_ok();
+    let dir = PathBuf::from(emitted(&first.lines(), "PI_CODING_AGENT_DIR").expect("override"));
+    assert!(dir.join("models.json").is_file());
+
+    let overrides =
+        sandbox.path("config/agent-of-empires/sessions/cf11af87da7e4bf0/overrides.toml");
+    sandbox.run(&["tag", "--set", "team:core"]).assert_ok();
+    assert!(overrides.is_file(), "the session's own edit");
+
+    // The live config loses its only provider, so the next launch has nowhere
+    // to put the header.
+    sandbox.write_pi_models(r#"{"providers":{}}"#);
+    let second = sandbox.run(&["hook"]);
+    second.assert_ok();
+    assert_eq!(emitted(&second.lines(), "PI_CODING_AGENT_DIR"), None);
+    assert!(!dir.exists(), "the unused copy is gone: {}", dir.display());
+    assert!(
+        overrides.is_file(),
+        "the session edit is not the plugin's to delete"
+    );
+}
+
+#[test]
+fn the_session_copy_is_one_file_and_links_for_everything_else() {
+    // "Copy what the tag needs, nothing else": the generated config is the only
+    // regular file in the session dir, so no credential, session store or cache
+    // is duplicated into the app dir — a link reaches the user's own copy.
+    let sandbox = Sandbox::new();
+    sandbox.write_pi_models(
+        r#"{"providers":{"litellm":{"baseUrl":"http://h/v1","models":[{"id":"m1"}]}}}"#,
+    );
+    for (name, body) in [
+        ("auth.json", r#"{"token":"sk-live"}"#),
+        ("settings.json", r#"{"theme":"dark"}"#),
+        ("models.json.bak-20260101", r#"{"providers":{}}"#),
+    ] {
+        sandbox.write_file(&sandbox.path(&format!("home/.pi/agent/{name}")), body);
+    }
+    sandbox.write_file(&sandbox.path("home/.pi/agent/sessions/keep.json"), "{}");
+
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    let dir = PathBuf::from(emitted(&run.lines(), "PI_CODING_AGENT_DIR").expect("override"));
+
+    let mut copied = Vec::new();
+    let mut linked = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("session dir").flatten() {
+        let path = entry.path();
+        let meta = path.symlink_metadata().expect("lstat");
+        if meta.file_type().is_symlink() {
+            linked.push(entry.file_name().to_string_lossy().into_owned());
+        } else {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            assert_eq!(name, "models.json", "{name} was copied, not linked");
+            copied.push(name);
+        }
+    }
+    assert_eq!(copied, vec!["models.json".to_string()]);
+    for name in ["auth.json", "settings.json", "models.json.bak-20260101"] {
+        assert!(
+            linked.contains(&name.to_string()),
+            "{name} should be linked, saw {linked:?}"
+        );
+        let link = dir.join(name);
+        assert!(
+            std::fs::read_to_string(&link).is_ok(),
+            "{name} links to the user's file"
+        );
+    }
+    assert!(linked.contains(&"sessions".to_string()), "{linked:?}");
+
+    // Private, because the one copied file carries whatever a provider needs to
+    // authenticate: the directory and the copy are this user's alone, whatever
+    // mode the file they were built from had.
+    let mode = |path: &Path| -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&dir), 0o700, "the session dir is private");
+    assert_eq!(mode(&dir.join("models.json")), 0o600, "the copy is private");
+}
+
+#[test]
+fn a_source_config_that_is_world_readable_is_still_copied_privately() {
+    let sandbox = Sandbox::new();
+    sandbox.write_pi_models(
+        r#"{"providers":{"litellm":{"baseUrl":"http://h/v1","apiKey":"sk-live","models":[{"id":"m1"}]}}}"#,
+    );
+    let source = sandbox.pi_models_path();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o644)).expect("chmod");
+    }
+
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    let dir = PathBuf::from(emitted(&run.lines(), "PI_CODING_AGENT_DIR").expect("override"));
+    let copy = dir.join("models.json");
+    // The key is in there because the harness has to authenticate; the mode is
+    // what keeps it from being read by another account.
+    assert!(std::fs::read_to_string(&copy)
+        .expect("copy")
+        .contains("sk-live"));
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        std::fs::metadata(&copy)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o600,
+        "the copy does not inherit 0644 from the source"
+    );
+    assert_eq!(
+        std::fs::metadata(&dir)
+            .expect("metadata")
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[test]
 fn an_adapter_that_rides_the_environment_writes_no_file() {
     let mut sandbox = Sandbox::new();
     sandbox.session("cf11af87da7e4bf0", "claude");

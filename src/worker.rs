@@ -148,7 +148,13 @@ impl Host {
             eprintln!("{command}: the host sent no session_id; refusing to guess one");
             return;
         };
-        let app_dir = crate::settings::app_dir(&self.env);
+        let app_dir = match crate::settings::app_dir(&self.env) {
+            Ok(dir) => dir,
+            Err(message) => {
+                eprintln!("{command} for session {session}: {message}");
+                return;
+            }
+        };
         let result = match command {
             "tag.set" => match tag_entry(params) {
                 Some(entry) => crate::session_tags::set_tag(&app_dir, session, &entry),
@@ -251,9 +257,10 @@ impl Host {
             .unwrap_or_default();
 
         // A session's generated config must not outlive the session: the worker
-        // already holds the live list, so it is the natural place to sweep. This
-        // takes the session's `overrides.toml` with it, which is why a per-session
-        // edit cannot outlive the session either.
+        // already holds the live list, so it is the natural place to sweep. The
+        // session's own `overrides.toml` is not a generated copy, though, and a
+        // list that has merely not caught up must not take a user's tags with it,
+        // so the sweep leaves that file alone (`overlay::prune`).
         let live: Vec<String> = sessions
             .iter()
             .filter_map(|session| session.get("id"))
@@ -262,7 +269,10 @@ impl Host {
             .collect();
         if !live.is_empty() {
             let app_dir = crate::settings::app_dir(&self.env);
-            let removed = crate::overlay::prune(&app_dir, &live);
+            let removed = match &app_dir {
+                Ok(app_dir) => crate::overlay::prune(app_dir, &live),
+                Err(_) => 0,
+            };
             if removed > 0 {
                 eprintln!("pruned {removed} stale session config(s)");
             }
@@ -372,16 +382,23 @@ impl Host {
                 Some(session_table),
                 Some(facts_override),
             );
-            let text = snap
-                .resolved
-                .first()
-                .map(|item| item.value.clone())
-                .unwrap_or_default();
-
             // What this session adds on top of the settings, and what it drops:
             // the pane and the page label each tag with where it came from, so a
             // "make it platform for this one session" reads as exactly that.
-            let (edits, edit_warnings) = crate::session_tags::load(&app_dir, &id);
+            let (edits, edit_warnings) = match &app_dir {
+                Ok(app_dir) => crate::session_tags::load(app_dir, &id),
+                // No app dir means no session file to read: say so once per
+                // session instead of showing edits the launch will not see.
+                Err(message) => (Default::default(), vec![message.clone()]),
+            };
+            // The badge shows the first rendered value — the token's stand-in for a
+            // target with no template included, which is why it is worked out here,
+            // after the session's own file has been read.
+            let text = snap
+                .resolved
+                .first()
+                .map(|item| unpublished(&item.value, &edits.token))
+                .unwrap_or_default();
             for warning in &edit_warnings {
                 eprintln!("{id}: {warning}");
             }
@@ -419,7 +436,7 @@ impl Host {
                     serde_json::json!({
                         "kind": "row",
                         "label": item.header,
-                        "value": elide(&item.value, 80),
+                        "value": elide(&unpublished(&item.value, &edits.token), 80),
                         "mono": true,
                     })
                 })
@@ -438,9 +455,12 @@ impl Host {
                 "children": tag_rows,
             }));
             if !edits.token.is_empty() {
+                // The value never reaches a surface: `ui.state.set` payloads are
+                // kept by the host and rendered for anyone who can see the
+                // session, so "a token is set" is all a surface is told.
                 blocks.push(serde_json::json!({
                     "kind": "note",
-                    "text": format!("token override: {}", elide(&edits.token, 120)),
+                    "text": "a token override is set for this session (value not shown here)",
                     "tone": "info",
                 }));
             }
@@ -497,7 +517,7 @@ impl Host {
                 "targets": snap.resolved.iter().map(|item| serde_json::json!({
                     "name": item.header,
                     "env_var": item.env_var,
-                    "value": item.value,
+                    "value": unpublished(&item.value, &edits.token),
                 })).collect::<Vec<_>>(),
                 "tags": snap.settings.tags.iter().filter_map(|raw| {
                     let tag = resolver::Tag::parse(raw).ok()?;
@@ -509,8 +529,16 @@ impl Host {
                     }))
                 }).collect::<Vec<_>>(),
                 "unset": edits.unset,
-                "token": edits.token,
-                "path": crate::session_tags::path(&app_dir, &id).display().to_string(),
+                // Never the token itself: the page is a read-only surface for a
+                // value the host keeps, so it learns that one is set and nothing
+                // about what it says. The CLI (`tag --show`) is where it is read.
+                "token_set": !edits.token.is_empty(),
+                "path": match &app_dir {
+                    Ok(app_dir) => crate::session_tags::path(app_dir, &id)
+                        .display()
+                        .to_string(),
+                    Err(_) => String::new(),
+                },
             }));
         }
 
@@ -574,6 +602,25 @@ const EDITOR_PAGE: &str = "/plugins/dev.oozut.llm-tags/tags";
 
 /// A value for a pane row: long enough to recognise, short enough not to push
 /// the payload past its 64 KiB cap on a wide session list.
+/// What a surface may say about one rendered value.
+///
+/// A session's literal token stands in for the rendered payload, so the target
+/// row that shows it *is* the token. A surface never carries it: `ui.state.set`
+/// payloads are kept by the host and rendered to everyone who can see the
+/// session, so the value stays in the session file and the surface names it.
+/// `aoe-llm-tags tag --show` and the `status` command remain the read-back, for
+/// the operator who already knows it.
+fn unpublished(value: &str, token: &str) -> String {
+    if !token.is_empty() && value == token {
+        TOKEN_NOT_SHOWN.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+/// What a surface shows where the session's token would be.
+const TOKEN_NOT_SHOWN: &str = "(the session's token, not shown here)";
+
 fn elide(value: &str, max: usize) -> String {
     if value.chars().count() <= max {
         return value.to_string();

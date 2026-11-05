@@ -118,6 +118,27 @@ fn a_linked_worktree_reads_its_own_branch_root_and_name() {
 }
 
 #[test]
+fn a_directory_inside_a_checkout_is_not_a_checkout_of_its_own() {
+    // The session's path is what is read, not whatever repository happens to sit
+    // above it: a home directory that is itself a dotfiles clone must not turn a
+    // plain project into `main` of somebody else's branch.
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    let nested = repo.join("src");
+    std::fs::create_dir_all(&nested).expect("nested");
+    sandbox.write_config(&settings_config(r#"tags = ["branch:{git.branch}"]"#, ""));
+
+    let run = hook_at(&sandbox, &nested, &[]);
+    let payload = payload(&run);
+    assert_eq!(payload["branch"], "", "{payload}");
+    assert!(
+        run.stderr.contains("is not a git checkout"),
+        "{}",
+        run.stderr
+    );
+}
+
+#[test]
 fn an_unborn_branch_is_a_warning_and_never_a_failed_launch() {
     let sandbox = Sandbox::new();
     let repo = sandbox.path("empty");
@@ -219,6 +240,31 @@ fn a_git_that_never_answers_costs_one_launch_budget_and_not_one_per_fact() {
     assert!(
         elapsed < Duration::from_millis(3_500),
         "the launch waits for one 2s budget, not one per fact: {elapsed:?}"
+    );
+}
+
+#[test]
+fn a_grandchild_that_outlives_git_cannot_hold_the_launch() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    // git exits at once, but the background child inherited its stdout, so the
+    // pipe stays open. Waiting for the reader to finish would wait for `sleep`:
+    // the drain gets a grace period and the launch keeps its budget.
+    let leaky = sandbox.path("bin/leaky-git");
+    sandbox.write_executable(&leaky, "#!/bin/sh\necho main\nsleep 30 &\nexit 1\n");
+    sandbox.write_config(&settings_config(r#"tags = ["branch:{git.branch}"]"#, ""));
+
+    let started = Instant::now();
+    let run = hook_at(
+        &sandbox,
+        &repo,
+        &[("AOE_GIT_BIN", leaky.to_str().expect("path"))],
+    );
+    let elapsed = started.elapsed();
+    payload(&run);
+    assert!(
+        elapsed < Duration::from_millis(1_500),
+        "a held pipe must not become the launch's wait: {elapsed:?}"
     );
 }
 
