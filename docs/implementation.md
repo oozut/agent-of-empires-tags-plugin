@@ -472,6 +472,8 @@ built in memory before the disk is touched: with nothing placed, no directory is
 unused copy from an earlier launch is removed. Only the harness config file is copied —
 everything else in a session dir is a symlink to the user's own entry. Undo is
 `rm -rf` of the copy — there is no backup to restore because the original is never modified.
+Pruning takes the generated copy and leaves `overrides.toml` behind (see `header-contract.md`
+§Per-session edits): the edits are not a copy, and a stale host list must not delete them.
 
 Both writers (`src/private.rs`) keep what they write to the user: the session directory is `0700`
 and every file the plugin creates is `0600`, because the one copied file can carry a provider key

@@ -251,9 +251,10 @@ impl Host {
             .unwrap_or_default();
 
         // A session's generated config must not outlive the session: the worker
-        // already holds the live list, so it is the natural place to sweep. This
-        // takes the session's `overrides.toml` with it, which is why a per-session
-        // edit cannot outlive the session either.
+        // already holds the live list, so it is the natural place to sweep. The
+        // session's own `overrides.toml` is not a generated copy, though, and a
+        // list that has merely not caught up must not take a user's tags with it,
+        // so the sweep leaves that file alone (`overlay::prune`).
         let live: Vec<String> = sessions
             .iter()
             .filter_map(|session| session.get("id"))

@@ -286,9 +286,12 @@ control's spinner clears), and the next `/api/plugins/ui-state` read carried the
 again. `tools/drive-worker.py` reproduces the same conversation without a browser, which is what
 makes the payload shape checkable on a machine with no dashboard open.
 
-The store is deleted with the session. `overlay::prune` runs on every host event and removes any
-session directory the host no longer lists — which takes `overrides.toml` with it — and it treats
-an empty live list as a failed query rather than as evidence that every session is gone.
+`overlay::prune` runs on every host event and removes the generated harness copies of a session
+directory the host no longer lists, and it treats an empty live list as a failed query rather than
+as evidence that every session is gone. It leaves `overrides.toml` alone: that file is not a copy
+of anything, it is the only record of what someone typed, so a host list that has merely not caught
+up (a failed read, a restart mid-sweep) cannot delete a tag. `setup --undo` is how a session's
+edits are removed, and it says what it removed.
 
 ## What the plugin does not decide
 

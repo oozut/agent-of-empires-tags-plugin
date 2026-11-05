@@ -19,8 +19,11 @@
 //! token = '{"team":"platform"}'              # a literal value for this session
 //! ```
 //!
-//! `overlay::prune` already deletes a session's directory once the host no
-//! longer lists it, so these edits cannot outlive their session either.
+//! Nothing here is a copy of anything, which is why `overlay::prune` removes the
+//! generated harness configs of a session the host no longer lists but leaves this
+//! file: a host list that has not caught up (a failed read, a restart) must not be
+//! able to delete a tag someone typed. `setup --undo` is the way to remove it, and
+//! it says what it removed.
 
 use std::path::{Path, PathBuf};
 

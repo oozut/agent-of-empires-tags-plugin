@@ -333,7 +333,7 @@ fn discard(dir: &Path) {
 /// config behind for long.
 pub fn prune(app_dir: &Path, live: &[String]) -> usize {
     // An empty list is a failed query, not a host with no sessions: pruning on
-    // it would delete every session's copy — and its overrides — on one bad read.
+    // it would delete every session's copy on one bad read.
     if live.is_empty() {
         return 0;
     }
@@ -347,10 +347,40 @@ pub fn prune(app_dir: &Path, live: &[String]) -> usize {
         if live.iter().any(|id| sanitize(id) == name) {
             continue;
         }
-        if std::fs::remove_dir_all(entry.path()).is_ok() {
+        if remove_generated(&entry.path()) {
             removed += 1;
         }
     }
+    removed
+}
+
+/// Delete the generated harness copies inside one session dir, and the dir when
+/// nothing is left in it.
+///
+/// `overrides.toml` is not a copy of anything: it is the only place a session's
+/// own tags and its literal token exist. A host list that has merely not caught up
+/// (a read that failed, a host that was restarted) must not take them with it, so
+/// the file stays and the directory stays with it — `setup --undo` is the way to
+/// remove an edit, and it says so.
+fn remove_generated(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let mut removed = false;
+    for entry in entries.flatten() {
+        if entry.file_name() == crate::session_tags::FILE {
+            continue;
+        }
+        let path = entry.path();
+        let gone = match entry.file_type() {
+            Ok(kind) if kind.is_dir() => std::fs::remove_dir_all(&path).is_ok(),
+            Ok(_) => std::fs::remove_file(&path).is_ok(),
+            Err(_) => false,
+        };
+        removed |= gone;
+    }
+    // Fails while `overrides.toml` is still there, which is the point.
+    let _ = std::fs::remove_dir(dir);
     removed
 }
 

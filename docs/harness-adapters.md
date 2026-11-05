@@ -158,7 +158,9 @@ Properties that follow, and that the tests pin down:
 - **Nothing is written outside the app dir.** `setup --undo` deletes the copy; there is no
   backup to restore because the original was never touched.
 - **A copy cannot outlive its session.** The worker prunes `sessions/` against the host's live
-  session list, and `doctor` reports what is there.
+  session list, and `doctor` reports what is there. Pruning removes the generated copy and leaves
+  the session's `overrides.toml` in place: that file is not a copy, it is the only place a
+  session's own tags exist, so a list that has not caught up must not take them.
 - **A copy that carries nothing is not used, and not built.** If the writer has nowhere to put
   any target (no provider with models, no provider table), the hook exports no override, so the
   harness keeps reading its real config instead of an empty one — and the session directory is
