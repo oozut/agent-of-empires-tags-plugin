@@ -39,7 +39,11 @@ per-session edit still wins over both. From most to least specific the order is 
 while a session's own edits are exempt and added on top — a tag typed for one session always
 travels. A rule adds a key rather than rewriting one that is already set. Unlike the other
 settings this file lives with the code, so a checkout carries its own attribution; a missing or
-malformed file is a `doctor` warning, not a failed launch.
+malformed file is a `doctor` warning, not a failed launch. Since it is repository content it is
+read defensively: the path may not resolve outside the project (a symlink counts), only a regular
+file is read, the 64 KiB cap applies to the read itself, every string has its control characters
+dropped and its whitespace trimmed, and a string value is additionally trimmed to 256 characters
+while a list or an object keeps its shape.
 
 `setup --apply` no longer edits any user config: a value rides the launch environment, or the
 hook builds this session's own copy of the harness's config under the plugin's app dir and exports

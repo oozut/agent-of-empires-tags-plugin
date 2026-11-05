@@ -155,9 +155,19 @@ Rules that keep the contract honest:
 ### A repository's own tags
 
 `tags_file` names a JSON object that lives inside the session's project: the path is relative to
-the project root and cannot leave it. Every top-level pair is one tag with its JSON type intact
-(`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the same grammar as a
-settings tag; a key that does not is skipped with a warning rather than rewritten.
+the project root and cannot leave it, even through a symlink — the resolved path is what is
+checked, because `..` is not the only way out of a tree. Every top-level pair is one tag with its
+JSON type intact (`{"cost": 1.5}` is the number `1.5`, not the string `"1.5"`). Keys follow the
+same grammar as a settings tag; a key that does not is skipped with a warning rather than
+rewritten.
+
+The file is repository content, so it is read as untrusted input. It has to exist before anything
+is opened; only a regular file is read, so a FIFO or a device cannot stall the launch; the 64 KiB
+cap is applied to the read itself rather than to the length `stat` reports, since that length is a
+claim rather than a bound. Values are sanitised before they can reach a header: every string has
+its control characters dropped and its surrounding whitespace trimmed, and a **string** value is
+additionally trimmed to 256 characters. A list or an object is left alone — it is a structure
+rather than text, and the file cap already bounds it.
 
 The repo file is one rung below a session's own edit: its entries come first and replace a
 `tags` entry with the same key, while a per-session edit still wins over both. From most to

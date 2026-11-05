@@ -127,8 +127,14 @@ value; a file that cannot be parsed is a warning and is ignored (profile → glo
 
 `tags_file` is the one setting whose value is a path. It is read at launch from
 `<project path>/<value>` (relative, and it must stay inside the project), and every top-level
-pair of that JSON object becomes a tag with its JSON type intact. The file's entries come first
-and replace a `settings.tags` entry with the same key; `session_tags::apply` still runs after
+pair of that JSON object becomes a tag with its JSON type intact. Because the file is repository
+content it is read defensively: the path is resolved first and refused if the result is outside
+the project (a symlink out of the tree cannot be seen by a `..` check), only a regular file is
+read (a FIFO would block the hook instead of failing it), the 64 KiB cap is applied to the read
+rather than to the reported file length, every string has its control characters dropped and its
+surrounding whitespace trimmed, and a string value is additionally trimmed to 256 characters —
+a list or an object keeps its shape and its length. The file's entries come first and replace a
+`settings.tags` entry with the same key; `session_tags::apply` still runs after
 and puts a session's own edit in front of everything. That gives one priority order — a session
 edit, then the repo file, then `settings.tags`, then a rule hit. `matched_tags` spends the
 five-tag budget on the inherited tags in that order and adds the session's edits on top:

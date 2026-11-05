@@ -29,8 +29,13 @@ pub const TAG_CAP: usize = 5;
 /// settings, not the delivered value (`VALUE_MAX_BYTES` still clamps that).
 pub const TAG_MAX_CHARS: usize = 96;
 /// A `tags_file` is a small declaration, not a data dump; the cap keeps a hook
-/// from reading a repository file it has no business reading.
+/// from reading a repository file it has no business reading, and it is applied
+/// to the *read* (`take`), not to whatever `metadata` claims the size is.
 pub const TAGS_FILE_MAX_BYTES: u64 = 64 * 1024;
+/// A string from a `tags_file` is one field of one header, not a document:
+/// longer than this it is trimmed. A list or an object is left whole — it is a
+/// structure rather than text, and the file cap already bounds it.
+pub const TAGS_FILE_STRING_MAX_CHARS: usize = 256;
 pub const VALUE_MAX_BYTES: usize = 800;
 pub const SHORT_ID_PREFIX: &str = "S-";
 pub const SHORT_ID_CHARS: usize = 4;
@@ -493,14 +498,9 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
     }
 
     let path = Path::new(project_path).join(relative);
-    match std::fs::metadata(&path) {
-        Ok(meta) if meta.len() > TAGS_FILE_MAX_BYTES => {
-            warnings.push(format!(
-                "settings: tags_file {} is larger than {TAGS_FILE_MAX_BYTES} bytes; no tags loaded",
-                path.display()
-            ));
-            return (Vec::new(), warnings);
-        }
+
+    // Existence first: a file that is not there costs no open and no read.
+    match std::fs::symlink_metadata(&path) {
         Ok(_) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             warnings.push(format!(
@@ -519,8 +519,86 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
         }
     }
 
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
+    // The repository owns this path, so it is untrusted: the file it resolves to
+    // has to stay inside the project. Refusing `..` is not enough — a symlink is
+    // how a relative path leaves the tree without ever containing one — so the
+    // *canonical* target is what gets checked.
+    let root = match std::fs::canonicalize(project_path) {
+        Ok(root) => root,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: the project {} cannot be resolved ({err}); \
+                 no tags loaded",
+                configured,
+                Path::new(project_path).display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    let resolved = match std::fs::canonicalize(&path) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: cannot be resolved ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    if !resolved.starts_with(&root) {
+        warnings.push(format!(
+            "settings: tags_file {} resolves to {}, which is not inside the project {}; \
+             no tags loaded",
+            configured,
+            resolved.display(),
+            root.display()
+        ));
+        return (Vec::new(), warnings);
+    }
+
+    // A regular file or nothing: a FIFO has no size to trust and never reaches
+    // EOF, a device never runs out of bytes, and a directory is not a document.
+    // The check is on the resolved path, so no open happens for a file this
+    // launch has no business reading.
+    let is_file = match std::fs::metadata(&resolved) {
+        Ok(meta) => meta.is_file(),
+        Err(err) => {
+            warnings.push(format!(
+                "settings: tags_file {}: cannot be read ({err}); no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+    };
+    if !is_file {
+        warnings.push(format!(
+            "settings: tags_file {} is not a regular file; no tags loaded",
+            path.display()
+        ));
+        return (Vec::new(), warnings);
+    }
+
+    // Read through the cap instead of trusting `metadata().len()`: a growing file
+    // reports the length it had a moment ago, and this is the read that must be
+    // bounded. `take` stops one byte past the cap, which is what "too large" is.
+    let raw = match read_capped(&resolved, TAGS_FILE_MAX_BYTES) {
+        Ok(bytes) if bytes.len() as u64 > TAGS_FILE_MAX_BYTES => {
+            warnings.push(format!(
+                "settings: tags_file {} is larger than {TAGS_FILE_MAX_BYTES} bytes; no tags loaded",
+                path.display()
+            ));
+            return (Vec::new(), warnings);
+        }
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                warnings.push(format!(
+                    "settings: tags_file {} is not valid UTF-8; no tags loaded",
+                    path.display()
+                ));
+                return (Vec::new(), warnings);
+            }
+        },
         Err(err) => {
             warnings.push(format!(
                 "settings: tags_file {}: cannot be read ({err}); no tags loaded",
@@ -560,10 +638,71 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
         }
         tags.push(Tag {
             key: key.clone(),
-            value: value.clone(),
+            value: sanitize_file_value(value.clone(), &path, key, &mut warnings),
         });
     }
     (tags, warnings)
+}
+
+/// Read at most one byte past `limit`, so the caller can tell "exactly at the
+/// cap" from "over it" without reading the rest. The file is already known to be
+/// a regular file inside the project; the cap is still applied here because this
+/// is the call that would block or grow.
+fn read_capped(path: &Path, limit: u64) -> std::io::Result<Vec<u8>> {
+    let mut file = std::fs::File::open(path)?;
+    let mut bytes = Vec::new();
+    file.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Clean one value from the repository's file before it can reach a header.
+///
+/// The file is repository content, so it is sanitised here and not only by the
+/// resolver's clamp later: every string is passed through the same sanitiser the
+/// resolver uses — control characters dropped and surrounding whitespace trimmed
+/// — at every depth (a newline in a value is what splits a `csv` list or a
+/// `KEY=VALUE` line), and a top-level *string* is additionally trimmed to
+/// [`TAGS_FILE_STRING_MAX_CHARS`]. A list or an object keeps its type and its
+/// length — it is a structure, not text, and the file cap already bounds it.
+fn sanitize_file_value(value: Value, path: &Path, key: &str, warnings: &mut Vec<String>) -> Value {
+    let mut value = sanitize_json_strings(value);
+    if let Value::String(text) = &value {
+        let trimmed = truncate_chars(text, TAGS_FILE_STRING_MAX_CHARS);
+        if trimmed != *text {
+            warnings.push(format!(
+                "settings: tags_file {} key {key:?} is longer than \
+                 {TAGS_FILE_STRING_MAX_CHARS} characters; trimmed",
+                path.display()
+            ));
+            value = Value::String(trimmed);
+        }
+    }
+    value
+}
+
+/// The same sanitiser the resolver applies to a rendered value, at every depth:
+/// a nested string reaches the header inside the payload JSON just as a top-level
+/// one does.
+fn sanitize_json_strings(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(sanitize_value(&text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_json_strings).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (sanitize_value(&key), sanitize_json_strings(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
+/// The first `limit` characters — a character count, like [`TAG_MAX_CHARS`], so a
+/// multi-byte value is never cut mid-character.
+fn truncate_chars(text: &str, limit: usize) -> String {
+    match text.char_indices().nth(limit) {
+        Some((end, _)) => text[..end].to_string(),
+        None => text.to_string(),
+    }
 }
 
 /// Fields [`payload`] derives from the session. A tag or a `feature_tag` naming
@@ -2508,6 +2647,134 @@ mod tests {
         assert_eq!(tags.len(), 1, "{tags:?}");
         assert_eq!(tags[0].key, "ok");
         assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    #[test]
+    fn a_tags_file_that_is_not_a_regular_file_is_refused_without_being_opened() {
+        let dir = tempdir();
+        let project = dir.path.to_str().unwrap();
+        // A directory stands in for every non-regular type: the point is that the
+        // type is checked before the read, so a FIFO (which would block the hook
+        // until a writer appears) or a device never reaches an `open`.
+        std::fs::create_dir(dir.path.join("tags.json")).unwrap();
+        let (tags, warnings) = load_tags_file(project, "tags.json");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not a regular file")),
+            "{warnings:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_tags_file_symlink_may_not_point_out_of_the_project() {
+        let dir = tempdir();
+        let project = dir.path.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let outside = dir.path.join("outside.json");
+        std::fs::write(&outside, r#"{"token":"exfiltrated"}"#).unwrap();
+
+        std::os::unix::fs::symlink(&outside, project.join("tags.json")).unwrap();
+        let (tags, warnings) = load_tags_file(project.to_str().unwrap(), "tags.json");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("not inside the project")),
+            "{warnings:?}"
+        );
+
+        // A link that stays inside the project is still a file inside the project.
+        std::fs::write(project.join("real.json"), r#"{"token":"ours"}"#).unwrap();
+        std::fs::remove_file(project.join("tags.json")).unwrap();
+        std::os::unix::fs::symlink(project.join("real.json"), project.join("tags.json")).unwrap();
+        let (tags, warnings) = load_tags_file(project.to_str().unwrap(), "tags.json");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(tags.len(), 1, "{tags:?}");
+    }
+
+    #[test]
+    fn a_tags_file_over_the_cap_is_refused_by_the_read_not_by_its_metadata() {
+        let dir = tempdir();
+        let filler = "x".repeat(TAGS_FILE_MAX_BYTES as usize);
+        std::fs::write(
+            dir.path.join("tags.json"),
+            format!(r#"{{"note":"{filler}"}}"#),
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        assert!(tags.is_empty(), "{tags:?}");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("is larger than")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_tags_file_string_is_trimmed_but_a_list_or_object_keeps_its_shape() {
+        let dir = tempdir();
+        let long = "y".repeat(TAGS_FILE_STRING_MAX_CHARS * 2);
+        std::fs::write(
+            dir.path.join("tags.json"),
+            serde_json::json!({
+                "note": long.clone(),
+                "matrix": [long.clone(), long.clone()],
+                "meta": { "k": long.clone() },
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        let pairs: BTreeMap<String, Value> =
+            tags.into_iter().map(|tag| (tag.key, tag.value)).collect();
+
+        assert_eq!(
+            pairs["note"],
+            Value::from("y".repeat(TAGS_FILE_STRING_MAX_CHARS)),
+            "a string is trimmed to the cap"
+        );
+        assert_eq!(
+            pairs["matrix"],
+            serde_json::json!([long.clone(), long.clone()]),
+            "a list is a structure, not text, and keeps its length"
+        );
+        assert_eq!(
+            pairs["meta"],
+            serde_json::json!({ "k": long.clone() }),
+            "an object keeps its length too"
+        );
+        assert_eq!(
+            warnings.len(),
+            1,
+            "one warning, for the trimmed string: {warnings:?}"
+        );
+        assert!(warnings[0].contains("trimmed"), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_tags_file_value_loses_its_control_characters_at_every_depth() {
+        let dir = tempdir();
+        std::fs::write(
+            dir.path.join("tags.json"),
+            serde_json::json!({
+                "note": "a\nb\tc\u{0}d\u{7f}e",
+                "meta": { "k": "x\ny" },
+                "matrix": ["p\rq"],
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (tags, warnings) = load_tags_file(dir.path.to_str().unwrap(), "tags.json");
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let pairs: BTreeMap<String, Value> =
+            tags.into_iter().map(|tag| (tag.key, tag.value)).collect();
+        assert_eq!(pairs["note"], Value::from("abcde"));
+        assert_eq!(pairs["meta"], serde_json::json!({ "k": "xy" }));
+        assert_eq!(pairs["matrix"], serde_json::json!(["pq"]));
     }
 
     #[test]
