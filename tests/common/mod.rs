@@ -227,6 +227,12 @@ impl Sandbox {
         self.run_bin(std::path::Path::new(CLI), args, extra)
     }
 
+    /// Run from `dir`, so a command that falls back to a relative path writes
+    /// where the test can see it.
+    pub fn run_within(&self, dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        self.run_bin_in(dir, std::path::Path::new(CLI), args, extra)
+    }
+
     /// Run this CLI through a copy placed in `<root>/plugin/bin`, so the plugin
     /// root — and therefore the adapter table it reads — is the one the test
     /// wrote. `plugin_root()` is the parent of the executable's directory.
@@ -239,8 +245,18 @@ impl Sandbox {
     }
 
     fn run_bin(&self, cli: &std::path::Path, args: &[&str], extra: &[(&str, &str)]) -> Run {
+        self.run_bin_in(Path::new("."), cli, args, extra)
+    }
+
+    fn run_bin_in(
+        &self,
+        dir: &Path,
+        cli: &std::path::Path,
+        args: &[&str],
+        extra: &[(&str, &str)],
+    ) -> Run {
         let mut command = std::process::Command::new(cli);
-        command.env_clear().args(args);
+        command.env_clear().current_dir(dir).args(args);
         for (key, value) in &self.env {
             command.env(key, value);
         }

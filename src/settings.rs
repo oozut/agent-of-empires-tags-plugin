@@ -25,23 +25,33 @@ pub const APP_DIR_NAME: &str = "agent-of-empires";
 
 const GLOBAL_CONFIG: &str = "config.toml";
 
-/// The aoe app dir: `$XDG_CONFIG_HOME` when absolute, else `~/.config`.
+/// Why there is no app dir: both answers the environment can give are missing.
+pub const NO_APP_DIR: &str = "neither XDG_CONFIG_HOME nor HOME names an absolute path, so \
+     there is nowhere to keep this plugin's session files";
+
+/// The aoe app dir: `$XDG_CONFIG_HOME` when absolute, else `<HOME>/.config`.
 ///
 /// Mirrors `xdg_config_base()` + `get_app_dir_path()` for a Linux release build.
 /// No aoe env var overrides this, so neither do we.
-pub fn app_dir(env: &Env) -> PathBuf {
-    let base = match env.get("XDG_CONFIG_HOME") {
-        Some(xdg) if Path::new(xdg).is_absolute() => PathBuf::from(xdg),
-        _ => {
-            let home = env
-                .home()
-                .map(str::to_string)
-                .or_else(|| std::env::var("HOME").ok())
-                .unwrap_or_default();
-            Path::new(&home).join(".config")
-        }
-    };
-    base.join(APP_DIR_NAME)
+///
+/// `Err` rather than a guess. This path is where a session's `overrides.toml` and
+/// its generated harness config are written *and read*, so an empty `HOME` used to
+/// leave the plugin assembling `.config/agent-of-empires/...` under whatever
+/// directory it was started in — a repository that ships such a file would have
+/// been editing this plugin's settings by being checked out. A host that cannot
+/// say where the user's config lives gets no session files and a warning, which is
+/// what "unset" means.
+pub fn app_dir(env: &Env) -> Result<PathBuf, String> {
+    if let Some(xdg) = env
+        .get("XDG_CONFIG_HOME")
+        .filter(|xdg| Path::new(xdg).is_absolute())
+    {
+        return Ok(PathBuf::from(xdg).join(APP_DIR_NAME));
+    }
+    match env.home().filter(|home| Path::new(home).is_absolute()) {
+        Some(home) => Ok(Path::new(home).join(".config").join(APP_DIR_NAME)),
+        None => Err(NO_APP_DIR.to_string()),
+    }
 }
 
 pub fn global_config_path(root: &Path) -> PathBuf {
@@ -77,8 +87,19 @@ pub struct RawSettings {
 }
 
 pub fn load_config(profile: &str, root: Option<&Path>, env: &Env) -> RawConfig {
-    let root = root.map(Path::to_path_buf).unwrap_or_else(|| app_dir(env));
     let mut out = RawConfig::default();
+    let root = match root
+        .map(Path::to_path_buf)
+        .map(Ok)
+        .unwrap_or_else(|| app_dir(env))
+    {
+        Ok(root) => root,
+        Err(message) => {
+            out.warnings
+                .push(format!("settings: {message}; no config is read"));
+            return out;
+        }
+    };
 
     let path = global_config_path(&root);
     let loaded = read_table(&path, &mut out.warnings);
@@ -194,21 +215,39 @@ mod tests {
     #[test]
     fn xdg_config_home_wins_when_absolute() {
         let env = env_with(&[("HOME", "/home/x"), ("XDG_CONFIG_HOME", "/tmp/cfg")]);
-        assert_eq!(app_dir(&env), PathBuf::from("/tmp/cfg/agent-of-empires"));
+        assert_eq!(
+            app_dir(&env).unwrap(),
+            PathBuf::from("/tmp/cfg/agent-of-empires")
+        );
     }
 
     #[test]
     fn relative_xdg_is_ignored() {
         let env = env_with(&[("HOME", "/home/x"), ("XDG_CONFIG_HOME", "relative/cfg")]);
         assert_eq!(
-            app_dir(&env),
+            app_dir(&env).unwrap(),
             PathBuf::from("/home/x/.config/agent-of-empires")
         );
     }
 
     #[test]
-    fn missing_home_does_not_raise() {
-        assert!(!app_dir(&env_with(&[])).as_os_str().is_empty());
+    fn without_a_home_there_is_no_app_dir() {
+        // The path is a write *and* a read location: `.config/agent-of-empires`
+        // under the current directory is a repository's file, not the user's, so
+        // an environment that names neither answer gets an error, not a guess.
+        let env = env_with(&[]);
+        assert_eq!(app_dir(&env).unwrap_err(), NO_APP_DIR);
+        let relative = env_with(&[("HOME", "not/absolute")]);
+        assert_eq!(app_dir(&relative).unwrap_err(), NO_APP_DIR);
+        // And the config loader says so instead of reading `./.config/...`.
+        let raw = load_config("", None, &env);
+        assert!(raw.table.is_empty());
+        assert!(raw.present.is_empty());
+        assert!(
+            raw.warnings.iter().any(|w| w.contains("nowhere")),
+            "{:?}",
+            raw.warnings
+        );
     }
 
     #[test]
@@ -263,10 +302,11 @@ mod tests {
     fn malformed_global_keeps_the_profile() {
         let dir = tempdir();
         let env = Env::new([("HOME", dir.path.to_str().unwrap())]);
-        let global = global_config_path(&app_dir(&env));
+        let root = app_dir(&env).unwrap();
+        let global = global_config_path(&root);
         std::fs::create_dir_all(global.parent().unwrap()).unwrap();
         std::fs::write(global, "not = = toml\n").unwrap();
-        let profile = profile_config_path(&app_dir(&env), "main").unwrap();
+        let profile = profile_config_path(&root, "main").unwrap();
         std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
         std::fs::write(
             &profile,

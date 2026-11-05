@@ -281,7 +281,7 @@ fn settings_of(sandbox: &Sandbox) -> BTreeMap<String, Value> {
 
 fn overrides_path(sandbox: &Sandbox, session: &str) -> PathBuf {
     let env = llm_tags::env::Env::new(sandbox.env.clone());
-    let app_dir = llm_tags::settings::app_dir(&env);
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
     llm_tags::session_tags::path(&app_dir, session)
 }
 
@@ -486,7 +486,7 @@ fn two_sessions_keep_their_own_edits() {
             .unwrap_or_else(|| panic!("no {id} in {page}"));
         assert_eq!(tag(&tags_of(session), "team")["value"], json!(expected));
         let env = llm_tags::env::Env::new(sandbox.env.clone());
-        let app_dir = llm_tags::settings::app_dir(&env);
+        let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
         let (edits, warnings) = llm_tags::session_tags::load(&app_dir, id);
         assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
@@ -533,7 +533,7 @@ fn a_token_override_is_never_published() {
 
     // It is kept, though: it is what the launch sends instead of the payload.
     let env = llm_tags::env::Env::new(sandbox.env.clone());
-    let app_dir = llm_tags::settings::app_dir(&env);
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
     let (edits, _) = llm_tags::session_tags::load(&app_dir, SESSION);
     assert_eq!(edits.token, SECRET);
 

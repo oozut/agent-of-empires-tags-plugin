@@ -127,7 +127,9 @@ pub fn resolved_targets(snap: &Snapshot) -> (Vec<Resolved>, Vec<(String, String)
 /// Build this session's artifact. Idempotent: an existing overlay is rebuilt
 /// from the user's config, so a changed tag set never leaves a stale value.
 pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Overlay, String> {
-    let app_dir = settings::app_dir(env);
+    // No app dir, no copy: the alternative is writing the session's config
+    // somewhere relative to the launch directory.
+    let app_dir = settings::app_dir(env)?;
     let dir = session_dir(&app_dir, &snap.facts.id, &adapter.agent);
     let (targets, mut skipped) = resolved_targets(snap);
 

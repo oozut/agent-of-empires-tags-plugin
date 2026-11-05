@@ -235,7 +235,12 @@ config-write RPC, and the editor below writes only inside the session's own dire
 sessions can therefore carry different tags at the same time without a rule, a profile or a
 config edit between them.
 
-Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`:
+Three surfaces, one store — `<app dir>/sessions/<session id>/overrides.toml`, where `<app dir>` is
+`$XDG_CONFIG_HOME/agent-of-empires` when that names an absolute path and `<HOME>/.config/
+agent-of-empires` otherwise. When neither does, there is no app dir and no session store: the
+commands that write one say so and exit 1, and the hook skips the session's edits with a warning
+and sends the header anyway. It never falls back to a path relative to the launch directory, which
+would let a checked-out repository ship the file that configures it.
 
 | Surface | What it does |
 |---|---|

@@ -65,7 +65,23 @@ impl Report {
 pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
     let mut checks: Vec<Check> = Vec::new();
 
-    let app_dir = settings::app_dir(env);
+    // Without an app dir there is no config to read and no session to look at, and
+    // saying so is the first check: every path below would otherwise be relative.
+    let app_dir = match settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            return Report {
+                checks: vec![Check {
+                    name: "app dir".to_string(),
+                    status: FAIL.to_string(),
+                    detail: message,
+                }],
+                paths: BTreeMap::from([("app dir", String::new())]),
+                profile: flags.profile.clone(),
+                adapter: String::new(),
+            }
+        }
+    };
     let config = settings::load_config(&flags.profile, Some(&app_dir), env);
     let global_path = settings::global_config_path(&app_dir);
     let profile_path = settings::profile_config_path(&app_dir, &flags.profile);
@@ -532,7 +548,16 @@ fn check_session_config(adapter: Option<&Adapter>, snap: &Snapshot, env: &Env) -
         };
     };
     let verdict = crate::overlay::verdict(adapter);
-    let path = crate::overlay::session_dir(&settings::app_dir(env), &snap.facts.id, &adapter.agent);
+    let path = match settings::app_dir(env) {
+        Ok(app_dir) => crate::overlay::session_dir(&app_dir, &snap.facts.id, &adapter.agent),
+        Err(message) => {
+            return Check {
+                name,
+                status: FAIL.to_string(),
+                detail: message,
+            }
+        }
+    };
     match verdict {
         "wired" => Check {
             name,

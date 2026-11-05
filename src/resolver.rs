@@ -2006,8 +2006,12 @@ pub fn snapshot_with_table(
     // `apply` puts them in front of everything inherited: a tag typed for this
     // session is the most specific thing there is.
     if !facts.id.is_empty() {
-        let app_dir = settings::app_dir(env);
-        crate::session_tags::apply(&mut configured, &app_dir, &facts.id);
+        match settings::app_dir(env) {
+            Ok(app_dir) => crate::session_tags::apply(&mut configured, &app_dir, &facts.id),
+            Err(message) => configured
+                .warnings
+                .push(format!("overrides: {message}; no session edits are read")),
+        }
     }
     warn_if_tags_overflow(&mut configured);
 
@@ -2927,8 +2931,8 @@ mod tests {
             path: dir.path.display().to_string(),
             ..facts()
         };
-        crate::session_tags::set_tag(&crate::settings::app_dir(&env), &facts.id, "hand:written")
-            .expect("session edit");
+        let app_dir = crate::settings::app_dir(&env).expect("app dir");
+        crate::session_tags::set_tag(&app_dir, &facts.id, "hand:written").expect("session edit");
         let snap = snapshot_with_table(&Flags::default(), &env, None, Some(table), Some(facts));
 
         // Seven configured tags, five carried: the manual one is first, then the

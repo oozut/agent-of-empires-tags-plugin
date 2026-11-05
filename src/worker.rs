@@ -148,7 +148,13 @@ impl Host {
             eprintln!("{command}: the host sent no session_id; refusing to guess one");
             return;
         };
-        let app_dir = crate::settings::app_dir(&self.env);
+        let app_dir = match crate::settings::app_dir(&self.env) {
+            Ok(dir) => dir,
+            Err(message) => {
+                eprintln!("{command} for session {session}: {message}");
+                return;
+            }
+        };
         let result = match command {
             "tag.set" => match tag_entry(params) {
                 Some(entry) => crate::session_tags::set_tag(&app_dir, session, &entry),
@@ -263,7 +269,10 @@ impl Host {
             .collect();
         if !live.is_empty() {
             let app_dir = crate::settings::app_dir(&self.env);
-            let removed = crate::overlay::prune(&app_dir, &live);
+            let removed = match &app_dir {
+                Ok(app_dir) => crate::overlay::prune(app_dir, &live),
+                Err(_) => 0,
+            };
             if removed > 0 {
                 eprintln!("pruned {removed} stale session config(s)");
             }
@@ -376,7 +385,12 @@ impl Host {
             // What this session adds on top of the settings, and what it drops:
             // the pane and the page label each tag with where it came from, so a
             // "make it platform for this one session" reads as exactly that.
-            let (edits, edit_warnings) = crate::session_tags::load(&app_dir, &id);
+            let (edits, edit_warnings) = match &app_dir {
+                Ok(app_dir) => crate::session_tags::load(app_dir, &id),
+                // No app dir means no session file to read: say so once per
+                // session instead of showing edits the launch will not see.
+                Err(message) => (Default::default(), vec![message.clone()]),
+            };
             // The badge shows the first rendered value — the token's stand-in for a
             // target with no template included, which is why it is worked out here,
             // after the session's own file has been read.
@@ -519,7 +533,12 @@ impl Host {
                 // value the host keeps, so it learns that one is set and nothing
                 // about what it says. The CLI (`tag --show`) is where it is read.
                 "token_set": !edits.token.is_empty(),
-                "path": crate::session_tags::path(&app_dir, &id).display().to_string(),
+                "path": match &app_dir {
+                    Ok(app_dir) => crate::session_tags::path(app_dir, &id)
+                        .display()
+                        .to_string(),
+                    Err(_) => String::new(),
+                },
             }));
         }
 
