@@ -265,7 +265,7 @@ platforms = ["linux", "macos"]
 The released manifest differs in exactly two lines (`kind = "release-binary"`, `bin =
 "aoe-llm-tags-worker"` instead of `command`), see step 10 and `parameters.md` §11.
 
-At M1 add, in one update: `session.read`/`net` to `capabilities`, `[[ui]] row-badge`/`pane`, and `[[settings]]` for `headers`
+At M1 add, in one update: `session.read` to `capabilities`, `[[ui]] row-badge`/`pane`, and `[[settings]]` for `headers` (`net` is not part of the set: the plugin never makes a request of its own)
 (`object_list`, `item_id_key = "header"`), `rules`, `session_tagging`, `feature_tag`
 (`per_project = true` → `api_version >= 18`, satisfied), `session_signature`.
 

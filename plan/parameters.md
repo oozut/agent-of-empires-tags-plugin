@@ -19,7 +19,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | Host version checked | aoe **1.21.0** on this host (2026-10-29), so 18 is available; the manifest stays at 17 through M0 because nothing in M0 uses a schema-18 feature. The bump lands in the M1-T03 commit together with `aoe_version` | decided |
 | `aoe_version` | `">=1.20.0, <2.0.0"` at 17; raise to `">=1.21.0, <2.0.0"` when the manifest moves to 18 | proposed |
 | `capabilities` (M0) | `runtime.worker` — declaring any runtime requires it, and the grant is prompted on install/update | decided |
-| `capabilities` (M1+) | `runtime.worker`, `session.read`, `net` | proposed |
+| `capabilities` (M1+) | `runtime.worker`, `session.read` — `net` was dropped from the set: nothing in the plugin makes a request, and a declared-but-unused capability is a grant the user is asked to approve for no reason | decided |
 | Install dir | `<app_dir>/plugins/<id>/` (host: `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`) | decided |
 | CLI path | `<install>/bin/aoe-llm-tags`, mode 0755, a Rust binary (no interpreter) | decided |
 | Worker entrypoint | `<install>/bin/aoe-llm-tags-worker`, stdio JSON-RPC, newline-delimited | decided |

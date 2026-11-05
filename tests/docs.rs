@@ -68,6 +68,59 @@ fn the_support_matrix_matches_the_adapter_table() {
     }
 }
 
+/// A capability is a grant the user approves, so the manifest asks only for the
+/// ones the plugin uses. The concrete case is `net`: the plugin hands a header to
+/// the harness and never opens a connection itself, so declaring it would buy a
+/// second approval prompt and nothing else.
+#[test]
+fn the_manifest_asks_only_for_the_capabilities_the_plugin_uses() {
+    let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("aoe-plugin.toml");
+    let capabilities = manifest
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("capabilities = "))
+        .expect("a capabilities line");
+    for needed in ["runtime.worker", "session.read"] {
+        assert!(
+            capabilities.contains(&format!("\"{needed}\"")),
+            "the plugin runs a worker and reads session rows, so it needs {needed}: {capabilities}"
+        );
+    }
+    if capabilities.contains("\"net\"") {
+        panic!("`net` is declared but unused: {capabilities}");
+    }
+
+    // And the source agrees: nothing in the plugin opens a socket.
+    let mut sources = Vec::new();
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).expect("src").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    walk(std::path::Path::new("src"), &mut sources);
+    assert!(!sources.is_empty(), "no sources found");
+    for path in sources {
+        let body = std::fs::read_to_string(&path).expect("source");
+        for needle in [
+            "std::net::",
+            "TcpStream",
+            "UdpSocket",
+            "TcpListener",
+            "reqwest",
+        ] {
+            assert!(
+                !body.contains(needle),
+                "{} opens a connection ({needle}) without declaring `net`",
+                path.display()
+            );
+        }
+    }
+}
+
 /// The editor page is declared in the manifest, its entry must exist in the
 /// tree, and the page must speak the same bridge methods the worker pushes to.
 /// A page whose script drifted from the worker would render an empty editor and
