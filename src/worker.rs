@@ -484,15 +484,42 @@ impl Host {
             // rendered tag set — `git.branch = git-tags`, not the reference it was
             // written as. The editor page below shows the stored entry instead,
             // because that is what a user edits.
+            let activity = crate::activity::of(&snap.tags);
+            for value in crate::activity::unknown(&snap.tags) {
+                // A closed vocabulary, so a typo is reported rather than given a
+                // guessed icon: "testing" is not "test".
+                eprintln!(
+                    "{id}: `{KEY}:{value}` is not an activity ({})",
+                    crate::activity::ALL
+                        .iter()
+                        .map(|activity| activity.key)
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    KEY = crate::activity::KEY
+                );
+            }
             for tag in &snap.tags {
                 let origin = if session_keys.contains(&tag.key) {
                     "session"
                 } else {
                     "config"
                 };
-                tag_rows.push(serde_json::json!({
+                // The activity row names what the session is doing instead of
+                // repeating the key, and carries the vocabulary's own icon.
+                let named = (tag.key == crate::activity::KEY)
+                    .then(|| {
+                        tag.value
+                            .as_str()
+                            .and_then(crate::activity::find)
+                            .map(|found| (found.label.to_string(), found.icon, found.tone))
+                    })
+                    .flatten();
+                let mut row = serde_json::json!({
                     "kind": "row",
-                    "label": tag.key,
+                    "label": named
+                        .as_ref()
+                        .map(|(label, _, _)| label.clone())
+                        .unwrap_or_else(|| tag.key.clone()),
                     "value": match &tag.value {
                         serde_json::Value::String(text) => text.clone(),
                         other => other.to_string(),
@@ -502,7 +529,15 @@ impl Host {
                     "tooltip": "click to drop this tag for this session",
                     "method": "tag.remove",
                     "params": {"key": tag.key},
-                }));
+                });
+                if let Some((_, icon, tone)) = &named {
+                    // Only a recognised activity carries an icon; `null` would
+                    // have to be filtered by the host, and a plain tag is fine
+                    // without one.
+                    row["icon"] = serde_json::json!(icon);
+                    row["tone"] = serde_json::json!(tone);
+                }
+                tag_rows.push(row);
             }
             let mut target_rows: Vec<serde_json::Value> = snap
                 .resolved
@@ -553,17 +588,68 @@ impl Host {
                 "variant": "primary",
             }));
 
+            // The row badge is where the activity is visible at a glance: one item
+            // per tag, the activity first and with its own icon, then the rest with
+            // the generic tag icon, then a count. An icon is presentation, so a
+            // terminal UI gets the same items as text and tone.
+            let mut badges: Vec<serde_json::Value> = Vec::new();
+            if let Some(activity) = activity {
+                badges.push(serde_json::json!({
+                    "text": activity.label,
+                    "icon": activity.icon,
+                    "tone": activity.tone,
+                    "tooltip": format!("activity: {}", activity.key),
+                    "href": EDITOR_PAGE,
+                }));
+            }
+            let others: Vec<_> = snap
+                .tags
+                .iter()
+                // A tag the vocabulary did not recognise is not hidden: it is
+                // reported above, and shown here as the plain tag it is, so a typo
+                // is visible rather than silently dropped from the row.
+                .filter(|tag| tag.key != crate::activity::KEY || activity.is_none())
+                .collect();
+            for tag in others.iter().take(3) {
+                badges.push(serde_json::json!({
+                    "text": tag.key,
+                    "icon": "tag",
+                    "tone": "neutral",
+                    "tooltip": format!("{}: {}", tag.key, match &tag.value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    }),
+                    "href": EDITOR_PAGE,
+                }));
+            }
+            if others.len() > 3 {
+                badges.push(serde_json::json!({
+                    "text": format!("+{}", others.len() - 3),
+                    "icon": "tags",
+                    "tone": "neutral",
+                    "tooltip": "the rest of this session's tags",
+                    "href": EDITOR_PAGE,
+                }));
+            }
+            let badge_payload = if badges.is_empty() {
+                // Nothing to break down: the rendered value is still the honest
+                // answer to "what is this session sending".
+                serde_json::json!({
+                    "text": text,
+                    "icon": "tags",
+                    "tooltip": "open the LLM Tags editor",
+                    "href": EDITOR_PAGE,
+                })
+            } else {
+                serde_json::json!({ "items": badges })
+            };
             let _ = self.call_host(
                 "ui.state.set",
                 serde_json::json!({
                     "slot": "row-badge",
                     "id": "llm_tags_badge",
                     "session_id": id,
-                    "payload": {
-                        "text": text,
-                        "tooltip": "open the LLM Tags editor",
-                        "href": EDITOR_PAGE,
-                    }
+                    "payload": badge_payload,
                 }),
             );
             let _ = self.call_host(
@@ -608,6 +694,15 @@ impl Host {
                 // value the host keeps, so it learns that one is set and nothing
                 // about what it says. The CLI (`tag --show`) is where it is read.
                 "token_set": !edits.token.is_empty(),
+                // The activity, resolved through the vocabulary so the page never
+                // spells an icon name of its own; `null` means the session has not
+                // said what it is doing.
+                "activity": activity.map(|activity| serde_json::json!({
+                    "key": activity.key,
+                    "label": activity.label,
+                    "icon": activity.icon,
+                    "tone": activity.tone,
+                })),
                 "path": match &app_dir {
                     Ok(app_dir) => crate::session_tags::path(app_dir, &id)
                         .display()
@@ -665,6 +760,7 @@ impl Host {
                     "references": references,
                     "presets": presets,
                     "extensions": extensions,
+                    "activities": crate::activity::legend(),
                     "page": EDITOR_PAGE,
                 }
             }),

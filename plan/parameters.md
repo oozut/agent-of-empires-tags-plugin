@@ -136,6 +136,35 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | A target whose `kind` the harness does not support | `setup --apply` refuses the whole plan; `doctor` fails that target | decided |
 | Malformed config TOML | warn on stderr, ignore that file (profile falls back to global, global to defaults), exit 0 | decided |
 
+## 5b. Activity vocabulary
+
+`activity` is a reserved tag key, so it is written, inherited and delivered like any other tag
+(`activity:code`, `aoe-llm-tags tag --set activity:test`). The value is closed: a surface that has
+an icon for it renders that icon, and a value outside the list is a warning (stderr once per
+launch, `activity` listed as a plain tag) rather than a fourth spelling of "testing".
+
+| Value | Icon (lucide) | Tone | A row says |
+|---|---|---|---|
+| `explore` | `compass` | neutral | exploring |
+| `plan` | `map` | info | planning |
+| `code` | `code` | neutral | coding |
+| `test` | `flask-conical` | warn | testing |
+| `debug` | `bug` | danger | debugging |
+| `review` | `git-pull-request` | info | reviewing |
+| `docs` | `book-open` | neutral | writing docs |
+| `ops` | `terminal` | warn | ops |
+| `idle` | `pause` | neutral | idle |
+
+| Rule | Value | Status |
+|---|---|---|
+| Where it is defined | `src/activity.rs`; the icon and tone live there, not in a settings file and not in the payload | decided |
+| Resolution | the last `activity` tag wins (a session's own edits apply after inherited tags) | decided |
+| Unknown value | warning, and the tag is shown as a plain tag — never given a guessed icon | decided |
+| Bare `activity` marker | not an activity, not a typo: no icon, no warning | decided |
+| Surfaces | row badge leads with the activity and its icon, then up to three tags with `tag`, then `+n`; the pane's row carries the icon; the page renders the vocabulary as buttons and shows the current one | decided |
+| Terminal UI | text and tone only, so the label ("testing") is the fallback everywhere, and the page names the icon in the tooltip | decided |
+| Delivery | an ordinary tag: launch-scoped, or per-request once a session has an approved harness extension (M5) | decided |
+
 ## 6. CLI surface
 
 | Command / flag | Value | Milestone |

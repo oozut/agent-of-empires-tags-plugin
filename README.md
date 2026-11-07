@@ -132,6 +132,14 @@ launch:
 The deliverable is the header set itself: which system consumes it is the operator's choice, and
 the plugin must work the same whichever one it is. The plugin never sees a prompt.
 
+A tag says what a session *is* (`feature:billing`, `team:core`). The reserved
+`activity` key says what it is *doing* — `explore`, `plan`, `code`, `test`, `debug`, `review`,
+`docs`, `ops`, `idle` — a closed vocabulary so the row badge, the pane and the page all show the
+same lucide icon and tone, with the word ("testing") as the fallback where an icon cannot render.
+Because an activity changes while a session runs, a launch-time value is not enough: a harness
+that loads an extension from its config can set the header on *each* request, which is why the
+plugin ships one, per harness, behind an approval that names the exact file (`docs/install.md` §6).
+
 ## Docs
 
 Design (normative, in this order):

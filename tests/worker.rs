@@ -737,3 +737,77 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     let page = wire.wait_page();
     assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
 }
+
+/// The activity is the thing a row should show at a glance, so it leads the badge
+/// with its own icon; the other tags follow with the generic one, and the icon is
+/// presentation — the text is what a terminal renders.
+#[test]
+fn the_row_badge_leads_with_the_activity_and_its_icon() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "tags = [\"activity:test\", \"team:core\"]\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+
+    let badge = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("row-badge"))
+        .unwrap_or_else(|| panic!("no badge was pushed: {:?}", wire.pushes));
+    let items = badge["payload"]["items"].as_array().expect("items");
+    assert_eq!(items[0]["text"], json!("testing"), "{badge}");
+    assert_eq!(items[0]["icon"], json!("flask-conical"), "{badge}");
+    assert_eq!(items[0]["tone"], json!("warn"), "{badge}");
+    // The raw tag is still what travels; the icon never does.
+    assert!(!badge.to_string().contains("activity:test"), "{badge}");
+    let team = items
+        .iter()
+        .find(|item| item["text"] == json!("team"))
+        .unwrap_or_else(|| panic!("no team item in {badge}"));
+    assert_eq!(team["icon"], json!("tag"));
+}
+
+#[test]
+fn a_typo_in_the_activity_is_reported_not_iconified() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "tags = [\"activity:testing\", \"team:core\"]\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+    assert!(wire.log().contains("is not an activity"), "{}", wire.log());
+    let badge = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("row-badge"))
+        .expect("a badge");
+    let items = badge["payload"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no items in {badge}"));
+    assert!(
+        items
+            .iter()
+            .all(|item| item["icon"] != json!("flask-conical")),
+        "a typo must not borrow the icon of the word it nearly is: {badge}"
+    );
+    let activity = items
+        .iter()
+        .find(|item| item["text"] == json!("activity"))
+        .unwrap_or_else(|| panic!("the activity tag is still shown: {badge}"));
+    assert_eq!(
+        activity["icon"],
+        json!("tag"),
+        "an unknown value is a tag, not an icon"
+    );
+}
