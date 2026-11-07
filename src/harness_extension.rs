@@ -793,28 +793,32 @@ pub fn refresh_live(
 /// the file and the digest, and it says what the code does *and* what it does
 /// not — the version they approve is pinned by [`DISCLOSURE_VERSION`].
 pub fn disclosure(plan: &Plan, harness_version: &str) -> String {
-    let mut files = format!(
-        "  <session config>/{}/{}   the hook itself\n",
-        plan.subdir, plan.file
+    // One path per line, annotations in a column: the disclosure is read, not
+    // parsed, and a ragged list is harder to check than an aligned one.
+    let mut files = line(
+        &format!("<session config>/{}/{}", plan.subdir, plan.file),
+        "the hook itself",
     );
     if let Some(skill) = &plan.skill {
-        files.push_str(&format!(
-            "  <session config>/{}/{}   a skill that tells the agent to keep the activity current\n",
-            skill.subdir, skill.file
+        files.push_str(&line(
+            &format!("<session config>/{}/{}", skill.subdir, skill.file),
+            "a skill that tells the agent to keep the activity current",
         ));
     }
     if let Some(instructions) = &plan.instructions {
-        files.push_str(&format!(
-            "  <session config>/{}   the same reminder, in the always-loaded instructions\n",
-            instructions.file
+        files.push_str(&line(
+            &format!("<session config>/{}", instructions.file),
+            "the same reminder, in the always-loaded instructions",
         ));
     }
     let managed = if plan.skill.is_some() {
-        format!(
-            "  <app dir>/skills/{}/        the same skill in AoE's own skill list, so it shows on\n\
-             \x20                                 the Skills page and can be read, edited or deleted\n"
-            ,
-            skill_dir_name(plan)
+        line(
+            &format!("<app dir>/skills/{}/", skill_dir_name(plan)),
+            "the same skill in AoE's own skill list, so it shows on",
+        ) + &format!(
+            "{:width$}the Skills page and can be read, edited or deleted there\n",
+            "",
+            width = 2 + 50 + 2,
         )
     } else {
         String::new()
@@ -855,6 +859,11 @@ pub fn disclosure(plan: &Plan, harness_version: &str) -> String {
             harness_version
         },
     )
+}
+
+/// One disclosed path with its annotation in a column.
+fn line(path: &str, note: &str) -> String {
+    format!("  {path:<50}  {note}\n")
 }
 
 /// The skill's directory name as it appears in the app dir (`aoe-activity`).

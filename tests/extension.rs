@@ -473,8 +473,7 @@ fn the_disclosure_names_the_path_the_writer_uses() {
         .lines()
         .map(str::trim)
         .filter(|line| line.starts_with("<session config>/"))
-        .filter_map(|line| line.split("   ").next())
-        .map(str::trim)
+        .filter_map(|line| line.split_once("  ").map(|(path, _)| path.trim()))
         .collect();
     // Every file the disclosure names is a file the writer writes: one hook, the
     // skill and the always-loaded reminder.
