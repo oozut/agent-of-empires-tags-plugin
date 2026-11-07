@@ -163,6 +163,7 @@ launch, `activity` listed as a plain tag) rather than a fourth spelling of "test
 | Bare `activity` marker | not an activity, not a typo: no icon, no warning | decided |
 | Surfaces | row badge leads with the activity and its icon, then up to three tags with `tag`, then `+n`; the pane's row carries the icon; the page renders the vocabulary as buttons and shows the current one | decided |
 | Terminal UI | text and tone only, so the label ("testing") is the fallback everywhere, and the page names the icon in the tooltip | decided |
+| Who sets it | the agent, from the shipped skill's instruction (run `aoe-llm-tags activity <word>` when a phase starts); a person, from the pane's rows, the page's buttons or the CLI (`activity <word>`, `--clear`); **no heuristic**, because an inferred activity is a guess sent downstream as a claim about the session | decided |
 | Delivery | an ordinary tag: launch-scoped, or per-request once a session has an approved harness extension (M5) | decided |
 
 ## 6. CLI surface
@@ -226,6 +227,11 @@ launch, `activity` listed as a plain tag) rather than a fourth spelling of "test
 | `extension_subdir` | default `extensions` | directory inside the session config copy |
 | `extension_filename` | default `aoe-llm-tags.ts` | ours, so a revoke knows what to remove |
 | `extension_env` | default `AOE_LLM_TAGS_LIVE` | the variable the hook exports so the extension finds the live file |
+| `skill_artifact` | pi: `harness/skills/aoe-activity/SKILL.md` | a skill shipped with the bundle, written into the session copy so the harness advertises it |
+| `skill_dir` / `skill_subdir` | default `aoe-activity` / `skills` | `<session config>/skills/<skill_dir>/SKILL.md`; the session copy's skills root stays a real directory holding links to the user's own skills |
+| `append_artifact` / `append_filename` | pi: `harness/pi.append.md` / `APPEND_SYSTEM.md` | the always-loaded carrier: a skill the model never opens changes nothing, so the one-line instruction travels in the system prompt too. A user's own file is appended to, never replaced |
+| `bundle digest` | sha256 over `<path>\n<sha256 of file>\n` for every artefact, path order | what a receipt pins; adding or rewording a file asks for a fresh approval |
+| `managed skill` | `<app dir>/skills/aoe-activity/SKILL.md` | AoE's own skill store, so the skill is listed on the Skills page; written at approval, removed at `disable`, and never overwriting a copy without `MANAGED_MARKER` |
 
 ## 9. Discovery and config edits (M2)
 

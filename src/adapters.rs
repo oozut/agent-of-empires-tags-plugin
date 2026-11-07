@@ -84,6 +84,18 @@ pub struct Adapter {
     pub extension_filename: String,
     /// The variable the hook exports so the extension finds `live.json`.
     pub extension_env: String,
+    /// A skill shipped with the extension (`harness/skills/aoe-activity/SKILL.md`).
+    /// Absent means the harness gets the extension alone.
+    pub skill_artifact: String,
+    /// Our skill's directory inside the config copy's skills root.
+    pub skill_dir: String,
+    /// The skills root inside the session config copy (`skills`).
+    pub skill_subdir: String,
+    /// Instructions appended to the harness's always-loaded system context
+    /// (`harness/pi.append.md`). Absent means the skill is the only carrier.
+    pub append_artifact: String,
+    /// The file the harness reads for that (`APPEND_SYSTEM.md` for pi).
+    pub append_filename: String,
     pub status: String,
     pub notes: String,
 }
@@ -222,6 +234,11 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         extension_subdir: text("extension_subdir"),
         extension_filename: text("extension_filename"),
         extension_env: text("extension_env"),
+        skill_artifact: text("skill_artifact"),
+        skill_dir: text("skill_dir"),
+        skill_subdir: text("skill_subdir"),
+        append_artifact: text("append_artifact"),
+        append_filename: text("append_filename"),
         supports: {
             // `supports` absent means the default (a header); `supports = []` means
             // "no channel at all" and must stay empty, or a row that deliberately

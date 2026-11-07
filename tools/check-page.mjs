@@ -171,7 +171,7 @@ const STATE = {
             approved: false,
             state: "no_receipt",
             detail: "pi extension not approved",
-            sha256: "d653f348523828c1aa439f5bb3a88c4899eb47f81406f6c2fa9ce9c2c880494d",
+            sha256: "22c92f244e7a8364152c140d24122ba755362dab21df0b526cc01e1c3fba2f46",
             file: "<session config>/extensions/aoe-llm-tags.ts",
             disclosure_version: 1,
             accepted_at: null,

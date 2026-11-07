@@ -13,14 +13,16 @@ mod common;
 use std::path::PathBuf;
 
 use common::{settings_config, Sandbox};
+use llm_tags::harness_extension::DISCLOSURE_VERSION;
 
-/// The digest pinned for the artefact this build ships.
+/// The digest pinned for the bundle this build ships: the hook, the skill and
+/// the always-loaded reminder, hashed in path order.
 ///
 /// A change here is a decision, not a formality: users approved the previous
 /// bytes, so a new digest invalidates every receipt and asks them again. Update
-/// this constant together with `DISCLOSURE_VERSION` when the artefact's
-/// behaviour changes, and with nothing else when only its comments do.
-const ARTEFACT_SHA256: &str = "d653f348523828c1aa439f5bb3a88c4899eb47f81406f6c2fa9ce9c2c880494d";
+/// this constant together with `DISCLOSURE_VERSION` when the bundle's behaviour
+/// changes, and with nothing else when only its comments do.
+const BUNDLE_SHA256: &str = "22c92f244e7a8364152c140d24122ba755362dab21df0b526cc01e1c3fba2f46";
 
 fn emitted<'a>(lines: &'a [&'a str], name: &str) -> Option<&'a str> {
     lines
@@ -90,6 +92,78 @@ fn without_the_setting_a_session_copy_links_the_users_extensions_and_installs_no
         std::fs::read_to_string(&user).unwrap()
     );
     assert_eq!(emitted(&run.lines(), "AOE_LLM_TAGS_LIVE"), None);
+    // Approval put the skill in AoE's list, but the session still carries only
+    // the user's own config: an approval is not a request.
+    assert!(sandbox
+        .path("config/agent-of-empires/skills/aoe-activity/SKILL.md")
+        .is_file());
+    assert!(!dir.join("skills/aoe-activity").exists());
+    assert!(!dir.join("APPEND_SYSTEM.md").exists());
+}
+
+/// The skill travels to two places: the session copy the agent loads, and AoE's
+/// managed store, which is what the Skills page lists. The second one is the
+/// plugin's only write outside a session folder, so it has to be exactly its own
+/// entry and nothing else.
+#[test]
+fn approving_puts_the_skill_in_the_session_and_in_aoe_s_skill_list() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&wanted());
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    approve(&sandbox);
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    let dir = session_dir(&run);
+
+    let session_copy = dir.join("skills/aoe-activity/SKILL.md");
+    let body = std::fs::read_to_string(&session_copy).expect("the skill in the session");
+    assert!(body.starts_with("---\nname: aoe-activity\n"), "{body}");
+    assert!(body.contains("activity <name>") || body.contains("activity testing"));
+    assert!(body.contains("aoe-llm-tags: managed skill"));
+
+    let managed = sandbox.path("config/agent-of-empires/skills/aoe-activity/SKILL.md");
+    assert_eq!(
+        std::fs::read_to_string(&managed).expect("the managed skill"),
+        body,
+        "the two copies are the same skill"
+    );
+    // Discovery is what makes it appear: nothing else in the managed store.
+    let entries: Vec<_> = std::fs::read_dir(sandbox.path("config/agent-of-empires/skills"))
+        .expect("the managed store")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(entries, vec!["aoe-activity"]);
+}
+
+/// A skill in the managed store that a person wrote, adopted or edited carries
+/// no marker, and a plugin does not overwrite it: the approval is not a licence
+/// to take over somebody else's skill.
+#[test]
+fn a_managed_skill_somebody_else_owns_is_left_alone() {
+    let sandbox = Sandbox::new();
+    let mine = sandbox.path("config/agent-of-empires/skills/aoe-activity");
+    std::fs::create_dir_all(&mine).unwrap();
+    let theirs = "---\nname: aoe-activity\ndescription: my own take\n---\n\nmine\n";
+    std::fs::write(mine.join("SKILL.md"), theirs).unwrap();
+    sandbox.write_config(&wanted());
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+
+    sandbox
+        .run(&["extension", "enable", "pi", "--accept", BUNDLE_SHA256])
+        .assert_ok();
+    assert_eq!(
+        std::fs::read_to_string(mine.join("SKILL.md")).unwrap(),
+        theirs,
+        "the person's skill is theirs"
+    );
+    // The session copy still arrives: the managed entry is discoverability, not
+    // delivery.
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert!(session_dir(&run)
+        .join("skills/aoe-activity/SKILL.md")
+        .is_file());
 }
 
 #[test]
@@ -203,7 +277,10 @@ fn an_older_disclosure_is_not_approval_for_a_newer_one() {
     let body = std::fs::read_to_string(&path).unwrap();
     std::fs::write(
         &path,
-        body.replace("disclosure_version = 1", "disclosure_version = 0"),
+        body.replace(
+            &format!("disclosure_version = {DISCLOSURE_VERSION}"),
+            "disclosure_version = 0",
+        ),
     )
     .unwrap();
 
@@ -243,6 +320,13 @@ fn revoking_removes_the_copy_at_the_next_launch() {
         "the directory is the user's link again"
     );
     assert_eq!(emitted(&run.lines(), "AOE_LLM_TAGS_LIVE"), None);
+    // The rest of the bundle goes with it: the skill, its managed copy, and the
+    // reminder. What is left is the user's own config, untouched.
+    assert!(!dir.join("skills/aoe-activity").exists());
+    assert!(!dir.join("APPEND_SYSTEM.md").exists());
+    assert!(!sandbox
+        .path("config/agent-of-empires/skills/aoe-activity")
+        .exists());
 }
 
 #[test]
@@ -310,14 +394,26 @@ fn no_harness_name_is_hardcoded_in_the_mechanism() {
 }
 
 #[test]
-fn the_shipped_artefact_matches_the_digest_this_test_pins() {
-    let source = std::fs::read("harness/pi.ts").expect("harness/pi.ts");
-    let digest = llm_tags::sha256::hex(&source);
+fn the_shipped_bundle_matches_the_digest_this_test_pins() {
+    // The bundle is what a receipt pins, so this hashes all three files in the
+    // same path order the code does — a fourth file, or a reworded one, is a
+    // different bundle and every receipt it invalidates is meant to be
+    // invalidated.
+    let files = [
+        "harness/pi.append.md",
+        "harness/pi.ts",
+        "harness/skills/aoe-activity/SKILL.md",
+    ];
+    let mut outline = String::new();
+    for path in files {
+        let source = std::fs::read(path).unwrap_or_else(|err| panic!("{path}: {err}"));
+        outline.push_str(&format!("{path}\n{}\n", llm_tags::sha256::hex(&source)));
+    }
     assert_eq!(
-        digest, ARTEFACT_SHA256,
-        "the artefact changed: update ARTEFACT_SHA256 and DISCLOSURE_VERSION in \
-         src/harness_extension.rs, or revert the change — every user-approved receipt \
-         is tied to the previous bytes"
+        llm_tags::sha256::hex(outline.as_bytes()),
+        BUNDLE_SHA256,
+        "the bundle changed: update BUNDLE_SHA256 and DISCLOSURE_VERSION, or revert the \
+         change — every user-approved receipt is tied to the previous bytes"
     );
 }
 
@@ -360,7 +456,7 @@ fn status_lists_the_requested_harness_and_its_receipt() {
     assert_eq!(row["harness"], "pi");
     assert_eq!(row["requested"], true);
     assert_eq!(row["state"], "ok");
-    assert_eq!(row["receipt"]["disclosure_version"], 1);
+    assert_eq!(row["receipt"]["disclosure_version"], DISCLOSURE_VERSION);
 }
 
 /// The page and the CLI must not disagree about where the file goes: the path in
@@ -372,17 +468,32 @@ fn the_disclosure_names_the_path_the_writer_uses() {
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
     let printed = sandbox.run(&["extension", "enable", "pi", "--print"]);
     printed.assert_ok();
-    let named = printed
+    let named: Vec<&str> = printed
         .stdout
         .lines()
         .map(str::trim)
-        .find(|line| line.starts_with("<session config>/"))
-        .and_then(|line| line.split(". ").next())
-        .expect("the disclosure names the file");
-    assert_eq!(named, "<session config>/extensions/aoe-llm-tags.ts");
+        .filter(|line| line.starts_with("<session config>/"))
+        .filter_map(|line| line.split("   ").next())
+        .map(str::trim)
+        .collect();
+    // Every file the disclosure names is a file the writer writes: one hook, the
+    // skill and the always-loaded reminder.
+    assert_eq!(
+        named,
+        vec![
+            "<session config>/extensions/aoe-llm-tags.ts",
+            "<session config>/skills/aoe-activity/SKILL.md",
+            "<session config>/APPEND_SYSTEM.md",
+        ]
+    );
     approve(&sandbox);
     let run = sandbox.run(&["hook"]);
     run.assert_ok();
-    let relative = named.replace("<session config>/", "");
-    assert!(session_dir(&run).join(relative).is_file());
+    for path in named {
+        let relative = path.replace("<session config>/", "");
+        assert!(
+            session_dir(&run).join(&relative).is_file(),
+            "{relative} was disclosed but not written"
+        );
+    }
 }

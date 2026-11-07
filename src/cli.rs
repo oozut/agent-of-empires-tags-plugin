@@ -904,7 +904,7 @@ fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
                 ));
                 return EXIT_USAGE;
             };
-            let result = crate::harness_extension::revoke(&app_dir, &adapter.agent);
+            let result = crate::harness_extension::revoke(&app_dir, adapter);
             match result {
                 Ok(false) => {
                     warn(&format!("{} had no approval to revoke", adapter.agent));
@@ -1116,7 +1116,7 @@ fn extension_enable(
 
     match crate::harness_extension::accept(
         app_dir,
-        &adapter.agent,
+        adapter,
         &proposal.sha256,
         &harness_version(&adapter.agent),
     ) {

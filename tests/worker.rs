@@ -778,7 +778,7 @@ fn a_typo_in_the_activity_is_reported_not_iconified() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config(
-        "tags = [\"activity:testing\", \"team:core\"]\n",
+        "tags = [\"activity:testng\", \"team:core\"]\n",
         "",
     ));
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);

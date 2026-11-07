@@ -95,7 +95,11 @@ pub const ALL: [Activity; 9] = [
 pub fn find(value: &str) -> Option<&'static Activity> {
     let value = value.trim().to_ascii_lowercase();
     let value = value.strip_prefix("activity:").unwrap_or(&value);
-    ALL.iter().find(|activity| activity.key == value)
+    // The key is canonical, but a person (and an agent copying the word out of
+    // the badge) says "testing", so the label is accepted too. It is never
+    // stored: the tag is always `activity:<key>`.
+    ALL.iter()
+        .find(|activity| activity.key == value || activity.label == value)
 }
 
 /// This session's activity: the last `activity` tag wins, because a session's
@@ -190,7 +194,11 @@ mod tests {
     fn case_around_a_value_does_not_make_a_new_activity() {
         assert_eq!(find("TEST").map(|a| a.key), Some("test"));
         assert_eq!(find("  activity:Debug ").map(|a| a.key), Some("debug"));
-        assert_eq!(find("testing"), None);
+        // The label is a convenience for a human or an agent quoting the badge;
+        // the tag it produces is still the key.
+        assert_eq!(find("Testing").map(|a| a.key), Some("test"));
+        assert_eq!(find("writing docs").map(|a| a.key), Some("docs"));
+        assert_eq!(find("testing!"), None);
     }
 
     fn tag(value: &str) -> Tag {

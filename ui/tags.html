@@ -175,10 +175,11 @@
     <div class="card">
       <p class="note">
         A harness that loads code from its config directory can report a change on its
-        <em>next request</em> instead of at the next launch. To do that this plugin installs one file
-        inside that harness's session config — and only after you approve the exact file below.
-        Nothing is installed by default, and every harness that has no such hook keeps to
-        launch-time tags.
+        <em>next request</em> instead of at the next launch. To do that this plugin installs a small
+        set of files inside that harness's session config — the hook itself, a skill that keeps the
+        session's activity current, and a one-line reminder — plus that skill in AoE's own skill
+        list, and only after you approve the exact set below. Nothing is installed by default, and
+        every harness that has no such hook keeps to launch-time tags.
       </p>
       <div id="extensions"></div>
       <p class="note" id="extensionsub"></p>

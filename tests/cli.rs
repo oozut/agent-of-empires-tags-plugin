@@ -819,7 +819,8 @@ fn activity_sets_the_reserved_tag_and_the_next_hook_carries_it() {
 #[test]
 fn an_unknown_activity_is_a_usage_error_that_names_the_vocabulary() {
     let sandbox = Sandbox::new();
-    let run = sandbox.run(&["activity", "testing"]);
+    // A label is accepted (`testing`), so the typo has to be a real one.
+    let run = sandbox.run(&["activity", "testng"]);
     run.assert_code(2);
     assert!(run.stdout.is_empty(), "{}", run.stdout);
     assert!(

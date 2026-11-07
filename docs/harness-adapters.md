@@ -535,6 +535,27 @@ fail-open: any error leaves the launch-time headers alone rather than failing th
 reads nothing else, opens no socket, spawns nothing, and does nothing at all when the environment
 variable is absent, so it is inert outside an aoe session.
 
+The bundle an approval covers is not only the hook. A per-request value is only half the job: the
+other half is the activity being *current*, and that needs the agent to say so. So a row can name
+two more artefacts:
+
+| Field | pi | What it is |
+|---|---|---|
+| `skill_artifact` | `harness/skills/aoe-activity/SKILL.md` | a skill written into the session copy under `skills/<skill_dir>/SKILL.md`, which pi advertises in its system prompt and loads on demand |
+| `skill_dir` / `skill_subdir` | `aoe-activity` / `skills` | where it goes; both default, and `adapters.toml` sets them |
+| `append_artifact` | `harness/pi.append.md` | the same instruction in the always-loaded slot (`APPEND_SYSTEM.md`), because a skill the model never opens changes nothing |
+| `append_filename` | `APPEND_SYSTEM.md` | the file that slot is called |
+
+The skill is also installed into **AoE's managed skill store** (`<app dir>/skills/aoe-activity/`)
+at approval time, so it appears on AoE's Skills page and can be read, edited or deleted like any
+other managed skill — that is the plugin's only write outside a session folder, and the disclosure
+says so. Its bytes end with a marker; a skill without the marker is somebody's own and is never
+overwritten (the session copy still delivers ours).
+
+The digest a receipt pins is therefore the **bundle** digest — every artefact of the row, hashed in
+path order — so adding a file or rewording the skill asks for a fresh approval, exactly as changing
+the hook does.
+
 opencode's plugin API may offer an equivalent; it is unverified, so its row has no artefact and
 `doctor` says launch-scope. The full consent model and its refusal states are in `plan/m5.md`.
 

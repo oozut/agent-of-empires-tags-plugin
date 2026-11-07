@@ -269,9 +269,20 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
 
     if adapter.write_mode == MODE_OVERLAY_DIR {
         if let Some(source_dir) = &source_dir {
-            let mut skip = Vec::new();
+            // Every path the bundle will write has to stay a real path, so the
+            // whole-directory links must skip them: writing through a link would
+            // land in the user's own config.
+            let mut skip: Vec<std::ffi::OsString> = Vec::new();
             if let Ok(plan) = &extension {
                 skip.push(std::ffi::OsString::from(plan.subdir.clone()));
+                if plan.skill.is_some() {
+                    skip.push(std::ffi::OsString::from(
+                        crate::harness_extension::skill_root(adapter),
+                    ));
+                }
+                if let Some(instructions) = &plan.instructions {
+                    skip.push(std::ffi::OsString::from(instructions.file.clone()));
+                }
             }
             link_siblings(source_dir, &dir, &file_name, &skip)?;
         }
@@ -382,11 +393,13 @@ fn link_siblings(
     Ok(())
 }
 
-/// Put an approved extension in the session's config copy.
+/// Put an approved bundle in the session's config copy: the extension, the
+/// skill that keeps the activity current, and the always-loaded reminder.
 ///
-/// The directory becomes a real directory whose children are links to the
-/// user's own entries, so the user's extensions keep loading and writing this
-/// plugin's file can never follow a link into the user's config.
+/// Every directory the bundle writes into becomes a real directory whose
+/// children are links to the user's own entries, so the user's extensions and
+/// skills keep loading and writing this plugin's files can never follow a link
+/// into the user's config.
 fn place_extension(
     adapter: &Adapter,
     plan: &crate::harness_extension::Plan,
@@ -399,28 +412,89 @@ fn place_extension(
             plan.artifact.display()
         ));
     };
-    let target_dir = dir.join(&plan.subdir);
-    if let Ok(meta) = target_dir.symlink_metadata() {
+    prepare_dir(&dir.join(&plan.subdir), &plan.file, source_dir)?;
+    let path = dir.join(&plan.subdir).join(&plan.file);
+    crate::private::write_atomic(&path, source)
+        .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
+
+    if let Some(skill) = &plan.skill {
+        let root = dir.join(crate::harness_extension::skill_root(adapter));
+        // Skip our own skill directory while linking the user's other skills.
+        prepare_dir(
+            &root,
+            &crate::harness_extension::skill_dir(adapter),
+            source_dir,
+        )?;
+        prepare_dir(
+            skill.target(dir).parent().unwrap_or(&root),
+            &skill.file,
+            None,
+        )?;
+        let text = crate::harness_extension::skill_text(adapter)
+            .ok_or_else(|| format!("{} is not carried by this build", skill.artifact.display()))?;
+        let path = skill.target(dir);
+        crate::private::write_atomic(&path, &text)
+            .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
+    }
+
+    if let Some(instructions) = &plan.instructions {
+        let Some(text) = instructions.source() else {
+            return Err(format!(
+                "{} is not carried by this build",
+                instructions.artifact.display()
+            ));
+        };
+        let path = instructions.target(dir);
+        // The user may have their own file here (pi does not combine two files
+        // of the same name, the last one wins), so the bundled one is appended
+        // to a copy of theirs rather than replacing it.
+        let theirs = source_dir
+            .map(|source_dir| source_dir.join(&instructions.file))
+            .filter(|path| path.exists())
+            .and_then(|path| std::fs::read_to_string(path).ok())
+            .unwrap_or_default();
+        let merged = if theirs.trim().is_empty() {
+            text.to_string()
+        } else {
+            format!("{}\n\n{text}", theirs.trim_end())
+        };
+        // A link here would write through into the user's file, so it becomes a
+        // real file; the next launch rebuilds it from theirs plus ours.
+        if let Ok(meta) = path.symlink_metadata() {
+            if meta.file_type().is_symlink() {
+                std::fs::remove_file(&path)
+                    .map_err(|err| format!("{} could not be replaced: {err}", path.display()))?;
+            }
+        }
+        crate::private::write_atomic(&path, &merged)
+            .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Make `dir` a real directory holding links to the user's entries plus nothing
+/// of ours, so a file can be written beside them.
+fn prepare_dir(dir: &Path, our_file: &str, source_dir: Option<&Path>) -> Result<(), String> {
+    if let Ok(meta) = dir.symlink_metadata() {
         if meta.file_type().is_symlink() {
-            std::fs::remove_file(&target_dir)
-                .map_err(|err| format!("{} could not be replaced: {err}", target_dir.display()))?;
+            std::fs::remove_file(dir)
+                .map_err(|err| format!("{} could not be replaced: {err}", dir.display()))?;
         }
     }
-    crate::private::create_dir(&target_dir)
-        .map_err(|err| format!("{} could not be created: {err}", target_dir.display()))?;
+    crate::private::create_dir(dir)
+        .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
     if let Some(source_dir) = source_dir {
         // One link per entry, not a link to the directory: the user's own files
-        // stay the only copy of their content.
+        // stay the only copy of their content. Nested roots (`skills`) are
+        // linked the same way one level down by the caller's second call.
         link_siblings(
-            &source_dir.join(&plan.subdir),
-            &target_dir,
-            Path::new(&plan.file),
+            &source_dir.join(dir.file_name().unwrap_or_default()),
+            dir,
+            Path::new(our_file),
             &[],
         )?;
     }
-    let path = target_dir.join(&plan.file);
-    crate::private::write_atomic(&path, source)
-        .map_err(|err| format!("{} could not be written: {err}", path.display()))
+    Ok(())
 }
 
 /// Remove a copy a previous launch placed. A directory that stays only because
@@ -453,6 +527,35 @@ fn clear_extension(dir: &Path, adapter: &Adapter) -> Result<(), String> {
         .unwrap_or(false);
     if only_our_links {
         let _ = std::fs::remove_dir_all(&target);
+    }
+    // The rest of the bundle: our skill directory, then the reminder file (whose
+    // place goes back to the user's own file, or to nothing).
+    let skill_dir = dir
+        .join(crate::harness_extension::skill_root(adapter))
+        .join(crate::harness_extension::skill_dir(adapter));
+    let _ = std::fs::remove_dir_all(&skill_dir);
+    let root = dir.join(crate::harness_extension::skill_root(adapter));
+    let empty_links = std::fs::read_dir(&root)
+        .map(|entries| {
+            entries.flatten().all(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_symlink())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if empty_links {
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    let reminder = match crate::harness_extension::instructions_name(adapter) {
+        Some(name) => dir.join(name),
+        None => return Ok(()),
+    };
+    if let Ok(meta) = reminder.symlink_metadata() {
+        if !meta.file_type().is_symlink() {
+            let _ = std::fs::remove_file(&reminder);
+        }
     }
     Ok(())
 }

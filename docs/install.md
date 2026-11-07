@@ -136,16 +136,25 @@ reads its config once. If you edit a tag while a session runs, the next request 
 old one until you relaunch.
 
 **This plugin can install code into your harness to fix that.** It is off by default and it never
-happens unless you approve the exact file. Today only `pi` can take it.
+happens unless you approve the exact set of files. Today only `pi` can take it.
 
-What it puts where, in plain words: one file,
-`…/sessions/<id>/pi/extensions/aoe-llm-tags.ts`, inside the private config copy this plugin already
-builds for each pi session. pi loads it inside the agent process, with the agent's own permissions.
-It reads one JSON file this plugin writes (`live.json`: the session's tags and its current
-activity) and sets the `X-AoE-*` headers from it before each model request. It does not read your
-prompts, transcript, files or credentials, open a socket or spawn a process. Your own
-`~/.pi/agent` is never written to — the session copy's `extensions/` directory holds links to your
-entries plus this one file.
+What it puts where, in plain words: three files inside the private config copy this plugin already
+builds for each pi session, plus one entry in AoE's own skill list.
+
+| Where | What |
+|---|---|
+| `…/sessions/<id>/pi/extensions/aoe-llm-tags.ts` | the hook: pi loads it inside the agent process, with the agent's own permissions, and it sets the `X-AoE-*` headers before each model request |
+| `…/sessions/<id>/pi/skills/aoe-activity/SKILL.md` | a skill that tells the agent to keep the session's activity current as the work moves between phases |
+| `…/sessions/<id>/pi/APPEND_SYSTEM.md` | the same reminder in pi's always-loaded instructions, because a skill the model never opens changes nothing |
+| `<app dir>/skills/aoe-activity/` | the same skill in AoE's managed store, so it shows on the Skills page and can be read, edited or deleted there |
+
+The hook reads one JSON file this plugin writes (`live.json`: the session's tags and its current
+activity) and sets the headers from it. The skill tells the agent to run `aoe-llm-tags activity
+<word>`, which writes nothing but this session's own tag. Neither reads your prompts, transcript,
+files or credentials, opens a socket or writes anywhere else. Your own `~/.pi/agent` is never
+written to — the session copy's directories hold links to your entries plus these files. If you
+already have an `APPEND_SYSTEM.md` there it is *appended to*, not replaced; a managed skill of the
+same name that carries no plugin marker is left alone.
 
 The plugin's page (Dashboard → plugins → LLM Tags) shows the same disclosure for each harness, with
 a checkbox and an **Enable** button — the page sends back the digest it displayed, so a stale page
@@ -157,15 +166,16 @@ approves nothing. On the command line:
 "<install>/bin/aoe-llm-tags" extension status                # what each harness is doing
 ```
 
-Three things end the approval — a change to the file's bytes, a change to the disclosure's
-wording, or:
+Three things end the approval — a change to the bytes of any file in the set, a change to the
+disclosure's wording, or:
 
 ```sh
 "<install>/bin/aoe-llm-tags" extension disable pi
 ```
 
-A plugin update, a reinstall or a pi upgrade does **not** end it: the approval records the file and
-the wording, not the version. `doctor` prints one line per harness at all times, so "not sending"
+A plugin update, a reinstall or a pi upgrade does **not** end it: the approval records the files
+and the wording, not the version. It does end the managed skill: `extension disable` removes the
+entry from AoE's skill list with everything else. `doctor` prints one line per harness at all times, so "not sending"
 always has a stated reason. Sandboxed sessions are not covered — aoe stages only your own
 `extensions/` directory into a sandbox, so no extension of this plugin's is installed there.
 

@@ -145,6 +145,11 @@ or `--show` to read the current one and the vocabulary — and the dashboard's p
 value as a row, so the session view and the terminal UI can change it without a page. Last writer
 wins: a person may override what the agent declared, and the agent may move on when the task does.
 
+The agent side is a shipped skill (`aoe-activity`) plus the same one-line reminder in the harness's
+always-loaded instructions: a skill is advertised and loaded on demand, which is not enough on its
+own. Both are part of the set an approval covers, and the skill is also added to AoE's own skill
+list — visible on the Skills page, editable there, and removed with the approval.
+
 ## Docs
 
 Design (normative, in this order):

@@ -630,20 +630,36 @@ fn check_harness_extensions(adapters: &[Adapter], snap: &Snapshot, app_dir: &Pat
     {
         let name = format!("extension {}", adapter.agent);
         let check = match crate::harness_extension::plan(adapter, wanted, app_dir, &snap.facts.id) {
-            Ok(plan) => Check {
-                name,
-                status: OK.to_string(),
-                detail: format!(
-                    "approved {} (sha256 {}, disclosure v{}); live file {}",
-                    receipts
-                        .get(&plan.harness)
-                        .map(|receipt| receipt.accepted_at.clone())
-                        .unwrap_or_else(|| "unknown".to_string()),
-                    &plan.sha256[..8],
-                    crate::harness_extension::DISCLOSURE_VERSION,
-                    abbreviate(&plan.live.to_string_lossy()),
-                ),
-            },
+            Ok(plan) => {
+                let skill = match &plan.skill {
+                    Some(_) => {
+                        let path = crate::harness_extension::managed_skill_path(app_dir, adapter);
+                        if path.is_file() {
+                            format!("; skill {}", abbreviate(&path.to_string_lossy()))
+                        } else {
+                            "; skill missing from AoE's list (it leaves with the next approval or \
+                             `extension disable`)"
+                                .to_string()
+                        }
+                    }
+                    None => String::new(),
+                };
+                Check {
+                    name,
+                    status: OK.to_string(),
+                    detail: format!(
+                        "approved {} (bundle sha256 {}, disclosure v{}); live file {}{}",
+                        receipts
+                            .get(&plan.harness)
+                            .map(|receipt| receipt.accepted_at.clone())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        &plan.sha256[..8],
+                        crate::harness_extension::DISCLOSURE_VERSION,
+                        abbreviate(&plan.live.to_string_lossy()),
+                        skill,
+                    ),
+                }
+            }
             Err(refusal) => Check {
                 name,
                 status: if refusal.worth_a_warning() {

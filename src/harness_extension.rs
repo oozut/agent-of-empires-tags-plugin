@@ -42,7 +42,7 @@ pub const RECEIPT_FILE: &str = "harness-extension.toml";
 /// [`disclosure`] changes in a way a user should see again — every receipt with
 /// an older number stops being enough, and the file the user approves is the
 /// same file.
-pub const DISCLOSURE_VERSION: u32 = 1;
+pub const DISCLOSURE_VERSION: u32 = 2;
 
 /// The default file name inside the harness's extension directory. A row may
 /// override it; the name is ours so it can be recognised and removed.
@@ -54,6 +54,22 @@ pub const DEFAULT_LIVE_ENV: &str = "AOE_LLM_TAGS_LIVE";
 
 /// The live file's name inside `sessions/<id>/`.
 pub const LIVE_FILE: &str = "live.json";
+
+/// The file name a skill is read from (the harness's convention, not ours).
+pub const SKILL_FILE: &str = "SKILL.md";
+
+/// Our skill's directory name, when a row does not name one.
+pub const DEFAULT_SKILL_DIR: &str = "aoe-activity";
+
+/// The skills root inside a session's config copy.
+pub const DEFAULT_SKILL_SUBDIR: &str = "skills";
+
+/// The always-loaded instruction file, when a row does not name one.
+pub const DEFAULT_APPEND_FILE: &str = "APPEND_SYSTEM.md";
+
+/// How a skill this plugin owns announces itself in AoE's managed store, so an
+/// update can refresh its own copy and never overwrite one a person edited.
+pub const MANAGED_MARKER: &str = "<!-- aoe-llm-tags: managed skill -->";
 
 /// Everything a harness needs, once the two conditions are met.
 #[derive(Clone, Debug, PartialEq)]
@@ -70,6 +86,40 @@ pub struct Plan {
     pub env_var: String,
     /// `sessions/<id>/live.json`.
     pub live: PathBuf,
+    /// The skill written beside the extension, when the row ships one.
+    pub skill: Option<Placement>,
+    /// Instructions appended to the always-loaded system context, when the row
+    /// ships them.
+    pub instructions: Option<Placement>,
+}
+
+/// One file of the bundle, and where it goes inside a session's config copy.
+///
+/// `subdir` is relative to the config copy, so a skill is
+/// `skills/aoe-activity/SKILL.md` and an appended instruction file sits at the
+/// root. Empty `file` never happens: the artefact's own name is the fallback.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Placement {
+    /// Path in the plugin tree, for messages and the digest.
+    pub artifact: PathBuf,
+    pub subdir: String,
+    pub file: String,
+}
+
+impl Placement {
+    /// Where this lands in a session's config copy.
+    pub fn target(&self, dir: &Path) -> PathBuf {
+        if self.subdir.is_empty() {
+            dir.join(&self.file)
+        } else {
+            dir.join(&self.subdir).join(&self.file)
+        }
+    }
+
+    /// The artefact as shipped, or `None` when this build does not carry it.
+    pub fn source(&self) -> Option<&'static str> {
+        crate::artifacts::bytes(&self.artifact.to_string_lossy())
+    }
 }
 
 /// Why a harness does not get an extension. Every variant is a different
@@ -276,10 +326,11 @@ pub fn receipts(app_dir: &Path) -> (BTreeMap<String, Receipt>, Vec<String>) {
 /// name bytes that are not the ones this build ships.
 pub fn accept(
     app_dir: &Path,
-    harness: &str,
+    adapter: &Adapter,
     sha256: &str,
     harness_version: &str,
 ) -> Result<Receipt, String> {
+    let harness = adapter.agent.as_str();
     if !valid_sha(sha256) {
         return Err(format!("{sha256:?} is not a sha256 digest"));
     }
@@ -292,6 +343,9 @@ pub fn accept(
         accepted_plugin: plugin_version(),
         tested_harness: harness_version.to_string(),
     };
+    // The approval is the consent, so this is where the skill joins AoE's own
+    // skill list: nothing appears on the Skills page before somebody said yes.
+    let _ = install_managed_skill(app_dir, adapter);
     all.insert(harness.to_string(), receipt.clone());
     crate::private::create_dir(app_dir).map_err(|err| format!("{}: {err}", app_dir.display()))?;
     crate::private::write_atomic(&receipt_path(app_dir), &render_receipts(&all)).map_err(
@@ -306,7 +360,10 @@ pub fn accept(
 }
 
 /// Forget one harness's approval. Returns whether there was one.
-pub fn revoke(app_dir: &Path, harness: &str) -> Result<bool, String> {
+pub fn revoke(app_dir: &Path, adapter: &Adapter) -> Result<bool, String> {
+    let harness = adapter.agent.as_str();
+    // The managed entry is the discoverable copy, so it goes with the approval.
+    let _ = remove_managed_skill(app_dir, adapter);
     let (mut all, _) = receipts(app_dir);
     if all.remove(harness).is_none() {
         return Ok(false);
@@ -357,6 +414,70 @@ pub fn artifact_path(adapter: &Adapter) -> PathBuf {
     PathBuf::from(&adapter.extension_artifact)
 }
 
+/// The digest a receipt pins: every file of the bundle, in a stable order.
+///
+/// Hashing the bundle rather than only the extension means a build that adds or
+/// rewords the skill asks for a fresh approval — the user approved a set of
+/// files that run in their agent, and a set that grew is a different set.
+pub fn bundle_sha(adapter: &Adapter) -> Result<String, Refusal> {
+    let harness = adapter.agent.clone();
+    let placements = placements(adapter);
+    if placements.is_empty() {
+        return Err(Refusal::NoArtifact { harness });
+    }
+    let mut outline = String::new();
+    let mut rows: Vec<(String, &'static str)> = Vec::new();
+    for placement in &placements {
+        let name = placement.artifact.to_string_lossy().into_owned();
+        match placement.source() {
+            Some(source) => rows.push((name, source)),
+            None => {
+                return Err(Refusal::MissingArtifact {
+                    harness,
+                    path: placement.artifact.clone(),
+                    why: "this build does not carry it".to_string(),
+                })
+            }
+        }
+    }
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    for (name, source) in rows {
+        outline.push_str(&format!(
+            "{name}\n{}\n",
+            crate::sha256::hex(source.as_bytes())
+        ));
+    }
+    Ok(crate::sha256::hex(outline.as_bytes()))
+}
+
+/// Every file a row's extension bundle consists of, extension first.
+pub fn placements(adapter: &Adapter) -> Vec<Placement> {
+    let mut out = Vec::new();
+    if adapter.extension_artifact.is_empty() {
+        return out;
+    }
+    out.push(Placement {
+        artifact: artifact_path(adapter),
+        subdir: subdir(adapter),
+        file: file_name(adapter),
+    });
+    if !adapter.skill_artifact.is_empty() {
+        out.push(Placement {
+            artifact: PathBuf::from(&adapter.skill_artifact),
+            subdir: skills_dir(adapter),
+            file: SKILL_FILE.to_string(),
+        });
+    }
+    if !adapter.append_artifact.is_empty() {
+        out.push(Placement {
+            artifact: PathBuf::from(&adapter.append_artifact),
+            subdir: String::new(),
+            file: append_file(adapter),
+        });
+    }
+    out
+}
+
 /// The digest of the artefact this build would write.
 pub fn artifact_sha(adapter: &Adapter) -> Result<String, Refusal> {
     let harness = adapter.agent.clone();
@@ -392,6 +513,42 @@ pub fn subdir(adapter: &Adapter) -> String {
     }
 }
 
+/// The skills root inside a session's config copy (`skills`).
+pub fn skill_root(adapter: &Adapter) -> String {
+    if adapter.skill_subdir.is_empty() {
+        DEFAULT_SKILL_SUBDIR.to_string()
+    } else {
+        adapter.skill_subdir.clone()
+    }
+}
+
+/// Our skill's directory name (`aoe-activity`), i.e. `skills/<this>/SKILL.md`.
+pub fn skill_dir(adapter: &Adapter) -> String {
+    if adapter.skill_dir.is_empty() {
+        DEFAULT_SKILL_DIR.to_string()
+    } else {
+        adapter.skill_dir.clone()
+    }
+}
+
+/// The skill's subdir inside the config copy: `skills/aoe-activity`.
+fn skills_dir(adapter: &Adapter) -> String {
+    format!("{}/{}", skill_root(adapter), skill_dir(adapter))
+}
+
+/// The always-loaded file's name for a row, when it ships one.
+pub fn instructions_name(adapter: &Adapter) -> Option<String> {
+    (!adapter.append_artifact.is_empty()).then(|| append_file(adapter))
+}
+
+fn append_file(adapter: &Adapter) -> String {
+    if adapter.append_filename.is_empty() {
+        DEFAULT_APPEND_FILE.to_string()
+    } else {
+        adapter.append_filename.clone()
+    }
+}
+
 fn live_env(adapter: &Adapter) -> String {
     if adapter.extension_env.is_empty() {
         DEFAULT_LIVE_ENV.to_string()
@@ -419,16 +576,95 @@ pub fn proposal(adapter: &Adapter, app_dir: &Path, session_id: &str) -> Result<P
             },
         });
     }
-    let sha256 = artifact_sha(adapter)?;
+    let sha256 = bundle_sha(adapter)?;
+    let mut placements = placements(adapter).into_iter();
+    let extension = placements
+        .next()
+        .expect("a row with an extension artefact has one placement");
+    let skill = placements.find(|placement| placement.file == SKILL_FILE);
+    let instructions = placements.find(|placement| placement.subdir.is_empty());
     Ok(Plan {
         harness,
-        artifact: artifact_path(adapter),
+        artifact: extension.artifact,
         sha256,
-        subdir: subdir(adapter),
-        file: file_name(adapter),
+        subdir: extension.subdir,
+        file: extension.file,
         env_var: live_env(adapter),
         live: live_path(app_dir, session_id),
+        skill,
+        instructions,
     })
+}
+
+/// The skill's bytes as written, marker included.
+///
+/// The marker is what lets a later release recognise its own copy in AoE's
+/// managed store: a skill a person edited (or adopted and rewrote) does not
+/// carry it, so it is never overwritten.
+pub fn skill_text(adapter: &Adapter) -> Option<String> {
+    let placement = placements(adapter)
+        .into_iter()
+        .find(|placement| placement.file == SKILL_FILE)?;
+    let source = placement.source()?;
+    Some(format!("{}\n{MANAGED_MARKER}\n", source.trim_end()))
+}
+
+/// `<app dir>/skills/<skill dir>/SKILL.md` — AoE's own managed skills store,
+/// which is what its Skills page lists.
+pub fn managed_skill_dir(app_dir: &Path, adapter: &Adapter) -> PathBuf {
+    app_dir.join("skills").join(skill_dir(adapter))
+}
+
+pub fn managed_skill_path(app_dir: &Path, adapter: &Adapter) -> PathBuf {
+    managed_skill_dir(app_dir, adapter).join(SKILL_FILE)
+}
+
+/// Whether the managed copy on disk is this plugin's, i.e. safe to rewrite.
+///
+/// Absent counts as ours (nothing to lose); present without the marker does
+/// not, because that is a person's skill and a plugin does not get to replace
+/// it silently.
+pub fn managed_skill_is_ours(app_dir: &Path, adapter: &Adapter) -> bool {
+    match std::fs::read_to_string(managed_skill_path(app_dir, adapter)) {
+        Ok(text) => text.contains(MANAGED_MARKER),
+        Err(_) => true,
+    }
+}
+
+/// Put the skill in AoE's managed store so it appears on the Skills page and
+/// can be read, edited or removed like any other AoE skill.
+///
+/// Returns whether it wrote. A copy somebody else owns is left alone and
+/// reported, because the session copy still delivers the skill — the managed
+/// entry is the discoverable one, not the one the agent loads.
+pub fn install_managed_skill(app_dir: &Path, adapter: &Adapter) -> Result<bool, String> {
+    let Some(text) = skill_text(adapter) else {
+        return Ok(false);
+    };
+    let dir = managed_skill_dir(app_dir, adapter);
+    if !managed_skill_is_ours(app_dir, adapter) {
+        return Ok(false);
+    }
+    crate::private::create_dir(&dir)
+        .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
+    let path = dir.join(SKILL_FILE);
+    crate::private::write_atomic(&path, &text)
+        .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
+    Ok(true)
+}
+
+/// Remove the managed copy, if it is still ours. Returns whether it went.
+pub fn remove_managed_skill(app_dir: &Path, adapter: &Adapter) -> Result<bool, String> {
+    let dir = managed_skill_dir(app_dir, adapter);
+    if dir.symlink_metadata().is_err() {
+        return Ok(false);
+    }
+    if !managed_skill_is_ours(app_dir, adapter) {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(&dir)
+        .map_err(|err| format!("{} could not be removed: {err}", dir.display()))?;
+    Ok(true)
 }
 
 /// The full decision for one row: allowed (with the plan), or the one reason it
@@ -557,27 +793,59 @@ pub fn refresh_live(
 /// the file and the digest, and it says what the code does *and* what it does
 /// not — the version they approve is pinned by [`DISCLOSURE_VERSION`].
 pub fn disclosure(plan: &Plan, harness_version: &str) -> String {
+    let mut files = format!(
+        "  <session config>/{}/{}   the hook itself\n",
+        plan.subdir, plan.file
+    );
+    if let Some(skill) = &plan.skill {
+        files.push_str(&format!(
+            "  <session config>/{}/{}   a skill that tells the agent to keep the activity current\n",
+            skill.subdir, skill.file
+        ));
+    }
+    if let Some(instructions) = &plan.instructions {
+        files.push_str(&format!(
+            "  <session config>/{}   the same reminder, in the always-loaded instructions\n",
+            instructions.file
+        ));
+    }
+    let managed = if plan.skill.is_some() {
+        format!(
+            "  <app dir>/skills/{}/        the same skill in AoE's own skill list, so it shows on\n\
+             \x20                                 the Skills page and can be read, edited or deleted\n"
+            ,
+            skill_dir_name(plan)
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{harness} — per-request hook\n\
+        "{harness} — per-request hook and activity skill\n\
          \n\
-         Enabling this puts one extra file in each {harness} session's private config copy:\n\
-         <session config>/{subdir}/{file}. {harness} loads it inside the agent process, with the\n\
-         agent's own permissions. It is what lets a tag change reach the next request instead of\n\
-         the next launch, and what lets the session report what it is doing — running tests,\n\
-         writing code.\n\
+         Approving this lets the plugin add, to each {harness} session's private config copy, the\n\
+         files below. {harness} loads them inside the agent process, with the agent's own\n\
+         permissions. They are what lets a tag change reach the next request instead of the next\n\
+         launch, and what lets the session say what it is doing — running tests, writing code —\n\
+         without waiting for someone at the dashboard.\n\
+         \n\
+         {files}{managed}\
          \n\
          It does: read one JSON file this plugin writes (live.json: the session's tags and its\n\
-         current activity) and set the {harness} request headers from it on each model request.\n\
-         It does not: read your prompts, transcript, files or credentials; open a socket; spawn a\n\
-         process; or write anything outside that session folder.\n\
+         current activity) and set the {harness} request headers from it on each model request;\n\
+         and, from the skill, run `aoe-llm-tags activity <phase>` when the agent judges the work\n\
+         has moved on — that command only writes this session's own tag.\n\
+         It does not: read your prompts, transcript, files or credentials; send anything outside\n\
+         the session's requests; open a socket; or write anywhere except the files above and that\n\
+         session's own settings.\n\
          To undo: set `{SETTING} = []`, or run `aoe-llm-tags extension disable {harness}`. A\n\
-         session that is already running stops sending dynamic tags on its next request.\n\
+         session that is already running stops sending dynamic tags on its next request, and the\n\
+         managed skill leaves AoE's list.\n\
          \n\
          plugin {plugin} · disclosure v{version} · sha256 {sha}\n\
          requires {harness} with an in-process request hook (yours: {harness_version})",
         harness = plan.harness,
-        subdir = plan.subdir,
-        file = plan.file,
+        files = files,
+        managed = managed,
         sha = plan.sha256,
         plugin = plugin_version(),
         version = DISCLOSURE_VERSION,
@@ -587,6 +855,15 @@ pub fn disclosure(plan: &Plan, harness_version: &str) -> String {
             harness_version
         },
     )
+}
+
+/// The skill's directory name as it appears in the app dir (`aoe-activity`).
+fn skill_dir_name(plan: &Plan) -> String {
+    plan.skill
+        .as_ref()
+        .and_then(|skill| Path::new(&skill.subdir).file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| DEFAULT_SKILL_DIR.to_string())
 }
 
 /// The plugin's own version, from the manifest compiled into the binary.
@@ -634,6 +911,14 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
 
+    fn example(name: &str) -> Adapter {
+        Adapter {
+            agent: name.to_string(),
+            extension_subdir: "extensions".to_string(),
+            ..Adapter::default()
+        }
+    }
+
     #[test]
     fn a_known_day_renders_as_a_date() {
         // 2026-11-07 is 20764 days after the epoch.
@@ -659,6 +944,8 @@ mod tests {
             file: "aoe-llm-tags.ts".into(),
             env_var: DEFAULT_LIVE_ENV.into(),
             live: PathBuf::from("/tmp/live.json"),
+            skill: None,
+            instructions: None,
         };
         let text = disclosure(&plan, "1.2.3");
         for needle in [
@@ -667,7 +954,7 @@ mod tests {
             &"b".repeat(64),
             "extension disable example",
             "does not: read your prompts",
-            "v1",
+            "v2",
             "1.2.3",
         ] {
             assert!(
@@ -683,7 +970,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         crate::private::create_dir(&dir).expect("app dir");
         let sha = "c".repeat(64);
-        accept(&dir, "example", &sha, "9.9.9").expect("accept");
+        accept(&dir, &example("example"), &sha, "9.9.9").expect("accept");
         let (all, warnings) = receipts(&dir);
         assert!(warnings.is_empty(), "{warnings:?}");
         let receipt = all.get("example").expect("a receipt");
@@ -692,11 +979,11 @@ mod tests {
         assert_eq!(receipt.tested_harness, "9.9.9");
         assert!(receipt.accepted_at.ends_with('Z'));
         // A second harness is a second approval, not a re-use of the first.
-        accept(&dir, "other", &"d".repeat(64), "").expect("accept other");
+        accept(&dir, &example("other"), &"d".repeat(64), "").expect("accept other");
         let (all, _) = receipts(&dir);
         assert_eq!(all.len(), 2);
-        assert!(revoke(&dir, "example").expect("revoke"));
-        assert!(!revoke(&dir, "example").expect("revoke twice"));
+        assert!(revoke(&dir, &example("example")).expect("revoke"));
+        assert!(!revoke(&dir, &example("example")).expect("revoke twice"));
         let (all, _) = receipts(&dir);
         assert_eq!(all.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);

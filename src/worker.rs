@@ -162,17 +162,17 @@ impl Host {
             return;
         };
         let result = if command == "extension.disable" {
-            crate::harness_extension::revoke(&app_dir, harness).map(|_| ())
+            crate::harness_extension::revoke(&app_dir, adapter).map(|_| ())
         } else {
             let accepted = params
                 .get("accept")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            match crate::harness_extension::artifact_sha(adapter) {
+            match crate::harness_extension::bundle_sha(adapter) {
                 Ok(shipped) if accepted.eq_ignore_ascii_case(&shipped) => {
                     // The page names no harness version, and the receipt's copy of
                     // it is informational, so it stays empty rather than guessed.
-                    crate::harness_extension::accept(&app_dir, harness, &shipped, "").map(|_| ())
+                    crate::harness_extension::accept(&app_dir, adapter, &shipped, "").map(|_| ())
                 }
                 Ok(shipped) => Err(format!(
                     "{harness}: that is not the file this build ships (sha256 {shipped})"
@@ -952,7 +952,7 @@ fn extension_rows(
             let harness = adapter.agent.clone();
             let requested = intent.iter().any(|name| name == &harness);
             let receipt = receipts.get(&harness);
-            let sha256 = crate::harness_extension::artifact_sha(adapter).ok();
+            let sha256 = crate::harness_extension::bundle_sha(adapter).ok();
             // One verdict, the same one the launch and `doctor` use; the page only
             // renders it, so the three can never disagree.
             let verdict = crate::harness_extension::plan(adapter, intent, app_dir, "");
