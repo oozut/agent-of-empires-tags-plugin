@@ -543,7 +543,7 @@ two more artefacts:
 |---|---|---|
 | `skill_artifact` | `harness/skills/aoe-activity/SKILL.md` | a skill written into the session copy under `skills/<skill_dir>/SKILL.md`, which pi advertises in its system prompt and loads on demand |
 | `skill_dir` / `skill_subdir` | `aoe-activity` / `skills` | where it goes; both default, and `adapters.toml` sets them |
-| `append_artifact` | `harness/pi.append.md` | the same instruction in the always-loaded slot (`APPEND_SYSTEM.md`), because a skill the model never opens changes nothing |
+| `append_artifact` | `harness/activity.append.md` | the same instruction in the always-loaded slot, because a skill the model never opens changes nothing. One file for every harness: what it says is about this plugin, not a vendor's format |
 | `append_filename` | `APPEND_SYSTEM.md` | the file that slot is called |
 
 One caveat, because pi does not combine same-named files: a repository with its own
@@ -556,12 +556,48 @@ other managed skill — that is the plugin's only write outside a session folder
 says so. Its bytes end with a marker; a skill without the marker is somebody's own and is never
 overwritten (the session copy still delivers ours).
 
-The digest a receipt pins is therefore the **bundle** digest — every artefact of the row, hashed in
-path order — so adding a file or rewording the skill asks for a fresh approval, exactly as changing
-the hook does.
+The digest a receipt pins is therefore the **bundle** digest — every artefact of the row, with the
+path each one is written to, hashed in the disclosure's order — so adding a file, moving one, or
+rewording the skill asks for a fresh approval, exactly as changing the hook does. Where a file goes
+is part of what the user approved.
 
-opencode's plugin API may offer an equivalent; it is unverified, so its row has no artefact and
-`doctor` says launch-scope. The full consent model and its refusal states are in `plan/m5.md`.
+### Two carrier scopes
+
+Only two of the harnesses this plugin knows read a config directory the hook can build per
+session. For the rest, "the session's own activity" can only reach the agent through its own
+configuration under `$HOME` — a different grant, disclosed as such, never folded into the
+session-copy wording.
+
+| `carrier_scope` | Harnesses | What approval writes | Marker block |
+|---|---|---|---|
+| `session` | `pi`, `vibe` | the session copy: `extensions/…` (when the row has a hook), `skills/<skill_dir>/SKILL.md`, `APPEND_SYSTEM.md` / `AGENTS.md` | no — the copy is entirely this plugin's |
+| `user` | `claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid`, `qwen`, `kiro` | your own config: `~/.<harness>/skills/aoe-activity/SKILL.md` and a block inside `~/.<harness>/CLAUDE.md` (or `AGENTS.md`, `GEMINI.md`, `SOUL.md`, `QWEN.md`, or kiro's `~/.kiro/steering/aoe-activity.md`) | yes — `<!-- aoe-llm-tags:begin -->` … `<!-- aoe-llm-tags:end -->` |
+
+| Field | Example | What it means |
+|---|---|---|
+| `carrier_scope` | `user` | which of the two grants the row's carriers need |
+| `user_skill_root` | `~/.claude/skills` | `~`-relative only: an absolute path would write outside the one place a user-scope approval may touch |
+| `user_instructions` | `~/.claude/CLAUDE.md` | the file the harness reads into every conversation; the reminder goes between the markers and everything else in the file stays byte for byte |
+
+Removal deletes the skill directory (only if it carries the managed marker) and strips the block,
+then deletes the file itself *if the block was alone in it* — a file the user also writes in
+survives with their text restored exactly. A skill directory without the managed marker is
+somebody's own and is never overwritten: approval is not a licence to take over another skill.
+
+Because AoE's own skill list scans the harness roots it knows (`claude-user`, `gemini-user`,
+`opencode-user`, `agents-standard`), a user-scope install can show up there as an *external* skill
+as well as under `aoe-managed`: two entries, one file the plugin owns and one a copy in a harness's
+config. The `aoe-managed` one is the plugin's anchor — it is the writable one — and the copies are
+what the agents actually read.
+
+`kiro` ships no skill, because it has no skill loader: its carrier is the steering document alone.
+A row with no hook, no skill root and no instruction file is refused by name (`no_destination`)
+rather than given an invented path — it gets launch-time tags and nothing else (`cline`,
+`openclaw`).
+
+opencode's plugin API may offer an in-process equivalent; it is unverified, so its row has no
+`extension_artifact` and `doctor` says launch-scope — but its user-scope carriers still install.
+The full consent model and its refusal states are in `plan/m5.md`.
 
 The portable mechanism is therefore the hook minting the variables in both keys, with the
 harness config holding exactly one indirection per header: one header name to one variable.

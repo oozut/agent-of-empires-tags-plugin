@@ -67,8 +67,15 @@ For a harness that loads code from its config directory this needs no proxy and 
 the plugin ships a small extension, the harness runs it in-process, and pi re-emits
 `before_provider_headers` before each model request, so a tag edited mid-session reaches the next
 request. It is code running inside the agent, so it is opt-in twice — intent in the
-`harness_extension` setting, approval of one exact file recorded with its sha256 — and revocable
-without touching the user's own config. See `plan/m5.md`.
+`harness_extension` setting, approval of one exact bundle recorded with its sha256 — and revocable.
+
+The activity itself does not depend on that hook. A **skill** plus one always-loaded reminder is
+what makes the agent keep the session's activity current, and every harness this plugin has a row
+for can take those two: into the session's copy where the harness reads one (`pi`, `vibe`), or into
+the harness's own config behind a marker block where it does not (`claude`, `codex`, `opencode`,
+`hermes`, `gemini`, `droid`, `qwen`, `kiro`) — a wider grant, disclosed as such. What the hook adds
+is only timeliness: `pi` re-reads the value per request, so an activity change reaches the next
+request; everywhere else it reaches the next launch. See `plan/m5.md`.
 
 **Still rejected: a tagging proxy.** A listener in the request path would buy the same thing for
 every harness at the price of a new capability (`net`), a second process that can fail requests,

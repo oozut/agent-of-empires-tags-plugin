@@ -624,12 +624,19 @@ fn check_harness_extensions(adapters: &[Adapter], snap: &Snapshot, app_dir: &Pat
         })
         .collect();
 
-    for adapter in adapters
-        .iter()
-        .filter(|row| !row.extension_artifact.is_empty())
-    {
+    // A row the user asked for is reported even when it has no destination: the
+    // request would otherwise be a promise this install never keeps, silently.
+    for adapter in adapters.iter().filter(|row| {
+        crate::harness_extension::carrier(row).is_some() || wanted.iter().any(|n| n == &row.agent)
+    }) {
         let name = format!("extension {}", adapter.agent);
-        let check = match crate::harness_extension::plan(adapter, wanted, app_dir, &snap.facts.id) {
+        let check = match crate::harness_extension::plan(
+            adapter,
+            wanted,
+            app_dir,
+            &snap.facts.id,
+            crate::harness_extension::home().as_deref(),
+        ) {
             Ok(plan) => {
                 let skill = match &plan.skill {
                     Some(_) => {
@@ -644,18 +651,34 @@ fn check_harness_extensions(adapters: &[Adapter], snap: &Snapshot, app_dir: &Pat
                     }
                     None => String::new(),
                 };
+                let scope = match plan.carrier {
+                    crate::harness_extension::Carrier::Session => {
+                        format!("; live file {}", abbreviate(&plan.live.to_string_lossy()))
+                    }
+                    crate::harness_extension::Carrier::User => {
+                        let paths: Vec<String> = plan
+                            .parts()
+                            .map(|placement| {
+                                let base = crate::harness_extension::home()
+                                    .unwrap_or_else(|| std::path::PathBuf::from("~"));
+                                abbreviate(&placement.target(&base).to_string_lossy())
+                            })
+                            .collect();
+                        format!("; in your own config: {}", paths.join(", "))
+                    }
+                };
                 Check {
                     name,
                     status: OK.to_string(),
                     detail: format!(
-                        "approved {} (bundle sha256 {}, disclosure v{}); live file {}{}",
+                        "approved {} (bundle sha256 {}, disclosure v{}){}{}",
                         receipts
                             .get(&plan.harness)
                             .map(|receipt| receipt.accepted_at.clone())
                             .unwrap_or_else(|| "unknown".to_string()),
                         &plan.sha256[..8],
                         crate::harness_extension::DISCLOSURE_VERSION,
-                        abbreviate(&plan.live.to_string_lossy()),
+                        scope,
                         skill,
                     ),
                 }

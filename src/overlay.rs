@@ -261,6 +261,7 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
         &snap.settings.harness_extension,
         &app_dir,
         &snap.facts.id,
+        crate::harness_extension::home().as_deref(),
     );
     // Always clear a copy a previous launch left, whichever way the decision
     // went: a revoke takes effect at the next launch, and a stale artefact must
@@ -274,7 +275,9 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
             // land in the user's own config.
             let mut skip: Vec<std::ffi::OsString> = Vec::new();
             if let Ok(plan) = &extension {
-                skip.push(std::ffi::OsString::from(plan.subdir.clone()));
+                if let Some(hook) = &plan.hook {
+                    skip.push(std::ffi::OsString::from(hook.subdir.clone()));
+                }
                 if plan.skill.is_some() {
                     skip.push(std::ffi::OsString::from(
                         crate::harness_extension::skill_root(adapter),
@@ -304,20 +307,24 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
             Ok(()) => {
                 // The live file is what the extension re-reads per request; the
                 // values are the ones this launch already resolved, so the
-                // extension can never mint a tag of its own.
-                match crate::harness_extension::write_live(
-                    &app_dir,
-                    &snap.facts.id,
-                    &snap.resolved,
-                    true,
-                ) {
-                    Ok(live) => {
-                        env.push((plan.env_var.clone(), live.to_string_lossy().into_owned()))
+                // extension can never mint a tag of its own. A bundle with no
+                // hook (a skill only) has nothing to re-read, so it has no file
+                // to write either.
+                if let Some(hook) = &plan.hook {
+                    match crate::harness_extension::write_live(
+                        &app_dir,
+                        &snap.facts.id,
+                        &snap.resolved,
+                        true,
+                    ) {
+                        Ok(live) => {
+                            env.push((plan.env_var.clone(), live.to_string_lossy().into_owned()))
+                        }
+                        Err(why) => skipped.push((hook.file.clone(), why)),
                     }
-                    Err(why) => skipped.push((plan.file.clone(), why)),
                 }
             }
-            Err(why) => skipped.push((plan.file.clone(), why)),
+            Err(why) => skipped.push((adapter.agent.clone(), why)),
         },
         Err(refusal) => {
             // A harness that simply has no hook, or one the user never asked
@@ -406,16 +413,20 @@ fn place_extension(
     dir: &Path,
     source_dir: Option<&Path>,
 ) -> Result<(), String> {
-    let Some(source) = crate::harness_extension::embedded(adapter) else {
-        return Err(format!(
-            "{} is not carried by this build",
-            plan.artifact.display()
-        ));
-    };
-    prepare_dir(&dir.join(&plan.subdir), &plan.file, source_dir)?;
-    let path = dir.join(&plan.subdir).join(&plan.file);
-    crate::private::write_atomic(&path, source)
-        .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
+    // The hook is optional: a harness can take the activity carriers without
+    // having an in-process hook, and then there is no file to place here.
+    if let Some(hook) = &plan.hook {
+        let Some(source) = hook.source() else {
+            return Err(format!(
+                "{} is not carried by this build",
+                hook.artifact.display()
+            ));
+        };
+        prepare_dir(&dir.join(&hook.subdir), &hook.file, source_dir)?;
+        let path = hook.target(dir);
+        crate::private::write_atomic(&path, source)
+            .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
+    }
 
     if let Some(skill) = &plan.skill {
         let root = dir.join(crate::harness_extension::skill_root(adapter));
@@ -497,9 +508,56 @@ fn prepare_dir(dir: &Path, our_file: &str, source_dir: Option<&Path>) -> Result<
     Ok(())
 }
 
+/// Whether every entry in a directory is a link this plugin made, so the
+/// directory itself can go. An unreadable or missing directory is "no".
+fn only_our_links(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().all(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_symlink())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// Remove a copy a previous launch placed. A directory that stays only because
 /// it holds our file goes too; a link to the user's directory is left alone.
+///
+/// The parts are removed independently: a row with no in-process hook never
+/// wrote the hook directory, so reaching it must not stop the skill and the
+/// reminder from being taken away.
 fn clear_extension(dir: &Path, adapter: &Adapter) -> Result<(), String> {
+    // A user-scope row puts nothing in the session copy, so there is nothing
+    // here to clear — and a directory of the same name is the user's own.
+    if crate::harness_extension::carrier(adapter)
+        != Some(crate::harness_extension::Carrier::Session)
+    {
+        return Ok(());
+    }
+    // The skill directory, then the root that held it if nothing else does.
+    let root = crate::harness_extension::skill_root(adapter);
+    if !root.is_empty() {
+        let skill_dir = dir
+            .join(&root)
+            .join(crate::harness_extension::skill_dir(adapter));
+        let _ = std::fs::remove_dir_all(&skill_dir);
+        let root = dir.join(&root);
+        if only_our_links(&root) {
+            let _ = std::fs::remove_dir_all(&root);
+        }
+    }
+    // The reminder file: ours, or a link to the user's own file, which stays.
+    if let Some(name) = crate::harness_extension::instructions_name(adapter) {
+        let reminder = dir.join(name);
+        if let Ok(meta) = reminder.symlink_metadata() {
+            if !meta.file_type().is_symlink() {
+                let _ = std::fs::remove_file(&reminder);
+            }
+        }
+    }
     let target = dir.join(crate::harness_extension::subdir(adapter));
     let Ok(meta) = target.symlink_metadata() else {
         return Ok(());
@@ -515,47 +573,8 @@ fn clear_extension(dir: &Path, adapter: &Adapter) -> Result<(), String> {
     // Everything left in there is a link this plugin made, so the directory can
     // go and the ordinary whole-directory link can take its place. A real file
     // (something the user put there) means it stays.
-    let only_our_links = std::fs::read_dir(&target)
-        .map(|entries| {
-            entries.flatten().all(|entry| {
-                entry
-                    .file_type()
-                    .map(|kind| kind.is_symlink())
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
-    if only_our_links {
+    if only_our_links(&target) {
         let _ = std::fs::remove_dir_all(&target);
-    }
-    // The rest of the bundle: our skill directory, then the reminder file (whose
-    // place goes back to the user's own file, or to nothing).
-    let skill_dir = dir
-        .join(crate::harness_extension::skill_root(adapter))
-        .join(crate::harness_extension::skill_dir(adapter));
-    let _ = std::fs::remove_dir_all(&skill_dir);
-    let root = dir.join(crate::harness_extension::skill_root(adapter));
-    let empty_links = std::fs::read_dir(&root)
-        .map(|entries| {
-            entries.flatten().all(|entry| {
-                entry
-                    .file_type()
-                    .map(|kind| kind.is_symlink())
-                    .unwrap_or(false)
-            })
-        })
-        .unwrap_or(false);
-    if empty_links {
-        let _ = std::fs::remove_dir_all(&root);
-    }
-    let reminder = match crate::harness_extension::instructions_name(adapter) {
-        Some(name) => dir.join(name),
-        None => return Ok(()),
-    };
-    if let Ok(meta) = reminder.symlink_metadata() {
-        if !meta.file_type().is_symlink() {
-            let _ = std::fs::remove_file(&reminder);
-        }
     }
     Ok(())
 }

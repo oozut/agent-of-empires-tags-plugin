@@ -15,14 +15,50 @@ use std::path::PathBuf;
 use common::{settings_config, Sandbox};
 use llm_tags::harness_extension::DISCLOSURE_VERSION;
 
-/// The digest pinned for the bundle this build ships: the hook, the skill and
-/// the always-loaded reminder, hashed in path order.
+/// The digest pinned for the bundle this build ships to `pi`: the hook, the
+/// skill and the always-loaded reminder, hashed in the disclosure's order.
 ///
 /// A change here is a decision, not a formality: users approved the previous
 /// bytes, so a new digest invalidates every receipt and asks them again. Update
 /// this constant together with `DISCLOSURE_VERSION` when the bundle's behaviour
 /// changes, and with nothing else when only its comments do.
-const BUNDLE_SHA256: &str = "22c92f244e7a8364152c140d24122ba755362dab21df0b526cc01e1c3fba2f46";
+const BUNDLE_SHA256: &str = "0228e63707ff451a4890a3a94d24f8a6e8b5b3c157524fdf903a73073dbadb75";
+
+/// The digest pinned for the same carriers in a harness's own config: the same
+/// skill and reminder, placed under `~/.claude` instead of a session copy, so a
+/// different grant and a different digest.
+const USER_BUNDLE_SHA256: &str = "069d8952700ca4fbd2729d319dd522a091fe3c2a875f368269e0285576e16a08";
+
+/// The first row whose carriers go into the user's own config, with the paths a
+/// user-scope approval writes. Taken from the table, not spelled here: the row
+/// is what decides, and a test that hard-coded `claude` would stop covering the
+/// mechanism the moment the table changed.
+fn user_scope_row() -> llm_tags::adapters::Adapter {
+    let (rows, warnings) = llm_tags::adapters::load(None);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    rows.iter()
+        .find(|row| {
+            llm_tags::harness_extension::carrier(row)
+                == Some(llm_tags::harness_extension::Carrier::User)
+        })
+        .cloned()
+        .expect("a row whose carriers live in the user's own config")
+}
+
+/// Approve any harness by name, with the digest its disclosure printed.
+fn approve_any(sandbox: &Sandbox, harness: &str) -> common::Run {
+    let printed = sandbox.run(&["extension", "enable", harness, "--print"]);
+    printed.assert_ok();
+    let digest = printed
+        .stdout
+        .lines()
+        .find_map(|line| line.split("--accept ").nth(1))
+        .map(str::trim)
+        .expect("the printed approve command");
+    let run = sandbox.run(&["extension", "enable", harness, "--accept", digest]);
+    run.assert_ok();
+    run
+}
 
 fn emitted<'a>(lines: &'a [&'a str], name: &str) -> Option<&'a str> {
     lines
@@ -399,21 +435,26 @@ fn the_shipped_bundle_matches_the_digest_this_test_pins() {
     // same path order the code does — a fourth file, or a reworded one, is a
     // different bundle and every receipt it invalidates is meant to be
     // invalidated.
-    let files = [
-        "harness/pi.append.md",
-        "harness/pi.ts",
-        "harness/skills/aoe-activity/SKILL.md",
-    ];
-    let mut outline = String::new();
-    for path in files {
-        let source = std::fs::read(path).unwrap_or_else(|err| panic!("{path}: {err}"));
-        outline.push_str(&format!("{path}\n{}\n", llm_tags::sha256::hex(&source)));
-    }
+    let (rows, warnings) = llm_tags::adapters::load(None);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let pi = rows
+        .iter()
+        .find(|row| row.agent == "pi")
+        .expect("the pi row");
     assert_eq!(
-        llm_tags::sha256::hex(outline.as_bytes()),
+        llm_tags::harness_extension::bundle_sha(pi, llm_tags::harness_extension::Carrier::Session)
+            .expect("the shipped digest"),
         BUNDLE_SHA256,
         "the bundle changed: update BUNDLE_SHA256 and DISCLOSURE_VERSION, or revert the \
          change — every user-approved receipt is tied to the previous bytes"
+    );
+    let user = user_scope_row();
+    assert_eq!(
+        llm_tags::harness_extension::bundle_sha(&user, llm_tags::harness_extension::Carrier::User)
+            .expect("the shipped digest"),
+        USER_BUNDLE_SHA256,
+        "{}'s user-scope bundle changed: update USER_BUNDLE_SHA256 and DISCLOSURE_VERSION",
+        user.agent
     );
 }
 
@@ -494,5 +535,278 @@ fn the_disclosure_names_the_path_the_writer_uses() {
             session_dir(&run).join(&relative).is_file(),
             "{relative} was disclosed but not written"
         );
+    }
+}
+
+/// The other half of the mechanism: a harness with no per-session config copy
+/// still gets the activity carriers — in its own config, behind a marker block,
+/// installed at approval time and removed at a revoke.
+#[test]
+fn a_harness_without_a_session_copy_gets_the_carriers_in_its_own_config() {
+    let sandbox = Sandbox::new();
+    let row = user_scope_row();
+    let harness = row.agent.clone();
+    sandbox.write_config(&settings_config(
+        &format!("harness_extension = [\"{harness}\"]\n"),
+        "",
+    ));
+
+    let approved = approve_any(&sandbox, &harness);
+    approved.assert_contains(&format!("approved: {harness}"));
+    // The disclosure has to describe the wider grant, not the session one.
+    approved.assert_contains("in your own config");
+    approved.assert_contains("marker");
+    approved.assert_contains(&format!("extension disable {harness}"));
+
+    let skill = sandbox.path(&format!(
+        "home/{}/SKILL.md",
+        row.user_skill_root.trim_start_matches("~/").to_string() + "/aoe-activity"
+    ));
+    assert!(skill.is_file(), "{} was not written", skill.display());
+    let reminder = sandbox.path(&format!(
+        "home/{}",
+        row.user_instructions.trim_start_matches("~/")
+    ));
+    let body = std::fs::read_to_string(&reminder).expect("the reminder");
+    assert!(body.contains("aoe-llm-tags:begin"), "{body}");
+    assert!(body.contains("aoe-llm-tags:end"), "{body}");
+    // The skill also appears in AoE's own list, from the same approval.
+    assert!(sandbox
+        .path("config/agent-of-empires/skills/aoe-activity/SKILL.md")
+        .is_file());
+
+    // Nothing was written into a session copy: this harness has none.
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+
+    sandbox.run(&["extension", "disable", &harness]).assert_ok();
+    assert!(!skill.exists(), "the skill stayed behind");
+    assert!(
+        !reminder.exists(),
+        "the reminder file was ours alone, so it should be gone"
+    );
+}
+
+/// A file the user already had keeps every line of their own, and gets it back
+/// byte for byte when the approval is revoked.
+#[test]
+fn the_users_own_instruction_file_is_kept_and_restored() {
+    let sandbox = Sandbox::new();
+    let row = user_scope_row();
+    let harness = row.agent.clone();
+    sandbox.write_config(&settings_config(
+        &format!("harness_extension = [\"{harness}\"]\n"),
+        "",
+    ));
+    let reminder = sandbox.path(&format!(
+        "home/{}",
+        row.user_instructions.trim_start_matches("~/")
+    ));
+    let theirs = "# My rules\n\n- be brief\n- no filler\n";
+    sandbox.write_file(&reminder, theirs);
+
+    approve_any(&sandbox, &harness);
+    let body = std::fs::read_to_string(&reminder).expect("the reminder");
+    assert!(body.starts_with(theirs), "their text was reworded: {body}");
+    assert!(body.contains("aoe-llm-tags:begin"), "{body}");
+
+    // A second approval is the same file, not a second block.
+    approve_any(&sandbox, &harness);
+    assert_eq!(
+        std::fs::read_to_string(&reminder).expect("the reminder"),
+        body,
+        "a second approval duplicated the block"
+    );
+
+    sandbox.run(&["extension", "disable", &harness]).assert_ok();
+    assert_eq!(
+        std::fs::read_to_string(&reminder).expect("their file"),
+        theirs,
+        "the user's own text did not come back byte for byte"
+    );
+}
+
+/// Every row that carries anything has a destination that exists, an artefact
+/// this build ships and a digest — the property that makes "works for all the
+/// harnesses" a check rather than a claim.
+#[test]
+fn every_row_with_a_destination_places_a_file_this_build_ships() {
+    let (rows, warnings) = llm_tags::adapters::load(None);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let mut covered = Vec::new();
+    for row in &rows {
+        let Some(carrier) = llm_tags::harness_extension::carrier(row) else {
+            continue;
+        };
+        let bundle = llm_tags::harness_extension::bundle(row, carrier);
+        assert!(!bundle.is_empty(), "{} carries nothing", row.agent);
+        for placement in bundle.parts() {
+            let path = placement.artifact.to_string_lossy().into_owned();
+            assert!(
+                llm_tags::artifacts::bytes(&path).is_some(),
+                "{} names {path}, which this build does not carry",
+                row.agent
+            );
+            assert!(
+                !placement.display.is_empty(),
+                "{} has no disclosed path for {path}",
+                row.agent
+            );
+            // A disclosed path has to say which of the two grants it is.
+            match carrier {
+                llm_tags::harness_extension::Carrier::Session => assert!(
+                    placement.display.starts_with("<session config>/"),
+                    "{} disclosed {} outside a session copy",
+                    row.agent,
+                    placement.display
+                ),
+                llm_tags::harness_extension::Carrier::User => assert!(
+                    placement.display.starts_with("~/"),
+                    "{} disclosed {} outside the home directory",
+                    row.agent,
+                    placement.display
+                ),
+            }
+        }
+        assert!(
+            llm_tags::harness_extension::bundle_sha(row, carrier).is_ok(),
+            "{} has no usable digest",
+            row.agent
+        );
+        covered.push(row.agent.clone());
+    }
+    // The harnesses this was written for: a regression that silently drops one
+    // shows up here by name.
+    for harness in [
+        "pi", "claude", "codex", "opencode", "gemini", "qwen", "droid",
+    ] {
+        assert!(
+            covered.iter().any(|name| name == harness),
+            "{harness} has no activity carrier any more"
+        );
+    }
+}
+
+/// A session-scope row that has no in-process hook: the carriers go into the
+/// session copy, so the agent sees them, but nothing is re-read per request.
+#[test]
+fn a_session_copy_carries_the_skill_even_without_a_hook() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config("harness_extension = [\"vibe\"]\n", ""));
+    let mut sandbox = sandbox;
+    sandbox.session("cf11af87da7e4bf0", "vibe");
+    sandbox.write_file(
+        &sandbox.path("home/.vibe/config.toml"),
+        "[[providers]]\nname = \"gw\"\napi_base = \"http://h/v1\"\n\n[[models]]\nname = \"m\"\nprovider = \"gw\"\n",
+    );
+    approve_any(&sandbox, "vibe");
+
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    let dir = PathBuf::from(emitted(&run.lines(), "VIBE_HOME").expect("the override line"));
+    // The skill and the reminder, in the copy the agent reads...
+    assert!(
+        dir.join("skills/aoe-activity/SKILL.md").is_file(),
+        "the skill is missing from the session copy"
+    );
+    let reminder = std::fs::read_to_string(dir.join("AGENTS.md")).expect("the reminder");
+    // A session copy is entirely this plugin's, so it needs no marker block: the
+    // markers protect a file the user also writes in, and this one is ours.
+    assert!(reminder.contains("Session activity"), "{reminder}");
+    assert!(reminder.contains("activity <word>"), "{reminder}");
+    // ...and no hook, so no live file: nothing here could re-read one.
+    assert_eq!(emitted(&run.lines(), "AOE_LLM_TAGS_LIVE"), None);
+    assert!(!dir.join("extensions").exists());
+
+    sandbox.run(&["extension", "disable", "vibe"]).assert_ok();
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    let listing: Vec<String> = std::fs::read_dir(&dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !dir.join("skills").exists(),
+        "the skill stayed behind: {listing:?}"
+    );
+    assert!(
+        !dir.join("AGENTS.md").exists(),
+        "the reminder stayed behind"
+    );
+}
+
+/// The disclosure is the thing the user approves, so it may not describe a
+/// bundle bigger or better than the row actually ships: no per-request claim on a
+/// row with no hook, no skill on a row without one, and no session copy on a row
+/// that writes into the user's own config.
+#[test]
+fn the_disclosure_describes_exactly_what_the_row_carries() {
+    let (rows, warnings) = llm_tags::adapters::load(None);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    for row in &rows {
+        let Some(carrier) = llm_tags::harness_extension::carrier(row) else {
+            continue;
+        };
+        let sandbox = Sandbox::new();
+        let printed = sandbox.run(&["extension", "enable", &row.agent, "--print"]);
+        printed.assert_ok();
+        let text = &printed.stdout;
+        let has_hook = !row.extension_artifact.is_empty();
+        let has_skill = !row.skill_artifact.is_empty();
+        assert_eq!(
+            text.contains("request headers from it on each model request"),
+            has_hook,
+            "{}: the per-request claim does not match its hook",
+            row.agent
+        );
+        // The file list names the skill whatever the scope is; the paragraph
+        // that promises to install one belongs to the user-scope wording.
+        assert_eq!(
+            text.contains("a skill that tells the agent"),
+            has_skill,
+            "{}: the skill claim does not match its artefacts",
+            row.agent
+        );
+        match carrier {
+            llm_tags::harness_extension::Carrier::Session => {
+                assert!(
+                    text.contains("private config copy"),
+                    "{}: a session copy is not described as one",
+                    row.agent
+                );
+                assert!(
+                    !text.contains("your own config"),
+                    "{}: a session copy is not the user's config",
+                    row.agent
+                );
+            }
+            llm_tags::harness_extension::Carrier::User => {
+                assert!(
+                    text.contains("your own"),
+                    "{}: a user-scope grant is not described as one",
+                    row.agent
+                );
+                assert!(
+                    !text.contains("private config copy"),
+                    "{}: claims a session copy it does not have",
+                    row.agent
+                );
+                assert!(
+                    text.contains("marker lines"),
+                    "{}: a user-scope write has to name the markers",
+                    row.agent
+                );
+                assert_eq!(
+                    text.contains("put the activity skill"),
+                    has_skill,
+                    "{}: the skill promise does not match its artefacts",
+                    row.agent
+                );
+            }
+        }
     }
 }

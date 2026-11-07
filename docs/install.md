@@ -133,20 +133,48 @@ is in `docs/reference-deployment.md` §Proof runs.
 
 Everything above is launch-scoped: the values are fixed when the session starts, because a harness
 reads its config once. If you edit a tag while a session runs, the next request still carries the
-old one until you relaunch.
+old one until you relaunch — and a session that moves from planning to debugging says nothing about
+it.
 
-**This plugin can install code into your harness to fix that.** It is off by default and it never
-happens unless you approve the exact set of files. Today only `pi` can take it.
+**This plugin can install two things into a harness to fix that.** It is off by default and it
+never happens unless you approve the exact set of files, by digest.
 
-What it puts where, in plain words: three files inside the private config copy this plugin already
-builds for each pi session, plus one entry in AoE's own skill list.
+1. a **skill** that tells the agent to keep the session's activity current, and
+2. the same one-line reminder in the harness's always-loaded instructions, because a skill the
+   model never opens changes nothing.
+
+Where those two go depends on the harness, and the difference is the whole consent model:
+
+| Scope | Harnesses | Where the files land |
+|---|---|---|
+| session copy | `pi`, `vibe` | inside the private config copy this plugin already builds per session — nothing of yours is touched. `pi` also gets the request hook (below); `vibe` does not have one |
+| your own config | `claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid`, `qwen`, `kiro` | inside your own harness config under your home directory: a skill directory of its own, and a block between two marker lines in the file the harness reads into every conversation |
+
+Those harnesses have no per-session config copy this plugin can write into, so a session's activity
+can only reach them through your own configuration. That is a wider reach than a session copy, and
+the disclosure for them says so in those words before anything is written.
+
+What a `pi` session gets, in plain words:
 
 | Where | What |
 |---|---|
 | `…/sessions/<id>/pi/extensions/aoe-llm-tags.ts` | the hook: pi loads it inside the agent process, with the agent's own permissions, and it sets the `X-AoE-*` headers before each model request |
 | `…/sessions/<id>/pi/skills/aoe-activity/SKILL.md` | a skill that tells the agent to keep the session's activity current as the work moves between phases |
-| `…/sessions/<id>/pi/APPEND_SYSTEM.md` | the same reminder in pi's always-loaded instructions, because a skill the model never opens changes nothing |
+| `…/sessions/<id>/pi/APPEND_SYSTEM.md` | the same reminder in pi's always-loaded instructions |
 | `<app dir>/skills/aoe-activity/` | the same skill in AoE's managed store, so it shows on the Skills page and can be read, edited or deleted there |
+
+and what a user-scope harness gets, taking `claude` as the example:
+
+| Where | What |
+|---|---|
+| `~/.claude/skills/aoe-activity/SKILL.md` | the skill, in the directory claude looks for skills |
+| `~/.claude/CLAUDE.md` | the reminder, between `<!-- aoe-llm-tags:begin -->` and `<!-- aoe-llm-tags:end -->`. Your own rules in that file stay byte for byte: only the block is written, only the block is removed |
+| `<app dir>/skills/aoe-activity/` | the same skill in AoE's managed store |
+
+Both scopes also write the skill into AoE's managed store, so the Skills page lists it as
+`aoe-managed`. AoE scans the harness roots it knows, so on the user-scope rows the installed copy
+shows up there a second time as an *external* skill: two rows, one file the plugin owns and one the
+agent reads.
 
 The hook reads one JSON file this plugin writes (`live.json`: the session's tags and its current
 activity) and sets the headers from it. The skill tells the agent to run `aoe-llm-tags activity
@@ -156,8 +184,12 @@ written to — the session copy's directories hold links to your entries plus th
 already have an `APPEND_SYSTEM.md` there it is *appended to*, not replaced; a managed skill of the
 same name that carries no plugin marker is left alone.
 
+Only `pi` re-reads the value per request, so only `pi` shows an activity change mid-session. For
+every other harness the change reaches the agent at the next launch; the badge, the pane and the
+page change at once either way.
+
 The plugin's page (Dashboard → plugins → LLM Tags) shows the same disclosure for each harness, with
-a checkbox and an **Enable** button — the page sends back the digest it displayed, so a stale page
+a checkbox and an enable button — the page sends back the digest it displayed, so a stale page
 approves nothing. On the command line:
 
 ```sh
@@ -170,12 +202,13 @@ Three things end the approval — a change to the bytes of any file in the set, 
 disclosure's wording, or:
 
 ```sh
-"<install>/bin/aoe-llm-tags" extension disable pi
+"<install>/bin/aoe-llm-tags" extension disable claude
 ```
 
-A plugin update, a reinstall or a pi upgrade does **not** end it: the approval records the files
-and the wording, not the version. It does end the managed skill: `extension disable` removes the
-entry from AoE's skill list with everything else. `doctor` prints one line per harness at all times, so "not sending"
+A plugin update, a reinstall or a harness upgrade does **not** end it: the approval records the
+files and the wording, not the version. `extension disable` removes both carriers — the skill
+directory and the marker block, leaving the rest of the file as it was, and deleting the file only
+if the block was all it held. `doctor` prints one line per harness at all times, so "not sending"
 always has a stated reason. Sandboxed sessions are not covered — aoe stages only your own
 `extensions/` directory into a sandbox, so no extension of this plugin's is installed there.
 
@@ -186,8 +219,10 @@ aoe plugin update dev.oozut.llm-tags --yes     # rebuild (or re-download), resta
 aoe plugin disable dev.oozut.llm-tags          # contributions off; the pasted lines stay
 ```
 
-An approved harness extension is part of the per-session copies, so the same step that removes
-those removes it; your own `~/.pi/agent` was never touched, so nothing there needs undoing.
+An approved session-scope extension is part of the per-session copies, so the same step that
+removes those removes it; your own `~/.pi/agent` was never touched, so nothing there needs undoing.
+A user-scope one is in your own config, so remove it with `extension disable <harness>` — it
+deletes the skill directory and the block between the markers, and nothing else.
 
 The hook lines and the mapping line live in files this plugin does not own, so it never adds or
 removes them. Removing it cleanly is therefore three steps, in this order:

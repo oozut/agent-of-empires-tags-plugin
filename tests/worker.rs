@@ -728,6 +728,17 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     assert_eq!(pi["state"], json!("ok"));
     assert!(pi["accepted_at"].as_str().unwrap_or_default().len() >= 10);
 
+    // The page has to say which of the two grants a row needs, and where the
+    // files go: a session copy and the user's own config are not the same offer.
+    let pi = &page["extensions"][0];
+    assert_eq!(pi["scope"], json!("session"), "{pi}");
+    let files = pi["files"].as_array().expect("the disclosed files");
+    assert_eq!(files.len(), 3, "{pi}");
+    assert!(files.iter().all(|path| path
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("<session config>/")));
+
     // And the button that stops it removes the approval, so the next launch of
     // that harness installs nothing.
     wire.notify(
@@ -851,4 +862,45 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
     // The pane is text-and-tone first: every row has a label, and the icon is
     // decoration the web renders and the terminal ignores.
     assert!(rows.iter().all(|row| row["label"].is_string()));
+}
+
+/// A user-scope row on the page says so: the same card, a wider grant, and the
+/// paths it would write named before anything is written.
+#[test]
+fn the_page_names_the_users_own_config_for_a_user_scope_row() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "harness_extension = [\"claude\"]\n\
+         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
+         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
+        "",
+    ));
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+    let claude = page["extensions"]
+        .as_array()
+        .expect("extensions")
+        .iter()
+        .find(|row| row["harness"] == json!("claude"))
+        .unwrap_or_else(|| panic!("no claude row in {page}"))
+        .clone();
+    assert_eq!(claude["requested"], json!(true));
+    assert_eq!(claude["scope"], json!("user"), "{claude}");
+    let files: Vec<&str> = claude["files"]
+        .as_array()
+        .expect("the disclosed files")
+        .iter()
+        .map(|path| path.as_str().unwrap_or_default())
+        .collect();
+    assert!(files.iter().all(|path| path.starts_with("~/")), "{files:?}");
+    assert!(
+        files.contains(&"~/.claude/CLAUDE.md"),
+        "the instruction file is not disclosed: {files:?}"
+    );
+    let disclosure = claude["disclosure"].as_str().expect("the disclosure");
+    assert!(disclosure.contains("your own"), "{disclosure}");
+    assert!(disclosure.contains("marker"), "{disclosure}");
+    assert!(!disclosure.contains("private config copy"), "{disclosure}");
 }

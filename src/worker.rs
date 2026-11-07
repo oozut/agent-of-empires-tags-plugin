@@ -161,18 +161,36 @@ impl Host {
             eprintln!("{command}: {harness} is not a harness this build knows");
             return;
         };
+        let home = crate::harness_extension::home();
         let result = if command == "extension.disable" {
-            crate::harness_extension::revoke(&app_dir, adapter).map(|_| ())
+            crate::harness_extension::revoke(&app_dir, home.as_deref(), adapter).map(|_| ())
         } else {
+            let Some(carrier) = crate::harness_extension::carrier(adapter) else {
+                eprintln!(
+                    "{command} for {harness}: {}",
+                    crate::harness_extension::Refusal::NoDestination {
+                        harness: adapter.agent.clone()
+                    }
+                    .detail()
+                );
+                return;
+            };
             let accepted = params
                 .get("accept")
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or_default();
-            match crate::harness_extension::bundle_sha(adapter) {
+            match crate::harness_extension::bundle_sha(adapter, carrier) {
                 Ok(shipped) if accepted.eq_ignore_ascii_case(&shipped) => {
                     // The page names no harness version, and the receipt's copy of
                     // it is informational, so it stays empty rather than guessed.
-                    crate::harness_extension::accept(&app_dir, adapter, &shipped, "").map(|_| ())
+                    crate::harness_extension::accept(
+                        &app_dir,
+                        home.as_deref(),
+                        adapter,
+                        &shipped,
+                        "",
+                    )
+                    .map(|_| ())
                 }
                 Ok(shipped) => Err(format!(
                     "{harness}: that is not the file this build ships (sha256 {shipped})"
@@ -453,6 +471,7 @@ impl Host {
                     crate::adapters::match_tool(&adapters, &tool),
                     &snap.settings.harness_extension,
                     &snap.resolved,
+                    crate::harness_extension::home().as_deref(),
                 ) {
                     eprintln!("{id}: {why}");
                 }
@@ -947,15 +966,26 @@ fn extension_rows(
     let (receipts, _) = crate::harness_extension::receipts(app_dir);
     adapters
         .iter()
-        .filter(|adapter| !adapter.extension_artifact.is_empty())
+        .filter(|adapter| {
+            crate::harness_extension::carrier(adapter).is_some()
+                || intent.iter().any(|name| name == &adapter.agent)
+        })
         .map(|adapter| {
             let harness = adapter.agent.clone();
             let requested = intent.iter().any(|name| name == &harness);
             let receipt = receipts.get(&harness);
-            let sha256 = crate::harness_extension::bundle_sha(adapter).ok();
+            let carrier = crate::harness_extension::carrier(adapter);
+            let sha256 = carrier
+                .and_then(|carrier| crate::harness_extension::bundle_sha(adapter, carrier).ok());
             // One verdict, the same one the launch and `doctor` use; the page only
             // renders it, so the three can never disagree.
-            let verdict = crate::harness_extension::plan(adapter, intent, app_dir, "");
+            let verdict = crate::harness_extension::plan(
+                adapter,
+                intent,
+                app_dir,
+                "",
+                crate::harness_extension::home().as_deref(),
+            );
             let (state, detail) = match &verdict {
                 Ok(_) => ("ok".to_string(), String::new()),
                 Err(refusal) => (refusal.reason().to_string(), refusal.detail()),
@@ -964,15 +994,20 @@ fn extension_rows(
                 (Ok(plan), _) => crate::harness_extension::disclosure(plan, ""),
                 // Not allowed (or not asked for yet), so the page shows the same
                 // text the approval would cover if the user goes ahead.
-                _ => crate::harness_extension::proposal(adapter, app_dir, "")
-                    .map(|plan| {
-                        crate::harness_extension::disclosure(&plan, "")
-                            .lines()
-                            .skip(3)
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    })
-                    .unwrap_or_default(),
+                _ => crate::harness_extension::proposal(
+                    adapter,
+                    app_dir,
+                    "",
+                    crate::harness_extension::home().as_deref(),
+                )
+                .map(|plan| {
+                    crate::harness_extension::disclosure(&plan, "")
+                        .lines()
+                        .skip(3)
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default(),
             };
             serde_json::json!({
                 "harness": harness,
@@ -981,12 +1016,18 @@ fn extension_rows(
                 "state": state,
                 "detail": detail,
                 "sha256": sha256,
-                "file": format!(
-                    "{}/{}/{}",
-                    "<session config>",
-                    crate::harness_extension::subdir(adapter),
-                    crate::harness_extension::file_name(adapter)
-                ),
+                // What the approval covers, spelled the way the disclosure
+                // spells it, and where it lands: a session copy or the user's
+                // own config.
+                "scope": carrier.map(|carrier| carrier.name()).unwrap_or("none"),
+                "files": carrier
+                    .map(|carrier| {
+                        crate::harness_extension::bundle(adapter, carrier)
+                            .parts()
+                            .map(|placement| placement.display.clone())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default(),
                 "disclosure_version": crate::harness_extension::DISCLOSURE_VERSION,
                 "accepted_at": receipt.map(|receipt| receipt.accepted_at.clone()),
                 "disclosure": disclosure,

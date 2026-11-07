@@ -54,7 +54,7 @@ duplicated; a launch with nothing to deliver creates nothing at all. Verified en
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 244 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 296 tests green.
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -69,11 +69,27 @@ The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
 `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`), which is the path the hook
 lines reference and which survives upgrades.
 
-This plugin can also install an extension into your **pi** sessions, which lets a tag edited
-mid-session reach the next request instead of the next launch. It does that only if you enable it
-and approve the exact file, byte for byte — see `docs/install.md` §6. Nothing is written by
-default, and every harness without that hook keeps to launch-time tags, which `doctor` says out
-loud.
+This plugin can also teach a harness to keep its own activity current: a **skill** that tells the
+agent to run `aoe-llm-tags activity <word>` as the work moves between phases, and the same one-line
+reminder in the harness's always-loaded instructions, because a skill the model never opens changes
+nothing. For **pi** there is a request hook too, so an activity change reaches the next request
+rather than the next launch; every other harness is launch-scope for the value itself.
+
+Where the skill and the reminder go depends on the harness, and the disclosure says which it is:
+
+| Scope | Harnesses | Where |
+|---|---|---|
+| the session's private config copy | `pi`, `vibe` | nothing of yours is touched |
+| your own harness config | `claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid`, `qwen`, `kiro` | a skill directory of its own, and a block between two marker lines in the file the harness reads every conversation — your own text in that file stays byte for byte |
+
+`claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid` and `qwen` have no per-session config
+copy this plugin can build, so "this session's activity" can only reach them through your own
+configuration; that is a different, wider grant, and the disclosure for those harnesses says so
+before anything is written. `cline` and `openclaw` have no destination at all and are refused by
+name: launch-time tags and nothing else.
+
+Both are off by default. Listing a harness in `harness_extension` only asks for the disclosure;
+nothing is written until you approve that exact set of files, by digest — see `docs/install.md` §6.
 
 Setting it up on a session is three steps: `setup --print` shows the two `[host_hooks]` lines and
 the mapping line per target, `doctor` says how each installed harness can be delivered
@@ -84,7 +100,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 244 tests, no network (needs `git` for tests/git_real.rs)
+cargo test --locked                  # 296 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

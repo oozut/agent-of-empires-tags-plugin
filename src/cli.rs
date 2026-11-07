@@ -482,6 +482,7 @@ fn activity_cmd(
         crate::adapters::match_tool(&adapters, &after.facts.tool),
         &after.settings.harness_extension,
         &after.resolved,
+        crate::harness_extension::home().as_deref(),
     );
     let live = refreshed.is_some();
     if let Some(Err(why)) = &refreshed {
@@ -904,7 +905,11 @@ fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
                 ));
                 return EXIT_USAGE;
             };
-            let result = crate::harness_extension::revoke(&app_dir, adapter);
+            let result = crate::harness_extension::revoke(
+                &app_dir,
+                crate::harness_extension::home().as_deref(),
+                adapter,
+            );
             match result {
                 Ok(false) => {
                     warn(&format!("{} had no approval to revoke", adapter.agent));
@@ -956,10 +961,16 @@ fn extension_status(
     let (receipts, warnings) = crate::harness_extension::receipts(app_dir);
     warn_all(&warnings);
     let mut rows = Vec::new();
-    for adapter in adapters
-        .iter()
-        .filter(|row| !row.extension_artifact.is_empty())
-    {
+    // A requested row with no destination is listed too: the user asked for it,
+    // and "nothing was installed" has to have a stated reason.
+    for adapter in adapters.iter().filter(|row| {
+        crate::harness_extension::carrier(row).is_some()
+            || snap
+                .settings
+                .harness_extension
+                .iter()
+                .any(|name| name == &row.agent)
+    }) {
         let wanted = snap
             .settings
             .harness_extension
@@ -970,6 +981,7 @@ fn extension_status(
             &snap.settings.harness_extension,
             app_dir,
             &snap.facts.id,
+            crate::harness_extension::home().as_deref(),
         ) {
             Ok(plan) => (
                 crate::doctor::OK,
@@ -1052,13 +1064,16 @@ fn extension_enable(
         return EXIT_USAGE;
     };
     let snap = resolver::snapshot(&args.flags(env), env, None);
-    let proposal = match crate::harness_extension::proposal(adapter, app_dir, &snap.facts.id) {
-        Ok(plan) => plan,
-        Err(refusal) => {
-            warn(&refusal.detail());
-            return EXIT_USAGE;
-        }
-    };
+    let home = crate::harness_extension::home();
+    let proposal =
+        match crate::harness_extension::proposal(adapter, app_dir, &snap.facts.id, home.as_deref())
+        {
+            Ok(plan) => plan,
+            Err(refusal) => {
+                warn(&refusal.detail());
+                return EXIT_USAGE;
+            }
+        };
     let text = crate::harness_extension::disclosure(&proposal, &harness_version(&adapter.agent));
     if print_only {
         println!("{text}");
@@ -1116,6 +1131,7 @@ fn extension_enable(
 
     match crate::harness_extension::accept(
         app_dir,
+        home.as_deref(),
         adapter,
         &proposal.sha256,
         &harness_version(&adapter.agent),
@@ -1160,11 +1176,17 @@ fn extension_enable(
                     adapter.agent
                 ));
             } else {
-                println!(
-                    "the next launch of a {} session installs it under \
-                     sessions/<id>/{}/{}",
-                    adapter.agent, proposal.subdir, proposal.file
-                );
+                match proposal.carrier {
+                    crate::harness_extension::Carrier::Session => println!(
+                        "the next launch of a {} session installs it in that session's config copy",
+                        adapter.agent
+                    ),
+                    crate::harness_extension::Carrier::User => {
+                        for placement in proposal.parts() {
+                            println!("installed: {}", placement.display);
+                        }
+                    }
+                }
             }
             EXIT_OK
         }

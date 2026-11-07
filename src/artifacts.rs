@@ -17,18 +17,20 @@ pub const PI: &str = include_str!("../harness/pi.ts");
 /// `harness/skills/aoe-activity/SKILL.md` — the skill that tells the agent to
 /// keep the session's activity current. A skill is advisory (the harness lists
 /// it and the model loads it on demand), which is why it travels with
-/// [`PI_APPEND`] rather than alone.
+/// [`ACTIVITY_APPEND`] rather than alone.
 pub const ACTIVITY_SKILL: &str = include_str!("../harness/skills/aoe-activity/SKILL.md");
 
-/// `harness/pi.append.md` — the same instruction in the always-loaded slot.
-pub const PI_APPEND: &str = include_str!("../harness/pi.append.md");
+/// `harness/activity.append.md` — the same instruction in the always-loaded
+/// slot. One file for every harness: what it says is about this plugin, not
+/// about one vendor's config format.
+pub const ACTIVITY_APPEND: &str = include_str!("../harness/activity.append.md");
 
 /// The artefact a row names, or `None` when this build does not carry it.
 pub fn bytes(path: &str) -> Option<&'static str> {
     match path {
         "harness/pi.ts" => Some(PI),
         "harness/skills/aoe-activity/SKILL.md" => Some(ACTIVITY_SKILL),
-        "harness/pi.append.md" => Some(PI_APPEND),
+        "harness/activity.append.md" => Some(ACTIVITY_APPEND),
         _ => None,
     }
 }
@@ -38,7 +40,7 @@ pub fn all() -> &'static [(&'static str, &'static str)] {
     &[
         ("harness/pi.ts", PI),
         ("harness/skills/aoe-activity/SKILL.md", ACTIVITY_SKILL),
-        ("harness/pi.append.md", PI_APPEND),
+        ("harness/activity.append.md", ACTIVITY_APPEND),
     ]
 }
 
@@ -66,7 +68,7 @@ mod tests {
     /// that the vocabulary is closed.
     #[test]
     fn both_activity_carriers_name_the_command_and_the_reserved_key() {
-        for source in [ACTIVITY_SKILL, PI_APPEND] {
+        for source in [ACTIVITY_SKILL, ACTIVITY_APPEND] {
             assert!(source.contains("activity"), "no `activity` in {source}");
             assert!(source.contains("aoe-llm-tags"), "no command in {source}");
             for word in ["explore", "plan", "test", "idle"] {
@@ -77,7 +79,7 @@ mod tests {
         assert!(ACTIVITY_SKILL.starts_with("---\nname: "));
         assert!(ACTIVITY_SKILL.contains("\ndescription: "));
         // It must degrade where the variable is not exported.
-        assert!(PI_APPEND.contains("AOE_LLM_TAGS_BIN"));
+        assert!(ACTIVITY_APPEND.contains("AOE_LLM_TAGS_BIN"));
     }
 
     #[test]

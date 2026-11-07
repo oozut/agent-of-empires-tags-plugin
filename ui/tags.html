@@ -340,9 +340,14 @@
 
           const detail = document.createElement("p");
           detail.className = "note";
+          const where = (row.scope === "user")
+            ? `in your own ${row.harness} config: ${(row.files || []).join(", ")}`
+            : (row.files || []).length
+              ? `in each session's private config copy: ${(row.files || []).join(", ")}`
+              : "nowhere yet";
           detail.textContent =
             row.state === "ok"
-              ? `Approved ${row.accepted_at || ""} · sha256 ${shortSha(row.sha256)} · disclosure v${row.disclosure_version}. It is installed into each session's private config copy at ${row.file}.`
+              ? `Approved ${row.accepted_at || ""} · sha256 ${shortSha(row.sha256)} · disclosure v${row.disclosure_version}. Installed ${where}.`
               : row.detail ||
                 (row.requested
                   ? ""
@@ -371,11 +376,15 @@
             const box = document.createElement("input");
             box.type = "checkbox";
             const text = document.createElement("span");
-            text.textContent = `I understand ${row.harness} will run this file inside every ${row.harness} session launched by this plugin.`;
+            text.textContent =
+              (row.scope === "user")
+                ? `I understand this writes ${(row.files || []).length} file(s) into my own ${row.harness} configuration — a skill directory of its own and a block between two markers inside ${(row.files || [])[1] || "that file"} — and that everything outside those markers stays as it is.`
+                : `I understand ${row.harness} will run this file inside every ${row.harness} session launched by this plugin.`;
             tick.append(box, text);
             const on = document.createElement("button");
             on.className = "primary";
-            on.textContent = `Enable for ${row.harness}`;
+            on.textContent =
+              (row.scope === "user") ? `Write these into my ${row.harness} config` : `Enable for ${row.harness}`;
             on.disabled = true;
             box.onchange = () => {
               on.disabled = !box.checked || !canWrite;
