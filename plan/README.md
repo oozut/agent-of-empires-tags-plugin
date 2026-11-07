@@ -6,12 +6,13 @@ this folder — this folder says what to build first, with which values.
 
 | File | Contents |
 |---|---|
-| `milestones.md` | The ladder: constraints, M0–M4, acceptance criteria, open decisions |
+| `milestones.md` | The ladder: constraints, M0–M5, acceptance criteria, open decisions |
 | `m0.md` | Prove a header on a real session — tasks, task table, parameters, evidence |
 | `m1.md` | Settings and attribution UI |
 | `m2.md` | Auto-discovery and one-click wiring |
 | `m3.md` | Usage views |
 | `m4.md` | Remaining harnesses and distribution |
+| `m5.md` | Per-request values and activity (harness-side extension) |
 | `graph.md` | Mermaid views: the ladder, one dependency graph per milestone, the M0 lane split, a relative-effort schedule |
 | `lanes/` | One brief per M0 lane (`core`, `wire`, `proof`, `docs`, `release`) — scope, read-first list, tasks, handoff, so a lane can be worked in its own session |
 | `parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |

@@ -61,6 +61,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | `signing_key` | string | `""` | ≥16 chars when signature is `hmac` | M1 | open (#8) |
 | `feature_tag` | string | `""` | one tag entry: `feature:billing`, a bare `billing` (= `feature:billing`), or a stored pair `{ key = "feature", value = "billing" }` | M1 | decided |
 | `feature_tag` scope | — | `per_project = true` (requires `api_version ≥ 18`) | global, profile and project hold the same entry grammar | M1 | decided |
+| `harness_extension` | `string_list` | `[]` | adapter ids (`pi`); **intent only** — the file is installed only with a matching receipt, so an empty list writes no code anywhere; a name no row claims is a `doctor` warning, never a silent skip | M5 | decided |
 
 M0 rule semantics (implemented in `src/resolver.rs`, M0-T02):
 
@@ -151,6 +152,9 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `verify [--window 24h]` | one request, then look for the header consumer-side — **roadmap-gated** (`plan/roadmap.md` §1): not in M0–M2 | roadmap |
 | `--session` `--profile` `--tool` `--project` `--group` `--title` | fallbacks for row fields (values from `AOE_*`) | M0 |
 | `--adapter <agent>` | pin the adapter row instead of detecting | M0 |
+| `extension status [--json]` | per harness: requested, state, receipt (implemented, M5-T01) | M5 |
+| `extension enable <harness> [--print] [--accept <sha256>]` | prints the disclosure, records the approval; `--accept` is required when stdin is not a tty (implemented) | M5 |
+| `extension disable <harness>` | removes the approval; the next launch installs no file, a running session stops sending dynamic values (implemented) | M5 |
 | `--json` | machine-readable output (doctor, status) | M0 |
 | Exit codes | `0` ok/degraded, `1` a failing `doctor` check, `2` usage error | M0 |
 
@@ -164,6 +168,13 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Hook line guard | the installed command ends `|| true` | `aoe plugin uninstall` cannot remove the pasted `[host_hooks]` lines; without the guard a stale line exits 127 and aborts every launch, with the guard it is a no-op |
 | Mapping guard | for a strict harness the printed value is a command: `!v="${VAR-}"; [ -n "$v" ] && printf %s "$v" \|\| printf %s {}` | the mapping lives in a file the plugin does not own, so it outlives an uninstall; a bare `$VAR` there makes the harness fail its first request, this value sends `{}` instead |
 | Doctor output | absolute paths always | hook debugging without paths is the expensive failure |
+| Receipt file | `<app dir>/harness-extension.toml`, `[extension.<harness>]` | durable across plugin update/reinstall; `plugin.storage` is cleared by the host, this must not be |
+| Receipt validity | `sha256` + `disclosure_version` only | `accepted_at`, `accepted_plugin` and `tested_harness` are informational: a plugin or harness upgrade must not re-ask |
+| `DISCLOSURE_VERSION` | `1` | the wording is part of what was approved; bumping it invalidates every receipt |
+| Artefact digest | `sha256(include_str!("../harness/pi.ts"))` | compiled in, so "the file the user approved" is a property of the build, not of what sits next to it at runtime |
+| Refusal reasons | `no_artifact`, `no_intent`, `no_directory`, `missing_artifact`, `no_receipt`, `hash_mismatch`, `disclosure_mismatch` | one `doctor` sentence and one launch warning each; the first two are silent at launch because nothing was asked for |
+| Live file | `sessions/<id>/live.json`, exported as `AOE_LLM_TAGS_LIVE` | carries the values the launch already resolved plus `enabled`; never a token, never a prompt |
+| Extension directory | a real directory of links to the user's own entries, plus this plugin's file | the usual whole-directory link would make the plugin write *through* into the user's config |
 
 ## 8. Adapter data (`adapters.toml`)
 
@@ -181,6 +192,10 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `config_format` | `json`, `toml`, `yaml`, `none` | |
 | `status` | `verified`, `documented`, `needs_research`, `unsupported` | per row |
 | `verified_with` | `{ agent_version, aoe_version }` or absent | set only by a real run |
+| `extension_artifact` | path relative to the plugin root (`harness/pi.ts`) or absent | present only where the harness loads code from its config; the plugin ships it compiled in and installs it only after the user approves that exact file (M5) |
+| `extension_subdir` | default `extensions` | directory inside the session config copy |
+| `extension_filename` | default `aoe-llm-tags.ts` | ours, so a revoke knows what to remove |
+| `extension_env` | default `AOE_LLM_TAGS_LIVE` | the variable the hook exports so the extension finds the live file |
 
 ## 9. Discovery and config edits (M2)
 

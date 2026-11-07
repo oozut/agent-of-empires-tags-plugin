@@ -226,16 +226,29 @@ Three paths, all fed by the same resolved payload:
 2. **A per-session file** (`overlay_file` / `overlay_dir`). For a harness whose config can only
    hold a literal, the plugin builds a generated config inside the session's own directory and
    points the harness at it with an environment variable. The user's config is never touched, and
-   the copy is deleted when the session is gone. The copy is one file — the harness config, which
-   is what carries the tag — and the rest of the user's config dir is linked, never duplicated.
-   A copy that would carry nothing is not built at all, so no session directory is left behind
-   for a harness that was never pointed at it.
+   the copy is deleted when the session is gone. The copy is the harness config, which is what
+   carries the tag, and the rest of the user's config dir is linked, never duplicated. A copy
+   that would carry nothing is not built at all, so no session directory is left behind for a
+   harness that was never pointed at it.
+
+   This copy can also hold **code**: a harness that loads extensions from its config directory
+   runs them in-process, so a file there can re-read the plugin's live file before each request
+   (`docs/harness-adapters.md` §Per-request values). One directory — the extension subdirectory —
+   becomes a real directory of links to the user's own entries plus the plugin's file, because a
+   link would be a write through into the user's config. That file exists only while the user has
+   approved that exact file for that harness, and the approval is what names it, so the copy is
+   still described by one receipt and one line in `doctor`.
 3. **Command** (fallback). Harnesses that accept a shell command as a header value call the CLI
    directly (`!aoe-llm-tags value X-AoE-Session`). Same values, one process later, and subject to
    the harness's own caching.
 
-Neither path can update mid-session. A consumer that needs liveness has to query the control
-plane instead of trusting the header; the header identifies, it does not assert current state.
+None of these three paths updates mid-session: they all resolve once, at launch. The exception is
+the extension in 2 — when a harness loads code from its config and the user approved it, the
+extension re-reads `sessions/<id>/live.json` before each request and re-renders the same targets.
+The tags, the template and the values are still the plugin's; the only thing that changes is that
+they can change *between* requests instead of only between launches. A consumer that needs
+liveness for a harness with no such hook still has to query the control plane; the header
+identifies, it does not assert current state.
 
 ## Changing a tag for one session
 

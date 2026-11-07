@@ -58,6 +58,23 @@ install-verified. Pushing the first tag is the whole task.
 
 ## 5. Live per-request tagging
 
-Harnesses cache command-valued headers for the process lifetime, so a per-request value is not
-reachable from a hook today (`docs/header-contract.md`). This stays an upstream aoe change
-(`plan/milestones.md` §Upstream), not plugin work.
+A launch-time hook fills a header once per process: a harness reads its config once and caches
+what it finds there, so a value that changes *within* a session — and anything that says what the
+session is **doing** rather than what it **is** — is not reachable from the hook
+(`docs/harness-adapters.md` §Per-request values).
+
+For a harness that loads code from its config directory this needs no proxy and no new capability:
+the plugin ships a small extension, the harness runs it in-process, and pi re-emits
+`before_provider_headers` before each model request, so a tag edited mid-session reaches the next
+request. It is code running inside the agent, so it is opt-in twice — intent in the
+`harness_extension` setting, approval of one exact file recorded with its sha256 — and revocable
+without touching the user's own config. See `plan/m5.md`.
+
+**Still rejected: a tagging proxy.** A listener in the request path would buy the same thing for
+every harness at the price of a new capability (`net`), a second process that can fail requests,
+and a secret to hold. Two independent harnesses with an in-process hook are worth more than one
+proxy, and a harness with no hook stays launch-scope — stated in `doctor`, in the support matrix
+and in the disclosure.
+
+The remaining upstream option is unchanged: aoe itself could expose a per-request hook
+(`plan/milestones.md` §Upstream). If it does, this extension is the migration path, not a dead end.

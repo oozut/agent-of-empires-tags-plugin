@@ -166,6 +166,37 @@ Acceptance:
 - Release-binary worker, tagged release, publish path for `aoe plugin install`.
 - Featured-index PR with the source tree hash if it should claim a reserved namespace.
 
+## M5: per-request values and activity → `m5.md`
+
+A launch hook is once per process, so a tag edited mid-session and anything describing what a
+session is *doing* cannot ride it. A harness that loads code from its config directory can run an
+extension this plugin ships and the user approves, which re-reads a live file before each request.
+
+Acceptance:
+
+1. Nothing is installed without the user's approval, and every surface that mentions the mechanism
+   says it is code running inside the agent.
+2. The approval is durable across plugin and harness upgrades and specific to one exact file;
+   changing those bytes or the disclosure, or revoking, installs nothing.
+3. The user's own harness config is untouched — the session copy gets a directory of links plus
+   this plugin's file, never a write through to `~/.pi/agent`.
+4. Two requests in one agent process carry two different values, without a restart.
+5. Harnesses without an in-process hook stay launch-scope in `doctor` and in the support matrix.
+   No proxy: `net` stays undeclared.
+
+## Upstream
+
+Recorded for a future host release, not work this plugin can do:
+
+- A typed per-request hook in aoe itself, attached to a session the way `[host_hooks]` is today.
+  With it the extension becomes unnecessary for every harness, and the receipt can be replaced by
+  the host's own approval (then delete `src/harness_extension.rs` and say so in the changelog).
+- A `harness.hook` capability, if the host wants to keep the decision at install time. Until then
+  this plugin's own two-part consent has to be at least as strict as the host's, because no
+  capability name covers "install executable code into a harness's config".
+- Per-platform `bin` in `ReleaseBinary` (Windows), and a `PluginSource::Local` release path
+  (`plan/roadmap.md` §3, §4).
+
 ## Open decisions
 
 Full parameter-level consequences: `parameters.md` §Open.

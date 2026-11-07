@@ -69,6 +69,12 @@ The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
 `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`), which is the path the hook
 lines reference and which survives upgrades.
 
+This plugin can also install an extension into your **pi** sessions, which lets a tag edited
+mid-session reach the next request instead of the next launch. It does that only if you enable it
+and approve the exact file, byte for byte — see `docs/install.md` §6. Nothing is written by
+default, and every harness without that hook keeps to launch-time tags, which `doctor` says out
+loud.
+
 Setting it up on a session is three steps: `setup --print` shows the two `[host_hooks]` lines and
 the mapping line per target, `doctor` says how each installed harness can be delivered
 (`wired` / `overlay` / `unsupported`), and `hook` is what aoe runs per launch — it mints the

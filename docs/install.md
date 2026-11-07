@@ -129,12 +129,53 @@ their evidence to `docs/harness-evidence/`. A worked example, with the exact com
 real `pi`, not a wrapper that regenerates its config; the fixture must answer streaming requests),
 is in `docs/reference-deployment.md` §Proof runs.
 
+## 6. Optional: let a running session report changes (advanced)
+
+Everything above is launch-scoped: the values are fixed when the session starts, because a harness
+reads its config once. If you edit a tag while a session runs, the next request still carries the
+old one until you relaunch.
+
+**This plugin can install code into your harness to fix that.** It is off by default and it never
+happens unless you approve the exact file. Today only `pi` can take it.
+
+What it puts where, in plain words: one file,
+`…/sessions/<id>/pi/extensions/aoe-llm-tags.ts`, inside the private config copy this plugin already
+builds for each pi session. pi loads it inside the agent process, with the agent's own permissions.
+It reads one JSON file this plugin writes (`live.json`: the session's tags and its current
+activity) and sets the `X-AoE-*` headers from it before each model request. It does not read your
+prompts, transcript, files or credentials, open a socket or spawn a process. Your own
+`~/.pi/agent` is never written to — the session copy's `extensions/` directory holds links to your
+entries plus this one file.
+
+Read it, then approve it:
+
+```sh
+"<install>/bin/aoe-llm-tags" extension enable pi --print     # the disclosure + the sha256
+"<install>/bin/aoe-llm-tags" extension enable pi --accept <sha256>
+"<install>/bin/aoe-llm-tags" extension status                # what each harness is doing
+```
+
+Three things end the approval — a change to the file's bytes, a change to the disclosure's
+wording, or:
+
+```sh
+"<install>/bin/aoe-llm-tags" extension disable pi
+```
+
+A plugin update, a reinstall or a pi upgrade does **not** end it: the approval records the file and
+the wording, not the version. `doctor` prints one line per harness at all times, so "not sending"
+always has a stated reason. Sandboxed sessions are not covered — aoe stages only your own
+`extensions/` directory into a sandbox, so no extension of this plugin's is installed there.
+
 ## Updating, disabling, removing
 
 ```sh
 aoe plugin update dev.oozut.llm-tags --yes     # rebuild (or re-download), restart the worker
 aoe plugin disable dev.oozut.llm-tags          # contributions off; the pasted lines stay
 ```
+
+An approved harness extension is part of the per-session copies, so the same step that removes
+those removes it; your own `~/.pi/agent` was never touched, so nothing there needs undoing.
 
 The hook lines and the mapping line live in files this plugin does not own, so it never adds or
 removes them. Removing it cleanly is therefore three steps, in this order:

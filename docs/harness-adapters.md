@@ -515,6 +515,29 @@ worth optimising:
   no liveness over a minted variable, only a per-launch process spawn and a 10 s timeout —
   and it cannot reach the session store from inside a sandbox. Treat both as launch-time.
 
+  The exception is code the harness loads from its config directory: pi re-emits
+  `before_provider_headers` before every model request, so an approved extension can set the
+  header per request (below). That is a property of the harness, not of the header mechanism —
+  which is why the adapter row declares an `extension_artifact` or does not.
+
+### Per-request values
+
+| Harness | In-process request hook | Consequence |
+|---|---|---|
+| `pi` | yes — `before_provider_headers`, awaited per `stream()` | an approved extension can re-render the targets before each request |
+| everything else | none known | launch-scope; a value is fixed for the process |
+
+For pi the plugin ships `harness/pi.ts`, compiles it into the binary, and installs it into the
+session's config copy only when the user asked for it (`harness_extension`) **and** approved that
+exact file (a receipt holding its sha256). The extension reads one file the plugin writes —
+`sessions/<id>/live.json`, path exported as `AOE_LLM_TAGS_LIVE` — and sets the headers from it,
+fail-open: any error leaves the launch-time headers alone rather than failing the request. It
+reads nothing else, opens no socket, spawns nothing, and does nothing at all when the environment
+variable is absent, so it is inert outside an aoe session.
+
+opencode's plugin API may offer an equivalent; it is unverified, so its row has no artefact and
+`doctor` says launch-scope. The full consent model and its refusal states are in `plan/m5.md`.
+
 The portable mechanism is therefore the hook minting the variables in both keys, with the
 harness config holding exactly one indirection per header: one header name to one variable.
 Renaming a header or changing a value format is a plugin-side change, never a user-side config
