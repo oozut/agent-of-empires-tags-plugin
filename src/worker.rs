@@ -558,6 +558,41 @@ impl Host {
             })];
             blocks.append(&mut target_rows);
             blocks.push(serde_json::json!({"kind": "divider"}));
+            // Changing the activity from inside the session, not only from the
+            // dashboard page: each row is a `tag.set`, and the current one is
+            // marked so a human can see what the agent last declared. A terminal
+            // UI renders these as text and tone, so the label carries the meaning
+            // and the icon is decoration.
+            let activity_rows: Vec<serde_json::Value> = crate::activity::ALL
+                .iter()
+                .map(|candidate| {
+                    let current = activity.is_some_and(|now| now.key == candidate.key);
+                    serde_json::json!({
+                        "kind": "row",
+                        "label": candidate.label,
+                        "icon": candidate.icon,
+                        "tone": candidate.tone,
+                        "mono": true,
+                        "selected": current,
+                        "badges": [{"text": crate::activity::KEY, "tone": "neutral"}],
+                        "tooltip": if current {
+                            "this is what the session is doing now"
+                        } else {
+                            "set this session's activity"
+                        },
+                        "method": "tag.set",
+                        "params": {"key": crate::activity::KEY, "value": candidate.key},
+                    })
+                })
+                .collect();
+            blocks.push(serde_json::json!({
+                "kind": "section",
+                "title": "Activity",
+                "value": activity.map(|now| now.label).unwrap_or("not set"),
+                "collapsible": true,
+                "collapsed": true,
+                "children": activity_rows,
+            }));
             blocks.push(serde_json::json!({
                 "kind": "section",
                 "title": "Tags",

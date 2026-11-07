@@ -127,6 +127,31 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+    /// say what this session is doing, in the closed activity vocabulary
+    #[command(
+        about = "Set this session's `activity` tag (`plan`, `code`, `test`, ...) — what a badge \
+                 shows and what a per-request target sends. Use it as work moves between \
+                 phases; a session with an approved harness extension sends it on its next \
+                 request.",
+        after_help = "The vocabulary is closed so every surface renders the same icon and tone. \
+                      An unknown name is an error, not a new activity."
+    )]
+    Activity {
+        /// one of explore, plan, code, test, debug, review, docs, ops, idle
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        /// drop the activity: this session stops saying what it is doing
+        #[arg(long = "clear")]
+        clear: bool,
+        /// show the current activity and the vocabulary (the default)
+        #[arg(long = "show")]
+        show: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
     /// list every reference a template or a tag value may use
     #[command(
         about = "List the {references} this build understands — session fields, tag shapes and \
@@ -294,6 +319,13 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             &flags,
             env,
         ),
+        Command::Activity {
+            name,
+            clear,
+            show,
+            json,
+            flags,
+        } => activity_cmd(name, clear, show, json, &flags, env),
         Command::References { json, flags } => references_cmd(json, &flags, env),
         Command::Extension { action, flags } => extension_cmd(action, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
@@ -338,6 +370,150 @@ fn hook(args: &FlagArgs, env: &Env) -> i32 {
         let _ = writeln!(stdout, "{line}");
     }
     let _ = stdout.flush();
+    EXIT_OK
+}
+
+/// What this session is doing, as one reserved tag.
+///
+/// The vocabulary lives in [`crate::activity`] and is closed, so this is a thin
+/// validated write: it lands in the same per-session file `tag --set` writes, and
+/// then refreshes the live file a running session re-reads, so the change reaches
+/// the *next request* rather than the next launch. A session without a live file
+/// is left alone: the launch did not set up a per-request delivery, and inventing
+/// one here would claim something about the session that is not true.
+fn activity_cmd(
+    name: Option<String>,
+    clear: bool,
+    show: bool,
+    json: bool,
+    args: &FlagArgs,
+    env: &Env,
+) -> i32 {
+    let flags = args.flags(env);
+    let app_dir = match crate::settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            warn(&message);
+            return EXIT_FAIL;
+        }
+    };
+    let snap = resolver::snapshot(&flags, env, None);
+    warn_all(&snap.warnings);
+    let session = snap.facts.id.clone();
+    if session.is_empty() {
+        warn("`activity` needs a session: pass --session <id> or run inside a session (AOE_SESSION_ID)");
+        return EXIT_USAGE;
+    }
+    let current = crate::activity::of(&snap.tags);
+
+    let write = clear || (name.is_some() && !show);
+    if !write {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "session": session,
+                    "activity": current.map(|activity| activity.key),
+                    "label": current.map(|activity| activity.label),
+                    "icon": current.map(|activity| activity.icon),
+                    "tone": current.map(|activity| activity.tone),
+                    "vocabulary": crate::activity::legend(),
+                })
+            );
+            return EXIT_OK;
+        }
+        println!("session {session}");
+        match current {
+            Some(activity) => println!(
+                "  activity {} ({}, icon {})",
+                activity.key, activity.label, activity.icon
+            ),
+            None => println!("  (this session has not said what it is doing)"),
+        }
+        println!(
+            "  {}",
+            crate::activity::ALL
+                .iter()
+                .map(|activity| activity.key)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return EXIT_OK;
+    }
+
+    let failure = if clear {
+        crate::session_tags::unset_tag(&app_dir, &session, crate::activity::KEY).err()
+    } else {
+        let requested = name.as_deref().unwrap_or_default();
+        match crate::activity::find(requested) {
+            Some(activity) => crate::session_tags::set_tag(
+                &app_dir,
+                &session,
+                &format!("{}:{}", crate::activity::KEY, activity.key),
+            )
+            .err(),
+            None => {
+                warn(&format!(
+                    "`{requested}` is not an activity: {}",
+                    crate::activity::ALL
+                        .iter()
+                        .map(|activity| activity.key)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                return EXIT_USAGE;
+            }
+        }
+    };
+    if let Some(err) = failure {
+        warn(&err);
+        return EXIT_FAIL;
+    }
+
+    // Re-resolve so the value written to the live file is the one the resolver
+    // produced, not a copy made here: the extension repeats what it reads, and
+    // this is the only place that decides what a target carries.
+    let after = resolver::snapshot(&flags, env, None);
+    let (adapters, adapter_warnings) = crate::adapters::load(None);
+    warn_all(&adapter_warnings);
+    let refreshed = crate::harness_extension::refresh_live(
+        &app_dir,
+        &session,
+        crate::adapters::match_tool(&adapters, &after.facts.tool),
+        &after.settings.harness_extension,
+        &after.resolved,
+    );
+    let live = refreshed.is_some();
+    if let Some(Err(why)) = &refreshed {
+        warn(&format!("the live file was not refreshed: {why}"));
+    }
+
+    let now = crate::activity::of(&after.tags);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "session": session,
+                "activity": now.map(|activity| activity.key),
+                "live": live,
+                "targets": after
+                    .resolved
+                    .iter()
+                    .map(|item| serde_json::json!({"name": item.header, "value": item.value}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+        return EXIT_OK;
+    }
+    match now {
+        Some(activity) => println!("activity {} ({})", activity.key, activity.label),
+        None => println!("activity cleared"),
+    }
+    if live {
+        println!("  the next request this session makes carries it");
+    } else {
+        println!("  the next launch of this session carries it");
+    }
     EXIT_OK
 }
 

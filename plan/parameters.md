@@ -177,6 +177,7 @@ launch, `activity` listed as a plain tag) rather than a fourth spelling of "test
 | `setup <agent> --yes` | apply with backup | M2 (open #5) |
 | `setup <agent> --undo` | restore the backup / remove the marker block; `--undo --all` is the pre-uninstall step (removes every session copy and names the lines only the user can delete) | M2 |
 | `tag --set K:V` / `--unset K` / `--token V` / `--clear-token` / `--reset` / `--json` | this session's own tags and literal token; writes `sessions/<id>/overrides.toml` and nothing else (implemented, M2) | M2 |
+| `activity <name>` / `--clear` / `--show` / `--json` | one validated `activity` tag for this session, then (when the session has a live file) a refresh of it, so a running session's next request carries the new value; the vocabulary is closed, so an unknown name is exit 2 | M5 |
 | `overrides.toml` `tags` / `unset` / `token` | a session's edits, in the same tag grammar as `tags`; applied inside `snapshot`, so every verb and the UI share one answer | M2 |
 | `verify [--window 24h]` | one request, then look for the header consumer-side — **roadmap-gated** (`plan/roadmap.md` §1): not in M0–M2 | roadmap |
 | `--session` `--profile` `--tool` `--project` `--group` `--title` | fallbacks for row fields (values from `AOE_*`) | M0 |

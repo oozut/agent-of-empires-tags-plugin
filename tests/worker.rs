@@ -811,3 +811,44 @@ fn a_typo_in_the_activity_is_reported_not_iconified() {
         "an unknown value is a tag, not an icon"
     );
 }
+
+/// The activity has to be changeable from inside the session, not only from the
+/// dashboard page: the pane is what the session view and the terminal UI show, so
+/// each value is a row that fires `tag.set`, with the current one marked.
+#[test]
+fn the_pane_offers_every_activity_and_marks_the_current_one() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"activity:debug\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+
+    let pane = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("pane"))
+        .expect("a pane");
+    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let section = blocks
+        .iter()
+        .find(|block| block["kind"] == json!("section") && block["title"] == json!("Activity"))
+        .unwrap_or_else(|| panic!("no Activity section in {pane}"));
+    let rows = section["children"].as_array().expect("rows");
+    assert_eq!(rows.len(), 9, "the whole vocabulary is offered: {section}");
+    let selected: Vec<&str> = rows
+        .iter()
+        .filter(|row| row["selected"] == json!(true))
+        .map(|row| row["label"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(selected, vec!["debugging"], "{section}");
+    for row in rows {
+        assert_eq!(row["method"], json!("tag.set"), "{row}");
+        assert_eq!(row["params"]["key"], json!("activity"), "{row}");
+    }
+    // The pane is text-and-tone first: every row has a label, and the icon is
+    // decoration the web renders and the terminal ignores.
+    assert!(rows.iter().all(|row| row["label"].is_string()));
+}

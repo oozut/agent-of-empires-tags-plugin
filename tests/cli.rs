@@ -7,7 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
+use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_ID, SESSION_JSON};
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -771,5 +771,121 @@ fn a_launch_without_a_home_still_sends_its_header() {
         run.stderr.contains("no session edits are read"),
         "the warning says the edits were skipped: {}",
         run.stderr
+    );
+}
+
+#[test]
+fn activity_sets_the_reserved_tag_and_the_next_hook_carries_it() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\"]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nname = \"X-AoE-Tags\"\ntemplate = \"{tags}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["activity", "test"]);
+    run.assert_ok();
+    assert!(
+        run.stdout.contains("activity test (testing)"),
+        "{}",
+        run.stdout
+    );
+    // The value a surface renders is the label; the tag is what travels.
+    let launched = hook(&sandbox);
+    launched.assert_ok();
+    // The template renders the tag set, so the pair appears as a token and the
+    // session's other tags are still there.
+    assert!(
+        launched.lines()[0].contains("activity:test"),
+        "{}",
+        launched.stdout
+    );
+    assert!(
+        launched.lines()[0].contains("team:core"),
+        "the other tags survive: {}",
+        launched.stdout
+    );
+
+    let show = sandbox.run(&["activity", "--json"]);
+    show.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&show.stdout).expect("json");
+    assert_eq!(parsed["activity"], serde_json::json!("test"));
+    assert_eq!(parsed["icon"], serde_json::json!("flask-conical"));
+    assert_eq!(parsed["tone"], serde_json::json!("warn"));
+    assert!(
+        parsed["vocabulary"].as_array().unwrap().len() == 9,
+        "the vocabulary is listed: {parsed}"
+    );
+}
+
+#[test]
+fn an_unknown_activity_is_a_usage_error_that_names_the_vocabulary() {
+    let sandbox = Sandbox::new();
+    let run = sandbox.run(&["activity", "testing"]);
+    run.assert_code(2);
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("not an activity") && !run.stderr.contains("flask-conical"),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("explore"), "{}", run.stderr);
+    // Nothing was written: a typo must not become a new activity.
+    let hook = hook(&sandbox);
+    hook.assert_ok();
+    assert!(!hook.lines()[0].contains("activity"), "{}", hook.stdout);
+}
+
+#[test]
+fn activity_is_cleared_and_a_second_verb_overwrites_rather_than_stacks() {
+    let sandbox = Sandbox::new();
+    sandbox.run(&["activity", "code"]).assert_ok();
+    sandbox.run(&["activity", "review"]).assert_ok();
+    let before = hook(&sandbox);
+    before.assert_ok();
+    assert!(
+        before.lines()[0].contains(r#""activity":"review""#),
+        "{}",
+        before.stdout
+    );
+    assert!(
+        !before.lines()[0].contains(r#""activity":"code""#),
+        "one key, one value: {}",
+        before.stdout
+    );
+
+    sandbox.run(&["activity", "--clear"]).assert_ok();
+    let after = hook(&sandbox);
+    after.assert_ok();
+    assert!(!after.lines()[0].contains("activity"), "{}", after.stdout);
+}
+
+#[test]
+fn activity_reaches_the_next_request_only_when_a_live_file_exists() {
+    // No extension approval: the launch did not set up per-request delivery, so
+    // the verb must not claim the next request carries it.
+    let sandbox = Sandbox::new();
+    let run = sandbox.run(&["activity", "plan"]);
+    run.assert_ok();
+    assert!(run.stdout.contains("next launch"), "{}", run.stdout);
+
+    // With a live file, the same edit refreshes it instead of waiting.
+    let live = sandbox.path(&format!(
+        "config/agent-of-empires/sessions/{SESSION_ID}/live.json"
+    ));
+    std::fs::create_dir_all(live.parent().unwrap()).expect("session dir");
+    std::fs::write(&live, r#"{"enabled":false,"targets":[]}"#).expect("live file");
+    let again = sandbox.run(&["activity", "test"]);
+    again.assert_ok();
+    assert!(again.stdout.contains("next request"), "{}", again.stdout);
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&live).expect("live")).expect("json");
+    assert!(
+        body["targets"]
+            .as_array()
+            .expect("targets")
+            .iter()
+            .any(|target| target["value"]
+                .as_str()
+                .is_some_and(|value| value.contains(r#""activity":"test""#))),
+        "{body}"
     );
 }

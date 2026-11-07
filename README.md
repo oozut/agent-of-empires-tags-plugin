@@ -140,6 +140,11 @@ Because an activity changes while a session runs, a launch-time value is not eno
 that loads an extension from its config can set the header on *each* request, which is why the
 plugin ships one, per harness, behind an approval that names the exact file (`docs/install.md` §6).
 
+Whichever side sets it, the edit is one command — `aoe-llm-tags activity test`, or `--clear`,
+or `--show` to read the current one and the vocabulary — and the dashboard's pane offers every
+value as a row, so the session view and the terminal UI can change it without a page. Last writer
+wins: a person may override what the agent declared, and the agent may move on when the task does.
+
 ## Docs
 
 Design (normative, in this order):
