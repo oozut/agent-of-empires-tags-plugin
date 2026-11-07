@@ -243,8 +243,10 @@ aoe-llm-tags extension enable pi --print   # read it, note the sha256
 aoe-llm-tags extension enable pi --accept <sha256>
 ```
 
-The approval is durable: a plugin update, a reinstall, a harness upgrade or a config edit leaves
-it working. Only three things end it — a change to the extension's bytes, a bumped disclosure
+The same disclosure and its checkbox are on this plugin's page, which is the easier place to read
+it; the page echoes the file's sha256 back, so a page left open across a plugin update approves
+nothing. The approval is durable: a plugin update, a reinstall, a harness upgrade or a config edit
+leaves it working. Only three things end it — a change to the extension's bytes, a bumped disclosure
 version, or `aoe-llm-tags extension disable pi`. Nothing is installed until both halves are in
 place, and `doctor` prints one line per harness either way.
 

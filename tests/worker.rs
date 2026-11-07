@@ -582,3 +582,158 @@ fn an_unknown_request_is_answered_not_found() {
         "{response}"
     );
 }
+
+/// A live file exists only for a session launched with an approved extension, and
+/// it is how an edit reaches a request the session has not made yet. The worker is
+/// the only place that sees the edit and the new resolution together.
+#[test]
+fn a_live_file_follows_an_edit_and_a_revoke_without_a_relaunch() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "harness_extension = [\"pi\"]\n\
+         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
+         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let printed = sandbox.run(&["extension", "enable", "pi", "--print"]);
+    printed.assert_ok();
+    let digest = printed
+        .stdout
+        .lines()
+        .find_map(|line| line.split("--accept ").nth(1))
+        .map(str::trim)
+        .expect("the printed approve command");
+    sandbox
+        .run(&["extension", "enable", "pi", "--accept", digest])
+        .assert_ok();
+
+    // A launch: this is what puts the extension and the live file on disk.
+    let launched = sandbox.run(&["hook"]);
+    launched.assert_ok();
+    let live = std::path::PathBuf::from(
+        launched
+            .lines()
+            .into_iter()
+            .find_map(|line| line.strip_prefix("AOE_LLM_TAGS_LIVE="))
+            .expect("the live file"),
+    );
+    let read = || -> Value {
+        serde_json::from_str(&std::fs::read_to_string(&live).expect("live.json")).expect("json")
+    };
+    assert_eq!(read()["enabled"], json!(true));
+
+    // An edit from the pane: no relaunch, no second hook, one publish.
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify(
+        "tag.set",
+        json!({"session_id": SESSION, "key": "activity", "value": "test"}),
+    );
+    wire.wait_page();
+    let body = read();
+    assert_eq!(
+        body["targets"][0]["value"],
+        json!("aoe,activity:test"),
+        "{body}"
+    );
+    assert_eq!(body["enabled"], json!(true));
+
+    // A revoke: the same file flips, so a session that is already running stops
+    // sending dynamic values on its next request rather than at its next launch.
+    sandbox.run(&["extension", "disable", "pi"]).assert_ok();
+    wire.notify(
+        "tag.set",
+        json!({"session_id": SESSION, "key": "activity", "value": "review"}),
+    );
+    wire.wait_page();
+    let body = read();
+    assert_eq!(body["enabled"], json!(false), "{body}");
+    assert_eq!(body["targets"][0]["value"], json!("aoe,activity:review"));
+}
+
+/// A session that never got an extension gets no live file: the worker must not
+/// invent a delivery the launch did not set up.
+#[test]
+fn no_live_file_is_written_for_a_session_without_an_extension() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify(
+        "tag.set",
+        json!({"session_id": SESSION, "key": "team", "value": "core"}),
+    );
+    wire.wait_page();
+    let env = llm_tags::env::Env::new(sandbox.env.clone());
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
+    assert!(!llm_tags::harness_extension::live_path(&app_dir, SESSION).exists());
+}
+
+/// The page is where a user reads the disclosure and gives the approval, so its
+/// rows are the same verdict the launch uses — and the checkbox approves *those*
+/// bytes by echoing the digest it displayed.
+#[test]
+fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "harness_extension = [\"pi\"]\n\
+         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
+         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+
+    // The worker publishes on a host event, not at startup.
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+    let rows = page["extensions"].as_array().expect("extensions");
+    let pi = rows
+        .iter()
+        .find(|row| row["harness"] == json!("pi"))
+        .unwrap_or_else(|| panic!("no pi row in {page}"));
+    assert_eq!(pi["requested"], json!(true));
+    assert_eq!(pi["approved"], json!(false));
+    assert_eq!(pi["state"], json!("no_receipt"), "{pi}");
+    // Before anything is approved the page already carries the text that would be
+    // approved, so enabling is a decision the user could actually read first.
+    let disclosure = pi["disclosure"].as_str().expect("disclosure");
+    assert!(disclosure.contains("does not"), "{disclosure}");
+    assert!(disclosure.contains("session config"), "{disclosure}");
+    let digest = pi["sha256"].as_str().expect("the digest").to_string();
+    assert_eq!(digest.len(), 64);
+
+    // A stale page approves nothing: the digest it shows is the whole point.
+    wire.notify(
+        "extension.enable",
+        json!({"harness": "pi", "accept": "0".repeat(64), "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
+    assert!(
+        wire.log().contains("not the file this build ships"),
+        "{}",
+        wire.log()
+    );
+
+    wire.notify(
+        "extension.enable",
+        json!({"harness": "pi", "accept": digest, "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    let pi = &page["extensions"][0];
+    assert_eq!(pi["approved"], json!(true), "{pi}");
+    assert_eq!(pi["state"], json!("ok"));
+    assert!(pi["accepted_at"].as_str().unwrap_or_default().len() >= 10);
+
+    // And the button that stops it removes the approval, so the next launch of
+    // that harness installs nothing.
+    wire.notify(
+        "extension.disable",
+        json!({"harness": "pi", "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
+}

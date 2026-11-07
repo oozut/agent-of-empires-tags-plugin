@@ -139,11 +139,65 @@ impl Host {
         self.publish_state();
     }
 
+    /// The page's checkbox: the approval a receipt records.
+    ///
+    /// The page echoes the digest it displayed, so approving is approving *those*
+    /// bytes — exactly what `--accept` does on the command line. Anything else
+    /// writes nothing, which is the only safe way for a stale page to behave.
+    fn apply_extension_edit(&mut self, command: &str, params: &serde_json::Value) {
+        let Some(harness) = params.get("harness").and_then(serde_json::Value::as_str) else {
+            eprintln!("{command}: no harness named; refusing to guess one");
+            return;
+        };
+        let app_dir = match crate::settings::app_dir(&self.env) {
+            Ok(dir) => dir,
+            Err(message) => {
+                eprintln!("{command} for {harness}: {message}");
+                return;
+            }
+        };
+        let (adapters, _) = crate::adapters::load(None);
+        let Some(adapter) = crate::adapters::find(&adapters, harness) else {
+            eprintln!("{command}: {harness} is not a harness this build knows");
+            return;
+        };
+        let result = if command == "extension.disable" {
+            crate::harness_extension::revoke(&app_dir, harness).map(|_| ())
+        } else {
+            let accepted = params
+                .get("accept")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            match crate::harness_extension::artifact_sha(adapter) {
+                Ok(shipped) if accepted.eq_ignore_ascii_case(&shipped) => {
+                    // The page names no harness version, and the receipt's copy of
+                    // it is informational, so it stays empty rather than guessed.
+                    crate::harness_extension::accept(&app_dir, harness, &shipped, "").map(|_| ())
+                }
+                Ok(shipped) => Err(format!(
+                    "{harness}: that is not the file this build ships (sha256 {shipped})"
+                )),
+                Err(refusal) => Err(refusal.detail()),
+            }
+        };
+        if let Err(why) = result {
+            eprintln!("{command} for {harness}: {why}");
+        }
+    }
+
     /// One edit from the pane or the page, written to that session's own file.
     ///
     /// Every arm is a per-session write: the global settings are never touched,
     /// so two sessions cannot collide even when both are edited at once.
     fn apply_session_edit(&mut self, command: &str, params: &serde_json::Value) {
+        // Approving an extension is not a session edit: it is one machine-wide
+        // decision, so it is taken here before the session is looked at (the host
+        // merges a `session_id` into every page action, and this one has no use
+        // for it).
+        if command == "extension.enable" || command == "extension.disable" {
+            self.apply_extension_edit(command, params);
+            return;
+        }
         let Some(session) = params.get("session_id").and_then(serde_json::Value::as_str) else {
             eprintln!("{command}: the host sent no session_id; refusing to guess one");
             return;
@@ -288,6 +342,7 @@ impl Host {
         let targets_val = setting(self, "targets");
         let rules_val = setting(self, "rules");
         let session_tagging_val = setting(self, "session_tagging");
+        let harness_extension_val = setting(self, "harness_extension");
         // feature_tag is per_project; fetch the global value once as a fallback.
         let feature_tag_global = setting(self, "feature_tag");
 
@@ -298,6 +353,7 @@ impl Host {
             ("targets", targets_val),
             ("rules", rules_val),
             ("session_tagging", session_tagging_val),
+            ("harness_extension", harness_extension_val.clone()),
         ] {
             if let Some(value) = value {
                 if let Some(converted) = json_to_toml(&value) {
@@ -308,6 +364,9 @@ impl Host {
 
         let flags = Flags::from_given(&Given::default(), &self.env);
         let app_dir = crate::settings::app_dir(&self.env);
+        // The adapter rows are how a session's tool becomes a delivery and an
+        // extension decision; loaded once, because every session needs them.
+        let adapters = crate::adapters::load(None).0;
         let mut page_sessions: Vec<serde_json::Value> = Vec::new();
 
         for session in sessions {
@@ -382,6 +441,22 @@ impl Host {
                 Some(session_table),
                 Some(facts_override),
             );
+            // A session launched with an approved extension has a live file the
+            // extension re-reads before each request. The worker is the one place
+            // that sees an edit and the new resolution together, so it keeps that
+            // file true: an edit reaches the next request, and a revoke flips
+            // `enabled` without waiting for a relaunch.
+            if let Ok(app_dir) = &app_dir {
+                if let Some(Err(why)) = crate::harness_extension::refresh_live(
+                    app_dir,
+                    &id,
+                    crate::adapters::match_tool(&adapters, &tool),
+                    &snap.settings.harness_extension,
+                    &snap.resolved,
+                ) {
+                    eprintln!("{id}: {why}");
+                }
+            }
             // What this session adds on top of the settings, and what it drops:
             // the pane and the page label each tag with where it came from, so a
             // "make it platform for this one session" reads as exactly that.
@@ -568,6 +643,18 @@ impl Host {
                 })
             })
             .collect();
+        let intent: Vec<String> = harness_extension_val
+            .as_ref()
+            .and_then(|value| value.as_array())
+            .map(|names| {
+                names
+                    .iter()
+                    .filter_map(|name| name.as_str())
+                    .map(|name| name.trim().to_ascii_lowercase())
+                    .collect()
+            })
+            .unwrap_or_default();
+        let extensions = extension_rows(&adapters, &intent, app_dir.as_deref().ok());
         let _ = self.call_host(
             "ui.state.set",
             serde_json::json!({
@@ -577,6 +664,7 @@ impl Host {
                     "sessions": page_sessions,
                     "references": references,
                     "presets": presets,
+                    "extensions": extensions,
                     "page": EDITOR_PAGE,
                 }
             }),
@@ -587,13 +675,18 @@ impl Host {
 /// The worker methods a pane or page may fire. The host forwards a block's
 /// `method` verbatim, so these are whole names — not the trailing segment that
 /// names a host command (`plugin.<id>.status`).
-pub const EDITS: [&str; 6] = [
+pub const EDITS: [&str; 8] = [
     "tag.set",
     "tag.remove",
     "tag.preset",
     "token.set",
     "token.clear",
     "tags.reset",
+    // Machine-wide, not session-wide: the page is where a user reads the
+    // disclosure and approves it, and the host merges a `session_id` into every
+    // page action, which these two simply ignore.
+    "extension.enable",
+    "extension.disable",
 ];
 
 /// The editor page's route: the dashboard serves it from the manifest's
@@ -709,6 +802,68 @@ pub fn handle_line(line: &str, env: &Env) -> Option<Value> {
 }
 
 /// What this install would send right now, for the `status` command.
+/// What the page shows for each harness that could take an extension: whether it
+/// was asked for, whether it was approved, and the exact file and wording that
+/// approval covers. The page never decides anything — it echoes the digest back.
+fn extension_rows(
+    adapters: &[crate::adapters::Adapter],
+    intent: &[String],
+    app_dir: Option<&std::path::Path>,
+) -> Vec<Value> {
+    let Some(app_dir) = app_dir else {
+        return Vec::new();
+    };
+    let (receipts, _) = crate::harness_extension::receipts(app_dir);
+    adapters
+        .iter()
+        .filter(|adapter| !adapter.extension_artifact.is_empty())
+        .map(|adapter| {
+            let harness = adapter.agent.clone();
+            let requested = intent.iter().any(|name| name == &harness);
+            let receipt = receipts.get(&harness);
+            let sha256 = crate::harness_extension::artifact_sha(adapter).ok();
+            // One verdict, the same one the launch and `doctor` use; the page only
+            // renders it, so the three can never disagree.
+            let verdict = crate::harness_extension::plan(adapter, intent, app_dir, "");
+            let (state, detail) = match &verdict {
+                Ok(_) => ("ok".to_string(), String::new()),
+                Err(refusal) => (refusal.reason().to_string(), refusal.detail()),
+            };
+            let disclosure = match (&verdict, &sha256) {
+                (Ok(plan), _) => crate::harness_extension::disclosure(plan, ""),
+                // Not allowed (or not asked for yet), so the page shows the same
+                // text the approval would cover if the user goes ahead.
+                _ => crate::harness_extension::proposal(adapter, app_dir, "")
+                    .map(|plan| {
+                        crate::harness_extension::disclosure(&plan, "")
+                            .lines()
+                            .skip(3)
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    })
+                    .unwrap_or_default(),
+            };
+            serde_json::json!({
+                "harness": harness,
+                "requested": requested,
+                "approved": receipt.is_some(),
+                "state": state,
+                "detail": detail,
+                "sha256": sha256,
+                "file": format!(
+                    "{}/{}/{}",
+                    "<session config>",
+                    crate::harness_extension::subdir(adapter),
+                    crate::harness_extension::file_name(adapter)
+                ),
+                "disclosure_version": crate::harness_extension::DISCLOSURE_VERSION,
+                "accepted_at": receipt.map(|receipt| receipt.accepted_at.clone()),
+                "disclosure": disclosure,
+            })
+        })
+        .collect()
+}
+
 pub fn status(env: &Env) -> Value {
     // Same resolution as the hook: the worker inherits the daemon's environment,
     // so AOE_* fallbacks matter here exactly as they do at session start.

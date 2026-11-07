@@ -211,12 +211,16 @@ fn the_editor_page_exists_and_speaks_the_bridge_it_is_given() {
 fn the_page_fires_the_methods_the_worker_dispatches_on() {
     let page = std::fs::read_to_string("ui/tags.html").expect("ui/tags.html");
     let mut fired: Vec<String> = Vec::new();
-    let mut rest = page.as_str();
-    while let Some(start) = rest.find("edit(\"") {
-        let after = &rest[start + "edit(\"".len()..];
-        let end = after.find('"').expect("a closing quote");
-        fired.push(after[..end].to_string());
-        rest = &after[end..];
+    // `edit` is a session edit; `extensionAction` is the machine-wide pair, which
+    // deliberately has no session to send. Both reach the worker the same way.
+    for call in ["edit(\"", "extensionAction(\""] {
+        let mut rest = page.as_str();
+        while let Some(start) = rest.find(call) {
+            let after = &rest[start + call.len()..];
+            let end = after.find('"').expect("a closing quote");
+            fired.push(after[..end].to_string());
+            rest = &after[end..];
+        }
     }
     assert!(!fired.is_empty(), "the page fires no worker method");
     for method in &fired {

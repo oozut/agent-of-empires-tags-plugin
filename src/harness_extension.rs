@@ -508,6 +508,19 @@ pub fn write_live(
         "enabled": enabled,
         "targets": targets,
     });
+    // The worker rewrites this file whenever the session's tags change, and the
+    // extension re-reads it when its mtime moves. A write that would not change
+    // what it says is therefore worth skipping: it saves a read per request and
+    // keeps `generated_at` meaning "when the values last changed".
+    if let Ok(existing) = std::fs::read_to_string(&path) {
+        if let Ok(existing) = serde_json::from_str::<serde_json::Value>(&existing) {
+            if existing.get("enabled") == body.get("enabled")
+                && existing.get("targets") == body.get("targets")
+            {
+                return Ok(path);
+            }
+        }
+    }
     if let Some(parent) = path.parent() {
         crate::private::create_dir(parent)
             .map_err(|err| format!("{} could not be created: {err}", parent.display()))?;
@@ -515,6 +528,29 @@ pub fn write_live(
     crate::private::write_atomic(&path, &format!("{body}\n"))
         .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
     Ok(path)
+}
+
+/// Keep a running session's live file in step with what the plugin resolves now.
+///
+/// A session that was launched with an approved extension has a live file; every
+/// other session has none, so this is a no-op for them. This is the whole point
+/// of the file: a tag edited while the session runs reaches the *next request*
+/// without a relaunch, and a revoke flips `enabled` so the same session stops
+/// sending dynamic values on its next request instead of at its next launch.
+pub fn refresh_live(
+    app_dir: &Path,
+    session_id: &str,
+    adapter: Option<&crate::adapters::Adapter>,
+    intent: &[String],
+    resolved: &[ResolvedHeader],
+) -> Option<Result<PathBuf, String>> {
+    // No file means this session never got an extension: writing one now would
+    // invent a delivery the launch did not set up.
+    live_path(app_dir, session_id).exists().then(|| {
+        let enabled =
+            adapter.is_some_and(|adapter| plan(adapter, intent, app_dir, session_id).is_ok());
+        write_live(app_dir, session_id, resolved, enabled)
+    })
 }
 
 /// The text a user approves, before anything is written. It names the harness,

@@ -147,7 +147,9 @@ prompts, transcript, files or credentials, open a socket or spawn a process. You
 `~/.pi/agent` is never written to — the session copy's `extensions/` directory holds links to your
 entries plus this one file.
 
-Read it, then approve it:
+The plugin's page (Dashboard → plugins → LLM Tags) shows the same disclosure for each harness, with
+a checkbox and an **Enable** button — the page sends back the digest it displayed, so a stale page
+approves nothing. On the command line:
 
 ```sh
 "<install>/bin/aoe-llm-tags" extension enable pi --print     # the disclosure + the sha256
