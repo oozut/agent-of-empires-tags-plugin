@@ -145,6 +145,7 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
     ));
     checks.push(check_session(&snap, flags));
     checks.push(check_session_config(adapter, &snap, env));
+    checks.extend(check_harness_extensions(&adapters, &snap, &app_dir));
 
     let harness = adapter.and_then(|adapter| adapters::config_path(adapter, env).0);
     for (item, target) in snap
@@ -604,6 +605,77 @@ fn check_session_config(adapter: Option<&Adapter>, snap: &Snapshot, env: &Env) -
 
 /// A non-header target is delivered by the per-session config, so the only
 /// question left is whether the harness can carry that kind at all.
+/// Harness-side extensions: one line per harness that *can* take one, plus one
+/// for any harness the user asked for that cannot.
+///
+/// This is the disclosure's other half: enabling an extension puts a file inside
+/// the agent process, so its state is never silent — "approved", "approved but
+/// the file changed", "you asked and it is not approved yet", or "this harness
+/// keeps to launch-time tags".
+fn check_harness_extensions(adapters: &[Adapter], snap: &Snapshot, app_dir: &Path) -> Vec<Check> {
+    let wanted = &snap.settings.harness_extension;
+    let (receipts, warnings) = crate::harness_extension::receipts(app_dir);
+    let mut checks: Vec<Check> = warnings
+        .into_iter()
+        .map(|warning| Check {
+            name: "extension receipts".to_string(),
+            status: WARN.to_string(),
+            detail: warning,
+        })
+        .collect();
+
+    for adapter in adapters
+        .iter()
+        .filter(|row| !row.extension_artifact.is_empty())
+    {
+        let name = format!("extension {}", adapter.agent);
+        let check = match crate::harness_extension::plan(adapter, wanted, app_dir, &snap.facts.id) {
+            Ok(plan) => Check {
+                name,
+                status: OK.to_string(),
+                detail: format!(
+                    "approved {} (sha256 {}, disclosure v{}); live file {}",
+                    receipts
+                        .get(&plan.harness)
+                        .map(|receipt| receipt.accepted_at.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    &plan.sha256[..8],
+                    crate::harness_extension::DISCLOSURE_VERSION,
+                    abbreviate(&plan.live.to_string_lossy()),
+                ),
+            },
+            Err(refusal) => Check {
+                name,
+                status: if refusal.worth_a_warning() {
+                    WARN.to_string()
+                } else {
+                    SKIP.to_string()
+                },
+                detail: refusal.detail(),
+            },
+        };
+        checks.push(check);
+    }
+
+    // A name in the setting that no row claims would otherwise be a promise the
+    // install never keeps.
+    for name in wanted {
+        if adapters.iter().any(|row| &row.agent == name) {
+            continue;
+        }
+        checks.push(Check {
+            name: format!("extension {name}"),
+            status: WARN.to_string(),
+            detail: format!(
+                "{name} is not a harness this build has a row for; `{}` names nothing it can \
+                 install, and only launch-time tags are sent",
+                crate::harness_extension::SETTING
+            ),
+        });
+    }
+    checks
+}
+
 fn check_delivery(adapter: Option<&Adapter>, target: &crate::resolver::Target, env: &Env) -> Check {
     let name = format!("delivery {}", target.name);
     if target.kind == crate::resolver::DEFAULT_KIND {

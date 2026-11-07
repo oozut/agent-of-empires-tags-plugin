@@ -14,6 +14,13 @@
 //! | `overlay_file` | one generated file | opencode (`OPENCODE_CONFIG`) |
 //! | `overlay_dir` | our file plus links to the user's other entries | pi (`PI_CODING_AGENT_DIR`), codex (`CODEX_HOME`) |
 //!
+//! A harness that loads code from its config directory (`extensions/*.ts`) can
+//! also receive this plugin's own artefact — but only after the user approved
+//! that exact file: [`crate::harness_extension`] decides, this module places it.
+//! The directory is then a *real* directory whose other entries are links to the
+//! user's own, because writing our file through the usual whole-directory link
+//! would write into the user's config.
+//!
 //! What follows from that: two sessions never read the same file, `undo` is
 //! "delete the directory", a stale overlay cannot outlive its session (`prune`),
 //! and a test can build one in a temp dir and read back exactly what a harness
@@ -245,25 +252,75 @@ pub fn materialise(adapter: &Adapter, snap: &Snapshot, env: &Env) -> Result<Over
     // in is this user's alone (see [`crate::private`]).
     crate::private::create_dir(&dir)
         .map_err(|err| format!("{} could not be created: {err}", dir.display()))?;
+
+    // The extension decision is made before anything is linked: an allowed one
+    // needs its directory to stay a real directory, so the whole-directory link
+    // must skip it.
+    let extension = crate::harness_extension::plan(
+        adapter,
+        &snap.settings.harness_extension,
+        &app_dir,
+        &snap.facts.id,
+    );
+    // Always clear a copy a previous launch left, whichever way the decision
+    // went: a revoke takes effect at the next launch, and a stale artefact must
+    // never be the thing that runs.
+    clear_extension(&dir, adapter)?;
+
     if adapter.write_mode == MODE_OVERLAY_DIR {
         if let Some(source_dir) = &source_dir {
-            link_siblings(source_dir, &dir, &file_name)?;
+            let mut skip = Vec::new();
+            if let Ok(plan) = &extension {
+                skip.push(std::ffi::OsString::from(plan.subdir.clone()));
+            }
+            link_siblings(source_dir, &dir, &file_name, &skip)?;
         }
     }
     crate::private::write_atomic(&generated, &text)
         .map_err(|err| format!("{} could not be written: {err}", generated.display()))?;
 
+    let mut env = vec![(
+        adapter.overlay_env.clone(),
+        if adapter.write_mode == MODE_OVERLAY_FILE {
+            generated.to_string_lossy().into_owned()
+        } else {
+            dir.to_string_lossy().into_owned()
+        },
+    )];
+
+    match &extension {
+        Ok(plan) => match place_extension(adapter, plan, &dir, source_dir.as_deref()) {
+            Ok(()) => {
+                // The live file is what the extension re-reads per request; the
+                // values are the ones this launch already resolved, so the
+                // extension can never mint a tag of its own.
+                match crate::harness_extension::write_live(
+                    &app_dir,
+                    &snap.facts.id,
+                    &snap.resolved,
+                    true,
+                ) {
+                    Ok(live) => {
+                        env.push((plan.env_var.clone(), live.to_string_lossy().into_owned()))
+                    }
+                    Err(why) => skipped.push((plan.file.clone(), why)),
+                }
+            }
+            Err(why) => skipped.push((plan.file.clone(), why)),
+        },
+        Err(refusal) => {
+            // A harness that simply has no hook, or one the user never asked
+            // for, is the normal case and says nothing at launch.
+            if refusal.worth_a_warning() {
+                skipped.push((adapter.agent.clone(), refusal.detail()));
+            }
+        }
+    }
+
     Ok(Overlay {
         dir: dir.clone(),
-        file: Some(generated.clone()),
-        env: vec![(
-            adapter.overlay_env.clone(),
-            if adapter.write_mode == MODE_OVERLAY_FILE {
-                generated.to_string_lossy().into_owned()
-            } else {
-                dir.to_string_lossy().into_owned()
-            },
-        )],
+        file: Some(generated),
+        env,
         skipped,
     })
 }
@@ -297,7 +354,12 @@ fn native_env(adapter: &Adapter, targets: &[Resolved]) -> Vec<(String, String)> 
 ///
 /// A link, not a copy: the user's entry stays the only copy of its content, so
 /// credentials, session stores and caches are never duplicated into the app dir.
-fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result<(), String> {
+fn link_siblings(
+    source_dir: &Path,
+    dir: &Path,
+    generated_name: &Path,
+    extra_skip: &[std::ffi::OsString],
+) -> Result<(), String> {
     let entries = match std::fs::read_dir(source_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -306,7 +368,7 @@ fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result
     let skip = generated_name.file_name().map(|name| name.to_os_string());
     for entry in entries.flatten() {
         let name = entry.file_name();
-        if Some(name.clone()) == skip {
+        if Some(name.clone()) == skip || extra_skip.contains(&name) {
             continue;
         }
         let link = dir.join(&name);
@@ -316,6 +378,81 @@ fn link_siblings(source_dir: &Path, dir: &Path, generated_name: &Path) -> Result
         #[cfg(unix)]
         std::os::unix::fs::symlink(entry.path(), &link)
             .map_err(|err| format!("{} could not be linked: {err}", link.display()))?;
+    }
+    Ok(())
+}
+
+/// Put an approved extension in the session's config copy.
+///
+/// The directory becomes a real directory whose children are links to the
+/// user's own entries, so the user's extensions keep loading and writing this
+/// plugin's file can never follow a link into the user's config.
+fn place_extension(
+    adapter: &Adapter,
+    plan: &crate::harness_extension::Plan,
+    dir: &Path,
+    source_dir: Option<&Path>,
+) -> Result<(), String> {
+    let Some(source) = crate::harness_extension::embedded(adapter) else {
+        return Err(format!(
+            "{} is not carried by this build",
+            plan.artifact.display()
+        ));
+    };
+    let target_dir = dir.join(&plan.subdir);
+    if let Ok(meta) = target_dir.symlink_metadata() {
+        if meta.file_type().is_symlink() {
+            std::fs::remove_file(&target_dir)
+                .map_err(|err| format!("{} could not be replaced: {err}", target_dir.display()))?;
+        }
+    }
+    crate::private::create_dir(&target_dir)
+        .map_err(|err| format!("{} could not be created: {err}", target_dir.display()))?;
+    if let Some(source_dir) = source_dir {
+        // One link per entry, not a link to the directory: the user's own files
+        // stay the only copy of their content.
+        link_siblings(
+            &source_dir.join(&plan.subdir),
+            &target_dir,
+            Path::new(&plan.file),
+            &[],
+        )?;
+    }
+    let path = target_dir.join(&plan.file);
+    crate::private::write_atomic(&path, source)
+        .map_err(|err| format!("{} could not be written: {err}", path.display()))
+}
+
+/// Remove a copy a previous launch placed. A directory that stays only because
+/// it holds our file goes too; a link to the user's directory is left alone.
+fn clear_extension(dir: &Path, adapter: &Adapter) -> Result<(), String> {
+    let target = dir.join(crate::harness_extension::subdir(adapter));
+    let Ok(meta) = target.symlink_metadata() else {
+        return Ok(());
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    let ours = target.join(crate::harness_extension::file_name(adapter));
+    if ours.symlink_metadata().is_ok() {
+        std::fs::remove_file(&ours)
+            .map_err(|err| format!("{} could not be removed: {err}", ours.display()))?;
+    }
+    // Everything left in there is a link this plugin made, so the directory can
+    // go and the ordinary whole-directory link can take its place. A real file
+    // (something the user put there) means it stays.
+    let only_our_links = std::fs::read_dir(&target)
+        .map(|entries| {
+            entries.flatten().all(|entry| {
+                entry
+                    .file_type()
+                    .map(|kind| kind.is_symlink())
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false);
+    if only_our_links {
+        let _ = std::fs::remove_dir_all(&target);
     }
     Ok(())
 }

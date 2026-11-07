@@ -16,6 +16,14 @@
 #   config_format   json | toml | none
 #   mapping_format  one line per enabled header: {file} {header} {env_var} {provider}
 #   status          verified | documented | needs_research | unsupported
+#   extension_artifact  a file this harness loads *inside the agent process*, relative to the
+#                   plugin root. Present only where the harness has such a hook; absent means
+#                   launch-scope only. The plugin writes it into the session's config copy only
+#                   after the user approves that exact file (`harness_extension` setting plus a
+#                   sha256 receipt — src/harness_extension.rs).
+#   extension_subdir    directory inside the session config copy (default `extensions`)
+#   extension_filename  our file inside it (default `aoe-llm-tags.ts`)
+#   extension_env   variable the hook exports so the extension finds the session's live file
 
 [[adapter]]
 agent = "pi"
@@ -38,6 +46,15 @@ write_mode = "overlay_dir"
 overlay_env = "PI_CODING_AGENT_DIR"
 overlay_file = "models.json"
 writer = "pi_models"
+# pi loads every `.ts` in `<config dir>/extensions/` in-process and re-emits
+# `before_provider_headers` before each model request, which is the only way a
+# tag edited mid-session can reach the next request (docs/harness-adapters.md
+# §Per-request values). Shipped in the plugin tree, written into a session's copy
+# only after the user approves this exact file.
+extension_artifact = "harness/pi.ts"
+extension_subdir = "extensions"
+extension_filename = "aoe-llm-tags.ts"
+extension_env = "AOE_LLM_TAGS_LIVE"
 status = "verified"
 notes = """
 Verified on the host (2026-11) through tools/probe-harness.sh (docs/harness-evidence/pi.json):

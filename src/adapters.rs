@@ -73,6 +73,17 @@ pub struct Adapter {
     /// sends a corrupted value or refuses to send anything at all. Gemini's
     /// `GEMINI_CLI_CUSTOM_HEADERS` parser does exactly this.
     pub splits_on_commas: bool,
+    /// Artefact this harness loads *inside* the agent process, relative to the
+    /// plugin root (`harness/pi.ts`). Empty means this harness has no in-process
+    /// hook and stays launch-scope only — never guessed.
+    pub extension_artifact: String,
+    /// Directory inside the session config copy the artefact goes into
+    /// (`extensions`). Defaults to `extensions` when the row declares an artefact.
+    pub extension_subdir: String,
+    /// Our file's name inside that directory.
+    pub extension_filename: String,
+    /// The variable the hook exports so the extension finds `live.json`.
+    pub extension_env: String,
     pub status: String,
     pub notes: String,
 }
@@ -207,6 +218,10 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         native_sep: or_default(text("native_sep"), "\n"),
         aoe_hooks: flag("aoe_hooks"),
         splits_on_commas: flag("splits_on_commas"),
+        extension_artifact: text("extension_artifact"),
+        extension_subdir: text("extension_subdir"),
+        extension_filename: text("extension_filename"),
+        extension_env: text("extension_env"),
         supports: {
             // `supports` absent means the default (a header); `supports = []` means
             // "no channel at all" and must stay empty, or a row that deliberately

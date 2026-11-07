@@ -9,7 +9,7 @@
 //! `verify` (M2) is named but not implemented: it reports which milestone owns it
 //! rather than pretending to be a different error.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -140,6 +140,19 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+    /// approve, revoke or report a harness-side extension
+    #[command(
+        about = "A harness-side extension lets a tag edited while a session runs reach its next \
+                 request, instead of the next launch. Enabling one installs a file into every \
+                 session's private config copy, so `enable` prints the disclosure first and \
+                 records the approval with the file's sha256; nothing is written until then."
+    )]
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionCmd,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
     /// check the wiring; exit 1 if anything would silently send nothing
     #[command(about = "One line per check, with the absolute paths it looked at.")]
     Doctor {
@@ -192,6 +205,38 @@ impl FlagArgs {
     fn flags(&self, env: &Env) -> Flags {
         Flags::from_given(&self.given(), env)
     }
+}
+
+#[derive(Subcommand, Debug)]
+enum ExtensionCmd {
+    /// show each harness that can take an extension, and what was approved
+    Status {
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// read the disclosure and approve one harness's extension
+    Enable {
+        /// the harness id (`pi`) — one approval covers one harness, never a bundle
+        harness: String,
+        /// the sha256 the disclosure printed; required when stdin is not a terminal
+        #[arg(long = "accept", value_name = "SHA256")]
+        accept: Option<String>,
+        /// print the disclosure and this build's sha256, then stop
+        #[arg(long = "print")]
+        print: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// revoke an approval; the next launch stops installing the file
+    Disable {
+        /// the harness id (`pi`)
+        harness: String,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 /// Run one command line. Returns the process exit code.
@@ -250,6 +295,7 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             env,
         ),
         Command::References { json, flags } => references_cmd(json, &flags, env),
+        Command::Extension { action, flags } => extension_cmd(action, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
@@ -647,6 +693,327 @@ fn classify_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {
         return EXIT_FAIL;
     }
     EXIT_OK
+}
+
+/// `extension status|enable|disable`: the one place an approval is recorded.
+///
+/// Intent lives in the settings (the user writes it); approval lives in the
+/// receipt file. `enable` prints the disclosure first and only writes when it
+/// has the digest the user was shown — from `--accept` on a non-tty, from an
+/// explicit `yes` on a terminal. Nothing here writes the global settings.
+fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
+    let app_dir = match crate::settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            warn(&message);
+            return EXIT_USAGE;
+        }
+    };
+    let (adapters, warnings) = crate::adapters::load(None);
+    warn_all(&warnings);
+    match action {
+        ExtensionCmd::Status { json } => extension_status(&adapters, &app_dir, args, env, json),
+        ExtensionCmd::Enable {
+            harness,
+            accept,
+            print,
+            json,
+        } => extension_enable(
+            &adapters, &app_dir, args, env, &harness, accept, print, json,
+        ),
+        ExtensionCmd::Disable { harness, json } => {
+            let Some(adapter) = crate::adapters::find(&adapters, &harness) else {
+                warn(&format!(
+                    "no adapter row for {harness:?}; `doctor` lists the harnesses this build knows"
+                ));
+                return EXIT_USAGE;
+            };
+            let result = crate::harness_extension::revoke(&app_dir, &adapter.agent);
+            match result {
+                Ok(false) => {
+                    warn(&format!("{} had no approval to revoke", adapter.agent));
+                    EXIT_OK
+                }
+                Ok(true) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "revoked": adapter.agent,
+                                "receipt": crate::harness_extension::receipt_path(&app_dir)
+                                    .display().to_string(),
+                            })
+                        );
+                    } else {
+                        println!(
+                            "revoked: {} ({} removed from {})",
+                            adapter.agent,
+                            adapter.agent,
+                            crate::harness_extension::receipt_path(&app_dir).display()
+                        );
+                        println!(
+                            "a session already running stops sending dynamic tags on its next \
+                             request; the next launch installs no extension. The strands of \
+                             `{}` in the settings are the user's to remove.",
+                            crate::harness_extension::SETTING
+                        );
+                    }
+                    EXIT_OK
+                }
+                Err(message) => {
+                    warn(&message);
+                    EXIT_FAIL
+                }
+            }
+        }
+    }
+}
+
+fn extension_status(
+    adapters: &[crate::adapters::Adapter],
+    app_dir: &std::path::Path,
+    args: &FlagArgs,
+    env: &Env,
+    json: bool,
+) -> i32 {
+    let snap = resolver::snapshot(&args.flags(env), env, None);
+    let (receipts, warnings) = crate::harness_extension::receipts(app_dir);
+    warn_all(&warnings);
+    let mut rows = Vec::new();
+    for adapter in adapters
+        .iter()
+        .filter(|row| !row.extension_artifact.is_empty())
+    {
+        let wanted = snap
+            .settings
+            .harness_extension
+            .iter()
+            .any(|name| name == &adapter.agent);
+        let (state, detail) = match crate::harness_extension::plan(
+            adapter,
+            &snap.settings.harness_extension,
+            app_dir,
+            &snap.facts.id,
+        ) {
+            Ok(plan) => (
+                crate::doctor::OK,
+                format!("approved ({})", &plan.sha256[..8]),
+            ),
+            Err(refusal) => (
+                if refusal.worth_a_warning() {
+                    crate::doctor::WARN
+                } else {
+                    crate::doctor::SKIP
+                },
+                refusal.reason().to_string(),
+            ),
+        };
+        rows.push((adapter, wanted, state, detail));
+    }
+    if json {
+        let value: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(adapter, wanted, state, detail)| {
+                serde_json::json!({
+                    "harness": adapter.agent,
+                    "requested": wanted,
+                    "state": state,
+                    "detail": detail,
+                    "artifact": adapter.extension_artifact,
+                    "receipt": receipts.get(&adapter.agent).map(|receipt| serde_json::json!({
+                        "sha256": receipt.sha256,
+                        "accepted_at": receipt.accepted_at,
+                        "disclosure_version": receipt.disclosure_version,
+                        "tested_harness": receipt.tested_harness,
+                    })),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(value));
+        return EXIT_OK;
+    }
+    if rows.is_empty() {
+        println!("no harness in this build loads an in-process extension: every harness keeps to launch-time tags");
+        return EXIT_OK;
+    }
+    for (adapter, wanted, state, detail) in rows {
+        println!(
+            "{:<10} {:<6} {:<6} {detail}",
+            adapter.agent,
+            state,
+            if wanted { "yes" } else { "no" },
+        );
+    }
+    println!(
+        "\ncolumns: harness, state, in `{}`, reason — `aoe-llm-tags extension enable <harness>` prints the disclosure",
+        crate::harness_extension::SETTING
+    );
+    if snap.settings.harness_extension.is_empty() {
+        println!(
+            "no harness is requested yet: add it to `{}` in settings, then approve it once",
+            crate::harness_extension::SETTING
+        );
+    }
+    EXIT_OK
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extension_enable(
+    adapters: &[crate::adapters::Adapter],
+    app_dir: &std::path::Path,
+    args: &FlagArgs,
+    env: &Env,
+    harness: &str,
+    accept: Option<String>,
+    print_only: bool,
+    json: bool,
+) -> i32 {
+    let Some(adapter) = crate::adapters::find(adapters, harness) else {
+        warn(&format!(
+            "no adapter row for {harness:?}; `aoe-llm-tags extension status` lists the harnesses \
+             this build can serve"
+        ));
+        return EXIT_USAGE;
+    };
+    let snap = resolver::snapshot(&args.flags(env), env, None);
+    let proposal = match crate::harness_extension::proposal(adapter, app_dir, &snap.facts.id) {
+        Ok(plan) => plan,
+        Err(refusal) => {
+            warn(&refusal.detail());
+            return EXIT_USAGE;
+        }
+    };
+    let text = crate::harness_extension::disclosure(&proposal, &harness_version(&adapter.agent));
+    if print_only {
+        println!("{text}");
+        println!();
+        println!("nothing was written. Approve with:");
+        println!(
+            "  aoe-llm-tags extension enable {} --accept {}",
+            adapter.agent, proposal.sha256
+        );
+        return EXIT_OK;
+    }
+
+    // Whatever the answer, the user sees what they are agreeing to: on a tty the
+    // prompt follows it, and `--accept` prints it too, so a scripted approval is
+    // still an informed one (and a log keeps the wording it approved).
+    println!("{text}");
+
+    let approved = match accept {
+        Some(digest) => {
+            let digest = digest.trim().to_ascii_lowercase();
+            if digest != proposal.sha256 {
+                warn(&format!(
+                    "the digest you accepted does not match this build's file \
+                     (accepted {digest}, this build {})",
+                    proposal.sha256
+                ));
+                warn("nothing was approved");
+                return EXIT_FAIL;
+            }
+            true
+        }
+        None if std::io::stdin().is_terminal() => {
+            print!(
+                "\nType `yes` to approve {} for this machine: ",
+                adapter.agent
+            );
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            let _ = std::io::stdin().read_line(&mut answer);
+            answer.trim().eq_ignore_ascii_case("yes")
+        }
+        None => {
+            println!("{text}");
+            warn(
+                "stdin is not a terminal, so there is nobody to read the disclosure: re-run with \
+                 `--accept <sha256>` above",
+            );
+            return EXIT_USAGE;
+        }
+    };
+    if !approved {
+        warn("not approved; nothing was written");
+        return EXIT_OK;
+    }
+
+    match crate::harness_extension::accept(
+        app_dir,
+        &adapter.agent,
+        &proposal.sha256,
+        &harness_version(&adapter.agent),
+    ) {
+        Ok(receipt) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "approved": adapter.agent,
+                        "sha256": receipt.sha256,
+                        "disclosure_version": receipt.disclosure_version,
+                        "accepted_at": receipt.accepted_at,
+                        "receipt": crate::harness_extension::receipt_path(app_dir).display().to_string(),
+                        "installs_on_next_launch": snap.settings.harness_extension
+                            .iter().any(|name| name == &adapter.agent),
+                    })
+                );
+            } else {
+                println!(
+                    "approved: {} (sha256 {}, disclosure v{}), recorded in {}",
+                    adapter.agent,
+                    &receipt.sha256[..12],
+                    receipt.disclosure_version,
+                    crate::harness_extension::receipt_path(app_dir).display()
+                );
+            }
+            // Intent is the user's: the plugin has no capability to write the
+            // settings, and asking for one to save a line would be a worse trade.
+            if !snap
+                .settings
+                .harness_extension
+                .iter()
+                .any(|name| name == &adapter.agent)
+            {
+                warn(&format!(
+                    "{} is not in `{}` yet, so nothing will be installed. Add it in the plugin \
+                     settings:  {} = [\"{}\"]",
+                    adapter.agent,
+                    crate::harness_extension::SETTING,
+                    crate::harness_extension::SETTING,
+                    adapter.agent
+                ));
+            } else {
+                println!(
+                    "the next launch of a {} session installs it under \
+                     sessions/<id>/{}/{}",
+                    adapter.agent, proposal.subdir, proposal.file
+                );
+            }
+            EXIT_OK
+        }
+        Err(message) => {
+            warn(&message);
+            EXIT_FAIL
+        }
+    }
+}
+
+/// The harness's own version, for the receipt. Informational only: a harness
+/// upgrade never re-asks for approval, and a missing binary is not an error.
+fn harness_version(agent: &str) -> String {
+    let output = std::process::Command::new(agent).arg("--version").output();
+    let Ok(output) = output else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(48)
+        .collect()
 }
 
 fn doctor_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {

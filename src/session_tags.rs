@@ -378,6 +378,7 @@ mod tests {
             session_tagging: "short".to_string(),
             feature_tag: None,
             token: String::new(),
+            harness_extension: Vec::new(),
             warnings: Vec::new(),
         }
     }

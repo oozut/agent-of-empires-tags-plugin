@@ -8,10 +8,12 @@
 //! to `aoe session show --json` / `aoe list --json` behind an injectable runner.
 
 pub mod adapters;
+pub mod artifacts;
 pub mod cli;
 pub mod doctor;
 pub mod env;
 pub mod gitinfo;
+pub mod harness_extension;
 pub mod overlay;
 pub mod private;
 pub mod resolver;
