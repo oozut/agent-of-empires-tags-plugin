@@ -43,8 +43,8 @@ capability set, re-run with `--yes` to re-approve it without a prompt.
 It prints exactly three kinds of line and nothing else:
 
 ```
-before_session = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" …'
-before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" …'
+before_session = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" … --substrate host || true'
+before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" … --substrate sandbox || true'
 <harness config> → providers.<id>.headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}"
 ```
 
@@ -55,10 +55,15 @@ breaking the first launch — including a launch the plugin never sees, from a p
 without such a `guard_fallback` keep the plain env reference. Paste the printed value as-is:
 for a JSON config the quotes inside a command value are already escaped.
 
-1. Put both `before_*` lines under `[host_hooks]` in `<app_dir>/config.toml`. Both keys, the same
-   string: `before_session` covers host sessions, `before_start` covers sandboxed ones. If the
-   profile has a `[host_hooks]` array of its own, it **replaces** the global one — put the lines in
-   the profile file too, or only there.
+1. Put both `before_*` lines under `[host_hooks]` in `<app_dir>/config.toml`. Both keys, one
+   string each, differing only in the trailing `--substrate host` / `--substrate sandbox`:
+   `before_session` covers host sessions, `before_start` covers sandboxed ones. The flag is how
+   the hook knows whether the per-session config copy it writes is readable by the harness — a
+   container cannot see this plugin's app dir, so a sandboxed launch gets the variables and no
+   copy (`harness-adapters.md` §Sandboxed sessions). `doctor` fails a `before_start` line that
+   declares neither, which is what an install from before the flag looks like: re-run
+   `setup --print` and paste the two lines again. If the profile has a `[host_hooks]` array of
+   its own, it **replaces** the global one — put the lines in the profile file too, or only there.
 2. Add the mapping line(s) to the harness config named, one line per enabled header, leaving the
    rest of that file alone. For `pi` that means `~/.pi/agent/models.json`,
    `providers.<id>.headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\"; …"` (copy the value the

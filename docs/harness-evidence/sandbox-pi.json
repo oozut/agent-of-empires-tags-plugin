@@ -1,0 +1,86 @@
+{
+  "image": "ghcr.io/agent-of-empires/aoe-sandbox:latest",
+  "what_this_proves": "a sandboxed session receives the hook's environment variables, and the static mapping in the store aoe seeds reads one, so the tag travels without a config copy; the copy the plugin writes is under the app dir, which aoe does not mount, so an overlay_env pointing there is a path the harness cannot read \u2014 `real_session` shows that on a host whose before_start line predates `--substrate`, and `real_session.plugin_sandbox_hook` shows the shipped sandbox line exporting the same payload with no overlay env and no app dir at all",
+  "variants": [
+    {
+      "mechanism": "host_overlay",
+      "requests": 0,
+      "delivered_value": null,
+      "harness_output": "Error: Model \"probe/pm\" not found. Use --list-models to see available models.",
+      "sandbox_verdict": "no request"
+    },
+    {
+      "mechanism": "env_only",
+      "requests": 4,
+      "delivered_value": "{\"team\":\"core\",\"session\":\"S-sandbox\"}",
+      "harness_output": "Stream ended without finish_reason",
+      "sandbox_verdict": "delivered"
+    },
+    {
+      "mechanism": "overlay_workspace",
+      "requests": 4,
+      "delivered_value": "{\"team\":\"core\",\"session\":\"S-baked\"}",
+      "harness_output": "Stream ended without finish_reason",
+      "sandbox_verdict": "delivered"
+    },
+    {
+      "mechanism": "overlay_relative",
+      "requests": 4,
+      "delivered_value": "{\"team\":\"core\",\"session\":\"S-baked\"}",
+      "harness_output": "Stream ended without finish_reason",
+      "sandbox_verdict": "delivered"
+    },
+    {
+      "mechanism": "overlay_mounted",
+      "requests": 4,
+      "delivered_value": "{\"team\":\"core\",\"session\":\"S-baked\"}",
+      "harness_output": "Stream ended without finish_reason",
+      "sandbox_verdict": "delivered"
+    }
+  ],
+  "host_leg": "delivered with the same relative value",
+  "real_session": {
+    "session_id": "a1d19ba3c2824173",
+    "container": "aoe-sandbox-a1d19ba3",
+    "hook_variables": [
+      "AOE_ARTIFACT_DIR=/aoe/artifacts",
+      "AOE_LLM_TAGS={\"profile\":\"main\",\"project\":\"a1d19ba3c2824173\",\"project_path\":\"/var/lib/aoe/.config/agent-of-empires/scratch/a1d19ba3c2824173\",\"session\":\"S-a1d1\",\"session_id\":\"a1d19ba3c2824173\",\"tool\":\"pi\"}",
+      "PI_CODING_AGENT_DIR=/var/lib/aoe/.config/agent-of-empires/sessions/a1d19ba3c2824173/pi"
+    ],
+    "overlay_env": {
+      "name": "PI_CODING_AGENT_DIR",
+      "value": "/var/lib/aoe/.config/agent-of-empires/sessions/a1d19ba3c2824173/pi",
+      "inside_container": "absent"
+    },
+    "staged_store_has_mapping": true,
+    "models_without_overlay": [
+      "provider  model              context  max-out  thinking  images",
+      "litellm   deepseek-v4-flash  128K     16.4K    no        no    "
+    ],
+    "models_with_overlay": [
+      "No models available. Use /login to log into a provider via OAuth or API key. See:",
+      "  /usr/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md"
+    ],
+    "staged_guarded_mapping_resolves_to": "{\"profile\":\"main\",\"project\":\"a1d19ba3c2824173\",\"project_path\":\"/var/lib/aoe/.config/agent-of-empires/scratch/a1d19ba3c2824173\",\"session\":\"S-a1d1\",\"session_id\":\"a1d19ba3c2824173\",\"tool\":\"pi\"}",
+    "created_with": "the before_start line installed on this host at probe time",
+    "plugin_sandbox_hook": {
+      "cli": "/var/lib/aoe/agent-of-empires-tags-plugin-worktrees/mongols/target/release/aoe-llm-tags",
+      "argv": [
+        "hook",
+        "--substrate",
+        "sandbox"
+      ],
+      "exit_code": "0",
+      "environment": "AOE_* only: no HOME, no XDG_CONFIG_HOME",
+      "lines": [
+        "AOE_LLM_TAGS={\"profile\":\"main\",\"project\":\"a1d19ba3c2824173\",\"project_path\":\"/var/lib/aoe/.config/agent-of-empires/scratch/a1d19ba3c2824173\",\"session\":\"S-a1d1\",\"session_id\":\"a1d19ba3c2824173\",\"tool\":\"pi\"}"
+      ],
+      "writes_an_overlay_env_line": false,
+      "stderr": [
+        "aoe-llm-tags: settings: neither XDG_CONFIG_HOME nor HOME names an absolute path, so there is nowhere to keep this plugin's session files; no config is read",
+        "aoe-llm-tags: overrides: neither XDG_CONFIG_HOME nor HOME names an absolute path, so there is nowhere to keep this plugin's session files; no session edits are read"
+      ],
+      "same_payload_as_the_container": true
+    }
+  }
+}

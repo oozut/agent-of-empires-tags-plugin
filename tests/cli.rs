@@ -7,7 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
+use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_ID, SESSION_JSON};
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -22,6 +22,77 @@ fn hook_prints_one_name_value_line() {
     let default_value = sandbox.default_payload();
     assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={default_value}")]);
     assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn a_sandboxed_launch_exports_the_variables_and_writes_no_copy() {
+    // aoe runs `before_start` for a sandboxed launch, and its container cannot see
+    // this plugin's app dir: pointing the harness at a copy there leaves it with no
+    // config at all (`docs/harness-evidence/sandbox-pi.json`). So the sandbox
+    // substrate exports the variables and writes nothing, and the harness reads
+    // the mapping in its own config instead.
+    let sandbox = Sandbox::new();
+    sandbox.wire();
+
+    let host = hook(&sandbox);
+    host.assert_ok();
+    assert!(
+        host.lines()
+            .iter()
+            .any(|line| line.starts_with("PI_CODING_AGENT_DIR=")),
+        "a host launch points the harness at its copy: {}",
+        host.stdout
+    );
+
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert_eq!(
+        run.lines(),
+        vec![format!("AOE_LLM_TAGS={}", sandbox.default_payload())],
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.stderr, "");
+    let session_dir = sandbox.path(&format!(
+        "home/.config/agent-of-empires/sessions/{SESSION_ID}"
+    ));
+    assert!(
+        !session_dir.exists(),
+        "a sandboxed launch wrote a copy no container can read: {}",
+        session_dir.display()
+    );
+}
+
+#[test]
+fn a_sandboxed_launch_names_what_its_own_config_cannot_carry() {
+    // vibe needs the literal in its file (`interpolates = []`), which only the
+    // per-session copy can hold — so a sandboxed launch must say the tag is not
+    // sent rather than closing the session silently.
+    let mut sandbox = Sandbox::new();
+    sandbox.session(SESSION_ID, "vibe");
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert!(
+        run.stderr.contains("not sent for a sandboxed session"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.lines().len(),
+        1,
+        "the variables still travel: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn an_unknown_substrate_is_a_usage_error() {
+    // The value decides the delivery, so a typo must not fall back to the other one.
+    let sandbox = Sandbox::new();
+    let run = sandbox.run(&["hook", "--substrate", "sandbx"]);
+    run.assert_code(2);
+    assert_eq!(run.stdout, "");
+    assert!(run.stderr.contains("host or sandbox"), "{}", run.stderr);
 }
 
 #[test]
@@ -168,12 +239,21 @@ fn setup_prints_two_hook_lines_and_one_mapping_line() {
 }
 
 #[test]
-fn both_hook_keys_get_the_same_command() {
+fn each_hook_key_declares_the_substrate_it_serves() {
+    // aoe runs the two keys for disjoint launches, so the line itself says where
+    // the hook runs: `before_session` is a host launch (a session copy is
+    // writable), `before_start` is a sandboxed one (it is not).
     let sandbox = Sandbox::new();
     let lines = setup_lines(&sandbox);
     let session = &lines[0]["before_session = ".len()..];
     let start = &lines[1]["before_start = ".len()..];
-    assert_eq!(session, start);
+    assert!(session.contains("--substrate host"), "{session}");
+    assert!(start.contains("--substrate sandbox"), "{start}");
+    assert_eq!(
+        session.replace("--substrate host", "--substrate sandbox"),
+        start,
+        "the two lines differ only in the substrate"
+    );
     let aoe = sandbox.env.get("AOE_BIN").unwrap();
     assert!(session.contains(&format!("AOE_BIN=\"{aoe}\"")), "{session}");
     assert!(session.contains("/aoe-llm-tags"), "{session}");
@@ -365,16 +445,34 @@ fn setup_without_print_is_a_usage_error() {
 }
 
 #[test]
+fn applying_in_a_sandbox_writes_no_config() {
+    // The container cannot read the copy, so `--apply` on that substrate must say
+    // so and leave the user's file alone rather than write one nothing opens.
+    let sandbox = Sandbox::new();
+    let path = sandbox.pi_models(&[("X-AoE-Tags", "$AOE_LLM_TAGS")]);
+    let before = std::fs::read(&path).expect("models.json");
+    let run = sandbox.run(&["setup", "--apply", "--yes", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert!(
+        run.stdout.contains("writes no session config"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(std::fs::read(&path).expect("models.json"), before);
+}
+
+#[test]
 fn setup_json_shape() {
     let sandbox = Sandbox::new();
     let run = sandbox.run(&["setup", "--print", "--json"]);
     run.assert_ok();
     let plan: serde_json::Value = serde_json::from_str(&run.stdout).expect("JSON");
     assert_eq!(plan["adapter"], "pi");
-    assert_eq!(
-        plan["hooks"]["before_session"],
-        plan["hooks"]["before_start"]
-    );
+    // One key per substrate: the same command, declaring which launch it is for.
+    let session = plan["hooks"]["before_session"].as_str().expect("a string");
+    let start = plan["hooks"]["before_start"].as_str().expect("a string");
+    assert!(session.contains("--substrate host"), "{session}");
+    assert!(start.contains("--substrate sandbox"), "{start}");
     assert_eq!(plan["mapping"][0]["header"], "X-AoE-Tags");
     assert_eq!(plan["mapping"][0]["env_var"], "AOE_LLM_TAGS");
     assert!(Path::new(plan["cli"].as_str().unwrap()).is_absolute());

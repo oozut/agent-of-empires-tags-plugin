@@ -54,7 +54,16 @@ duplicated; a launch with nothing to deliver creates nothing at all. Verified en
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 244 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 251 tests green.
+
+A **sandboxed** launch is told apart by the hook line, not by aoe: `before_start` carries
+`--substrate sandbox` and exports the tag variables only, because the container cannot see the app
+dir this plugin writes its per-session copy into — exporting that copy's path there left `pi` with
+no models at all. Measured, not argued: `tools/probe-sandbox.sh` (evidence
+`docs/harness-evidence/sandbox-pi.json`). One cell stays open — a harness that needs the literal in
+its own file (`vibe`) sends no tag in a sandbox until aoe mounts that directory; the hook says so
+on stderr.
+
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -164,5 +173,6 @@ Plan (what ships when, and with which values):
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
 | `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane and page payloads — and a click's edit — can be checked without a browser |
 | `tools/check-page.mjs` | Runs the page's script against a stub DOM and a stub dashboard (needs `node`), which is how the bridge handshake is checked: a page can pass every static check and still throw the moment it runs |
+| `tools/probe-sandbox.sh` | Measures the delivery mechanisms inside the real sandbox image, one container per mechanism plus one real `aoe add --sandbox` session, so "does the tag reach a sandboxed harness?" is answered by a request at a sink and not by reading aoe's source (evidence: `docs/harness-evidence/sandbox-pi.json`) |
 | `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |
 | `tests/` | CLI, resolver and `doctor` tests behind a sandboxed app dir and a fake `aoe`; no aoe and no network needed |

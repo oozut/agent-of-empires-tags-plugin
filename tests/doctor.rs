@@ -31,6 +31,8 @@ struct Wire {
     settings: &'static str,
     /// A session row to answer with; `None` is the sandbox's own fixture row.
     session_json: Option<&'static str>,
+    /// A `[host_hooks]` block used verbatim, for a line this build no longer emits.
+    raw_hooks: Option<String>,
 }
 
 impl Default for Wire {
@@ -47,6 +49,7 @@ impl Default for Wire {
             last_verified: "",
             settings: "",
             session_json: None,
+            raw_hooks: None,
         }
     }
 }
@@ -83,18 +86,35 @@ impl Wire {
         } else {
             let _ = std::fs::remove_file(&cli);
         }
-        let command = if self.foreign_hook {
-            "/usr/local/bin/someone-else hook".to_string()
-        } else {
-            llm_tags::setup::hook_command(&cli, aoe.to_str().unwrap())
+        // A line per key, the way `setup --print` writes them: the key decides
+        // the substrate, so both keys sharing one command is not a real install.
+        let command_for = |key: &str| {
+            if self.foreign_hook {
+                "/usr/local/bin/someone-else hook".to_string()
+            } else {
+                llm_tags::setup::hook_command(
+                    &cli,
+                    aoe.to_str().unwrap(),
+                    llm_tags::setup::Substrate::for_key(key),
+                )
+            }
         };
 
         let mut hooks = String::new();
         if self.before_session {
-            hooks.push_str(&format!("before_session = ['{command}']\n"));
+            hooks.push_str(&format!(
+                "before_session = ['{}']\n",
+                command_for("before_session")
+            ));
         }
         if self.before_start {
-            hooks.push_str(&format!("before_start = ['{command}']\n"));
+            hooks.push_str(&format!(
+                "before_start = ['{}']\n",
+                command_for("before_start")
+            ));
+        }
+        if let Some(raw) = &self.raw_hooks {
+            hooks = raw.clone();
         }
         let config_path = sandbox.config_path("");
         if self.config_file {
@@ -377,7 +397,9 @@ fn an_unresolvable_aoe_binary_fails() {
 #[test]
 fn an_overlay_row_needs_no_static_entry_in_the_users_config() {
     // The session copy is written by our own writer, so the user's file is only
-    // the starting point: a provider with no header entry is exactly right.
+    // the starting point: a provider with no header entry is exactly right for a
+    // host launch. A sandboxed launch reads that file instead of a copy, so the
+    // line is a warning rather than a failure: host sessions are still tagged.
     let (mut sandbox, _) = wired();
     Wire {
         headers: Some(vec![]),
@@ -385,9 +407,75 @@ fn an_overlay_row_needs_no_static_entry_in_the_users_config() {
     }
     .apply(&mut sandbox);
     let check = check(&report(&sandbox), "mapping X-AoE-Tags").clone();
+    assert_eq!(check.status, llm_tags::doctor::WARN, "{}", check.detail);
+    assert!(
+        check.detail.contains("sandboxed session"),
+        "{}",
+        check.detail
+    );
+    assert!(check.detail.contains("setup --print"), "{}", check.detail);
+}
+
+#[test]
+fn an_overlay_row_with_the_static_entry_covers_both_substrates() {
+    let (mut sandbox, _) = wired();
+    Wire {
+        headers: Some(vec![("X-AoE-Tags", GUARDED_TAGS)]),
+        ..Wire::default()
+    }
+    .apply(&mut sandbox);
+    let check = check(&report(&sandbox), "mapping X-AoE-Tags").clone();
     assert_eq!(check.status, llm_tags::doctor::OK, "{}", check.detail);
     assert!(check.detail.contains("overlay"), "{}", check.detail);
     assert!(check.detail.contains("litellm"), "{}", check.detail);
+    assert!(
+        check.detail.contains("sandboxed session"),
+        "{}",
+        check.detail
+    );
+}
+
+#[test]
+fn a_before_start_line_without_a_substrate_is_refused() {
+    // The shipped line says where it runs. One written before sandbox delivery
+    // existed would point a container at this plugin's app dir, which aoe does
+    // not mount: the harness then has no config at all, not just a missing tag.
+    let (mut sandbox, _) = wired();
+    let cli = sandbox.path("plugin/bin/aoe-llm-tags");
+    let legacy = llm_tags::setup::hook_command(
+        std::path::Path::new(&cli),
+        sandbox.env.get("AOE_BIN").unwrap(),
+        llm_tags::setup::Substrate::Host,
+    )
+    .replace("--substrate host", "");
+    Wire {
+        raw_hooks: Some(format!("before_start = ['{legacy}']\n")),
+        ..Wire::default()
+    }
+    .apply(&mut sandbox);
+    let check = check(&report(&sandbox), "before_start hook").clone();
+    assert_eq!(check.status, llm_tags::doctor::FAIL, "{}", check.detail);
+    assert!(check.detail.contains("--substrate"), "{}", check.detail);
+    assert!(check.detail.contains("setup --print"), "{}", check.detail);
+}
+
+#[test]
+fn a_sandbox_line_under_before_session_is_refused() {
+    let (mut sandbox, _) = wired();
+    let cli = sandbox.path("plugin/bin/aoe-llm-tags");
+    let wrong = llm_tags::setup::hook_command(
+        std::path::Path::new(&cli),
+        sandbox.env.get("AOE_BIN").unwrap(),
+        llm_tags::setup::Substrate::Sandbox,
+    );
+    Wire {
+        raw_hooks: Some(format!("before_session = ['{wrong}']\n")),
+        ..Wire::default()
+    }
+    .apply(&mut sandbox);
+    let check = check(&report(&sandbox), "before_session hook").clone();
+    assert_eq!(check.status, llm_tags::doctor::FAIL, "{}", check.detail);
+    assert!(check.detail.contains("before_start"), "{}", check.detail);
 }
 
 #[test]
