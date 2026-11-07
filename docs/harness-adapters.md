@@ -546,6 +546,10 @@ two more artefacts:
 | `append_artifact` | `harness/pi.append.md` | the same instruction in the always-loaded slot (`APPEND_SYSTEM.md`), because a skill the model never opens changes nothing |
 | `append_filename` | `APPEND_SYSTEM.md` | the file that slot is called |
 
+One caveat, because pi does not combine same-named files: a repository with its own
+`.pi/APPEND_SYSTEM.md` takes precedence over the agent-dir one, so in that repository the reminder
+is not loaded — the skill, which is discovered independently, still is.
+
 The skill is also installed into **AoE's managed skill store** (`<app dir>/skills/aoe-activity/`)
 at approval time, so it appears on AoE's Skills page and can be read, edited or deleted like any
 other managed skill — that is the plugin's only write outside a session folder, and the disclosure
