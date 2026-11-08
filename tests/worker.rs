@@ -295,6 +295,27 @@ fn tag<'a>(tags: &'a [Value], key: &str) -> &'a Value {
         .unwrap_or(&Value::Null)
 }
 
+/// The rows of one titled section in a pane payload.
+fn section_rows(pane: &Value, title: &str) -> Vec<Value> {
+    pane["payload"]["blocks"]
+        .as_array()
+        .expect("pane blocks")
+        .iter()
+        .find(|block| block["title"] == json!(title))
+        .unwrap_or_else(|| panic!("no {title:?} section in {pane}"))
+        .get("children")
+        .and_then(Value::as_array)
+        .cloned()
+        .expect("section children")
+}
+
+fn pane_row(rows: &[Value], label: &str) -> Value {
+    rows.iter()
+        .find(|row| row["label"] == json!(label))
+        .unwrap_or_else(|| panic!("no {label:?} row in {rows:?}"))
+        .clone()
+}
+
 // --- the tests --------------------------------------------------------------
 
 #[test]
@@ -345,7 +366,7 @@ fn ticking_the_git_box_writes_the_sample_and_the_page_matches_the_verb() {
     assert_eq!(pane_tag("git.commit")["value"], json!(commit));
     assert_eq!(
         pane_tag("git.branch")["badges"][0]["text"],
-        json!("session")
+        json!("this session")
     );
     // Every entry came from this session's file, not from the settings.
     assert!(
@@ -903,4 +924,140 @@ fn the_page_names_the_users_own_config_for_a_user_scope_row() {
     assert!(disclosure.contains("your own"), "{disclosure}");
     assert!(disclosure.contains("marker"), "{disclosure}");
     assert!(!disclosure.contains("private config copy"), "{disclosure}");
+}
+
+#[test]
+fn the_pane_has_three_levels_and_a_project_edit_stays_in_its_project() {
+    let sandbox = Sandbox::new();
+    let one = repository(&sandbox, "one");
+    let two = repository(&sandbox, "two");
+    sandbox.write_config(&settings_config(
+        &format!("{BRANCH_TARGET}tags = [\"team:config\", \"cost:=1\"]\n"),
+        "",
+    ));
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &one), row(OTHER, &two)], &[]);
+    // Any host event republishes every surface; this one carries no edit.
+    wire.notify("session.status.changed", json!({"session_id": SESSION}));
+    wire.wait_page();
+
+    // The pane opens on the session and still offers the two levels above it.
+    let pane = wire.pane(SESSION).clone();
+    let titles: Vec<&str> = pane["payload"]["blocks"]
+        .as_array()
+        .expect("blocks")
+        .iter()
+        .filter_map(|block| block["title"].as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        vec![
+            "This session",
+            "Activity",
+            "This project",
+            "AoE — every session"
+        ]
+    );
+
+    // A project default for one checkout: the session in it picks it up, the
+    // session in the other checkout keeps the settings' value.
+    let entries = vec!["team:core", "feature:billing"];
+    wire.notify(
+        "tag.level.replace",
+        json!({
+            "level": "project",
+            "project_path": one.display().to_string(),
+            "entries": entries,
+            "session_id": SESSION,
+        }),
+    );
+    let page = wire.wait_page();
+    let sessions = page["sessions"].as_array().expect("page sessions");
+    let one_page = sessions
+        .iter()
+        .find(|session| session["id"] == json!(SESSION))
+        .expect("this session");
+    let two_page = sessions
+        .iter()
+        .find(|session| session["id"] == json!(OTHER))
+        .expect("the other session");
+    assert_eq!(tag(&tags_of(one_page), "team")["value"], json!("core"));
+    assert_eq!(
+        tag(&tags_of(one_page), "feature")["value"],
+        json!("billing")
+    );
+    assert_eq!(tag(&tags_of(two_page), "team")["value"], json!("config"));
+
+    // The row says where it came from, so a project default is not mistaken for
+    // something this session wrote.
+    let pane = wire.pane(SESSION).clone();
+    let rows = section_rows(&pane, "This session");
+    assert_eq!(
+        pane_row(&rows, "team")["badges"][0]["text"],
+        json!("project")
+    );
+
+    // A hide at the project level drops the settings' `cost`, and the project
+    // section says how many entries and hides it owns.
+    wire.notify(
+        "tag.level.unset",
+        json!({
+            "level": "project",
+            "project_path": one.display().to_string(),
+            "key": "cost",
+            "session_id": SESSION,
+        }),
+    );
+    let page = wire.wait_page();
+    let sessions = page["sessions"].as_array().expect("page sessions");
+    let one_page = sessions
+        .iter()
+        .find(|session| session["id"] == json!(SESSION))
+        .expect("this session");
+    assert_eq!(tag(&tags_of(one_page), "cost"), &Value::Null);
+    let pane = wire.pane(SESSION).clone();
+    let project = pane["payload"]["blocks"]
+        .as_array()
+        .expect("blocks")
+        .iter()
+        .find(|block| block["title"] == json!("This project"))
+        .expect("project section");
+    assert_eq!(project["value"], json!("2 override(s), 1 hidden"));
+
+    // AoE entries reach both sessions, including the other project.
+    wire.notify(
+        "tag.level.replace",
+        json!({
+            "level": "aoe",
+            "entries": ["owner:me"],
+            "session_id": SESSION,
+        }),
+    );
+    let page = wire.wait_page();
+    let sessions = page["sessions"].as_array().expect("page sessions");
+    for id in [SESSION, OTHER] {
+        let session = sessions
+            .iter()
+            .find(|session| session["id"] == json!(id))
+            .expect("a session");
+        assert_eq!(
+            tag(&tags_of(session), "owner")["value"],
+            json!("me"),
+            "{id}"
+        );
+    }
+
+    // Both levels live in the plugin's own file, and the settings are untouched.
+    let env = llm_tags::env::Env::new(sandbox.env.clone());
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
+    let levels = llm_tags::levels::path(&app_dir);
+    let text = std::fs::read_to_string(&levels).expect("tags.toml");
+    assert!(text.contains("[[project]]"), "{text}");
+    assert!(text.contains("[aoe]"), "{text}");
+    assert!(
+        text.contains("unset = [\"cost\"]"),
+        "the hide is recorded, not turned into a deletion: {text}"
+    );
+    let settings = std::fs::read_to_string(sandbox.config_path("")).expect("settings");
+    assert!(!settings.contains("team:core"), "{settings}");
+    assert!(!settings.contains("owner:me"), "{settings}");
 }

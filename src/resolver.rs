@@ -2006,22 +2006,52 @@ pub fn snapshot_with_table(
     let mut warnings = session_warnings;
     warnings.extend(raw_warnings.iter().cloned());
     let mut configured = Settings::from_table(&raw_table, warnings);
+    // Two overlays live in the plugin's own app dir, one level above the session:
+    // the AoE-wide default and the project's default. They are read here, once,
+    // and folded in without touching the settings' file. `tags.toml` is written
+    // by the dashboard's LLM Tags panel; the session layer below is written by
+    // the page and the `tag` command.
+    let levels = match settings::app_dir(env) {
+        Ok(app_dir) => {
+            let (levels, level_warnings) = crate::levels::load(&app_dir);
+            configured.warnings.extend(level_warnings);
+            Some((app_dir, levels))
+        }
+        Err(message) => {
+            configured.warnings.push(format!(
+                "levels: {message}; no project or AoE tags are read"
+            ));
+            None
+        }
+    };
+    // The AoE default sits under the repository's file: a checkout's declaration
+    // is more specific than an operator-wide default.
+    if let Some((_, levels)) = &levels {
+        crate::levels::apply_aoe(&mut configured, &levels.aoe);
+    }
     // A repo declares its own tags in a JSON file named by `tags_file`. They are
     // merged before the session's edits, so a session can still replace or drop
     // one, and they sit in front of the settings `tags` because the repository is
     // the more specific declaration.
     apply_tags_file(&mut configured, &facts.path);
+    // A project's panel entry is more specific than the checkout, and less
+    // specific than the session's own edits applied just below.
+    if let Some((_, levels)) = &levels {
+        crate::levels::apply_project(&mut configured, levels.project(&facts.path));
+    }
     // A session's own edits (the UI page and the `tag` command write them) are
     // applied here, once, so the hook, `status`, `doctor` and the worker all see
     // the same tags. They live in the session's directory, never the config, and
     // `apply` puts them in front of everything inherited: a tag typed for this
     // session is the most specific thing there is.
     if !facts.id.is_empty() {
-        match settings::app_dir(env) {
-            Ok(app_dir) => crate::session_tags::apply(&mut configured, &app_dir, &facts.id),
-            Err(message) => configured
+        match &levels {
+            Some((app_dir, _)) => {
+                crate::session_tags::apply(&mut configured, app_dir, &facts.id);
+            }
+            None => configured
                 .warnings
-                .push(format!("overrides: {message}; no session edits are read")),
+                .push("overrides: no app dir; no session edits are read".to_string()),
         }
     }
     warn_if_tags_overflow(&mut configured);

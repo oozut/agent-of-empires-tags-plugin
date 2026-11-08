@@ -1,11 +1,13 @@
 <!doctype html>
 <!--
-  LLM Tags — per-session editor.
+  LLM Tags — session details.
 
-  This page is the only UI that writes anything, and everything it writes lands in
-  `<app dir>/sessions/<session id>/overrides.toml`. The global settings are read by
-  the worker and never rewritten here, so two sessions can carry different tags
-  without a rule or a config edit between them.
+  Tags are edited in the dashboard's LLM Tags panel, which opens on the session and
+  has one section for the session, one for its project and one for every session.
+  This page only holds what a row cannot: the session's literal token and the
+  harness extension approvals. Everything it writes lands in
+  `<app dir>/sessions/<session id>/overrides.toml` or in that harness's config;
+  the plugin's settings are never rewritten.
 
   It is served from the manifest's `entry`, so it is one self-contained file: a
   sandboxed document with no network access, whose only data path is the bridge.
@@ -73,12 +75,10 @@
   <body>
     <h1>LLM Tags</h1>
     <p class="lead">
-      Tags are resolved once and delivered to every enabled target. Editing here changes
-      <strong>one session</strong>: the entry is written to that session's own
-      <span class="mono">overrides.toml</span> and the global settings are left alone.
-      A value or a target template may be a reference — <span class="mono">{git.branch}</span>,
-      <span class="mono">{project_slug}</span> — and the dropdown below lists every one this
-      build understands.
+      This page is the session's detail view. Tags are chosen in the
+      <strong>LLM Tags panel</strong> on the right: it opens on this session and carries the
+      same controls for the project and for every session. The token below is the one value
+      a row cannot hold, and it stays in this session's file.
     </p>
 
     <div id="banner"></div>
@@ -94,58 +94,6 @@
           <span id="sessionsub" class="note"></span>
         </div>
       </div>
-    </div>
-
-    <h2>Activity</h2>
-    <div class="card">
-      <p class="note">
-        What this session is doing — <span class="mono">activity:code</span>, and one of a closed
-        list so the badge and the icon are always the same. It travels as a normal tag, so any
-        target carries it, and a running session that has an approved harness extension sends it
-        on its next request.
-      </p>
-      <div class="row" id="activities" style="flex-wrap: wrap; gap: 6px"></div>
-      <p class="note" id="activitysub"></p>
-    </div>
-
-    <h2>Tags</h2>
-    <div class="card">
-      <table id="tags"><tbody></tbody></table>
-      <p class="note" id="tagsub"></p>
-      <div class="row" style="margin-top: 12px">
-        <div class="grow">
-          <label for="key">Key</label>
-          <input id="key" placeholder="team" autocomplete="off" spellcheck="false" />
-        </div>
-        <div class="grow">
-          <label for="value">Value</label>
-          <input id="value" placeholder="platform" autocomplete="off" spellcheck="false" />
-        </div>
-        <div>
-          <label>&nbsp;</label>
-          <button id="add" class="primary">Set for this session</button>
-        </div>
-      </div>
-      <div class="row" style="margin-top: 12px">
-        <div class="grow">
-          <label for="reference">Insert a reference</label>
-          <select id="reference" style="width: 100%"></select>
-        </div>
-        <div class="grow">
-          <label>&nbsp;</label>
-          <label class="tick">
-            <input type="checkbox" id="gitpreset" />
-            <span id="gitpresetlabel">Add standard git information</span>
-          </label>
-        </div>
-      </div>
-      <p class="note" id="presetsub"></p>
-      <p class="note">
-        A value is sent as a string. Leave it empty for a marker (<span class="mono">true</span>).
-        A value may hold a reference: <span class="mono">git.branch:{git.branch}</span> puts the
-        branch in the tag set itself. Use the CLI for a typed value:
-        <span class="mono">aoe-llm-tags tag --set 'cost:=1.5'</span>.
-      </p>
     </div>
 
     <h2>Token</h2>
@@ -240,10 +188,6 @@
       let sessions = [];
       let selected = null;
       let context = { readOnly: false, cityhall: false };
-      // Fed by the worker from the resolver's one catalogue: a reference can never
-      // be offered here and unknown to the renderer.
-      let references = [];
-      let presets = [];
       // One row per harness that could take an extension, as the worker resolves it:
       // the page renders the verdict, it never decides one.
       let extensions = [];
@@ -268,21 +212,6 @@
         render();
       }
 
-      function formatValue(tag) {
-        if (tag.value === true) return "true";
-        if (tag.value === null) return "null";
-        if (typeof tag.value === "string") return tag.value;
-        return JSON.stringify(tag.value);
-      }
-
-      // A preset counts as applied when every key it sets is present for the
-      // session, whether it came from the settings or from this session's file.
-      function presetApplied(session, preset) {
-        const keys = (preset.tags || []).map((entry) => String(entry).split(":")[0]);
-        const have = new Set((session.tags || []).map((tag) => tag.key));
-        return keys.length > 0 && keys.every((key) => have.has(key));
-      }
-
       function shortSha(sha) {
         return sha ? `${sha.slice(0, 12)}…` : "";
       }
@@ -298,27 +227,6 @@
             setTimeout(refresh, 600);
           })
           .catch((err) => banner(String(err.message || err), true));
-      }
-
-      function renderActivities(session) {
-        const host = document.getElementById("activities");
-        host.innerHTML = "";
-        const canWrite = !!session && !context.readOnly && !context.cityhall;
-        const current = session && session.activity ? session.activity.key : null;
-        for (const activity of activities) {
-          const button = document.createElement("button");
-          button.className = activity.key === current ? "primary" : "quiet";
-          // Web gets the icon name; the label is what a terminal shows, and what
-          // the badge falls back to. The host renders `icon`, not this page.
-          button.textContent = `${activity.label}`;
-          button.title = `activity:${activity.key} — icon ${activity.icon}`;
-          button.disabled = !canWrite;
-          button.onclick = () => edit("tag.set", { key: "activity", value: activity.key });
-          host.appendChild(button);
-        }
-        document.getElementById("activitysub").textContent = current
-          ? `This session says activity:${current}. Click another to change it.`
-          : "This session has not said what it is doing.";
       }
 
       function renderExtensions() {
@@ -398,43 +306,6 @@
         }
       }
 
-      function renderReferences() {
-        const selectEl = document.getElementById("reference");
-        selectEl.innerHTML = "";
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = references.length ? "Insert a reference…" : "No references available";
-        selectEl.appendChild(placeholder);
-        const groups = new Map();
-        for (const item of references) {
-          const name = item.group || "Other";
-          if (!groups.has(name)) {
-            const group = document.createElement("optgroup");
-            group.label = name;
-            groups.set(name, group);
-            selectEl.appendChild(group);
-          }
-          const option = document.createElement("option");
-          option.value = item.reference || `{${item.name}}`;
-          option.textContent = option.value;
-          option.title = item.description || "";
-          groups.get(name).appendChild(option);
-        }
-        selectEl.disabled = !references.length;
-      }
-
-      // Put the token where the caret is, so a key/value pair can be composed
-      // without retyping what is already in the field.
-      function insertReference(reference) {
-        const input = document.getElementById("value");
-        const start = input.selectionStart ?? input.value.length;
-        const end = input.selectionEnd ?? start;
-        input.value = input.value.slice(0, start) + reference + input.value.slice(end);
-        const caret = start + reference.length;
-        input.focus();
-        input.setSelectionRange(caret, caret);
-      }
-
       function render() {
         const session = current();
         const selectEl = document.getElementById("session");
@@ -447,33 +318,12 @@
         }
         if (session) selectEl.value = session.id;
 
-        const body = document.querySelector("#tags tbody");
-        body.innerHTML = "";
         const targetsBody = document.querySelector("#targets tbody");
         targetsBody.innerHTML = "";
-        document.getElementById("tagsub").textContent = "";
         document.getElementById("targetsub").textContent = "";
         document.getElementById("sessionsub").textContent = "";
 
-        document.getElementById("add").disabled = !session || context.readOnly || context.cityhall;
-        renderReferences();
         renderExtensions();
-        renderActivities(session);
-        const preset = presets[0];
-        const box = document.getElementById("gitpreset");
-        const canWrite = !!session && !context.readOnly && !context.cityhall;
-        if (preset) {
-          document.getElementById("gitpresetlabel").textContent = preset.label || preset.id;
-          box.checked = !!session && presetApplied(session, preset);
-          box.disabled = !canWrite;
-          document.getElementById("presetsub").textContent = (preset.tags || []).length
-            ? `Ticking this writes ${preset.tags.join(", ")} for this session.`
-            : "";
-        } else {
-          box.checked = false;
-          box.disabled = true;
-          document.getElementById("presetsub").textContent = "";
-        }
         document.getElementById("savetoken").disabled = !session || context.readOnly || context.cityhall;
         document.getElementById("cleartoken").disabled = !session || context.readOnly || context.cityhall;
         document.getElementById("reset").disabled = !session || context.readOnly || context.cityhall;
@@ -494,49 +344,6 @@
 
         document.getElementById("sessionsub").textContent = session.path || "";
         document.getElementById("sessionsub").className = "note mono";
-
-        for (const tag of session.tags || []) {
-          const tr = document.createElement("tr");
-          const key = document.createElement("td");
-          key.className = "key mono";
-          key.textContent = tag.key;
-          const value = document.createElement("td");
-          value.className = "mono";
-          value.textContent = formatValue(tag);
-          const origin = document.createElement("td");
-          origin.innerHTML = "";
-          const pill = document.createElement("span");
-          pill.className = "pill" + (tag.origin === "session" ? " session" : "");
-          pill.textContent = tag.origin === "session" ? "this session" : "settings";
-          origin.appendChild(pill);
-          const act = document.createElement("td");
-          act.className = "act";
-          const drop = document.createElement("button");
-          drop.className = "quiet danger";
-          drop.textContent = "Drop";
-          drop.title =
-            tag.origin === "session"
-              ? "Remove this session's entry"
-              : "Hide this tag for this session (the settings keep it)";
-          drop.disabled = context.readOnly || context.cityhall;
-          drop.onclick = () => edit("tag.remove", { key: tag.key });
-          act.appendChild(drop);
-          tr.append(key, value, origin, act);
-          body.appendChild(tr);
-        }
-        if (!(session.tags || []).length) {
-          const tr = document.createElement("tr");
-          const td = document.createElement("td");
-          td.colSpan = 4;
-          td.className = "note";
-          td.textContent = "No tags: the settings have none and this session adds none.";
-          tr.appendChild(td);
-          body.appendChild(tr);
-        }
-        const parts = [];
-        if ((session.unset || []).length) parts.push(`dropped here: ${session.unset.join(", ")}`);
-        if (session.token_set) parts.push("a token override is in place");
-        document.getElementById("tagsub").textContent = parts.join(" · ");
 
         for (const target of session.targets || []) {
           const tr = document.createElement("tr");
@@ -590,10 +397,7 @@
           const ours = list.find((e) => e.plugin_id === PLUGIN && e.slot === "page" && e.id === PAGE);
           const payload = (ours && ours.payload) || {};
           sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
-          references = Array.isArray(payload.references) ? payload.references : [];
-          presets = Array.isArray(payload.presets) ? payload.presets : [];
           extensions = Array.isArray(payload.extensions) ? payload.extensions : [];
-          activities = Array.isArray(payload.activities) ? payload.activities : [];
           if (!sessions.some((s) => s.id === selected)) selected = sessions[0] ? sessions[0].id : null;
           render();
         } catch (err) {
@@ -602,15 +406,6 @@
       }
 
       document.getElementById("session").onchange = (event) => select(event.target.value);
-      document.getElementById("add").onclick = () => {
-        const key = document.getElementById("key").value.trim();
-        const value = document.getElementById("value").value;
-        if (!key) return banner("A tag needs a key.", true);
-        if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(key)) return banner("A key starts with a letter or digit.", true);
-        edit("tag.set", { key, value });
-        document.getElementById("key").value = "";
-        document.getElementById("value").value = "";
-      };
       document.getElementById("savetoken").onclick = () => {
         const box = document.getElementById("token");
         const sent = edit("token.set", { token: box.value });
@@ -619,15 +414,6 @@
         return sent;
       };
       document.getElementById("cleartoken").onclick = () => edit("token.clear", {});
-      document.getElementById("reference").onchange = (event) => {
-        if (event.target.value) insertReference(event.target.value);
-        event.target.value = "";
-      };
-      document.getElementById("gitpreset").onchange = (event) => {
-        const preset = presets[0];
-        if (!preset) return;
-        edit("tag.preset", { preset: preset.id, applied: event.target.checked });
-      };
       document.getElementById("reset").onclick = () => {
         if (!confirm("Forget every edit this session has?")) return;
         edit("tags.reset", {});
