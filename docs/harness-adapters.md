@@ -584,6 +584,10 @@ then deletes the file itself *if the block was alone in it* — a file the user 
 survives with their text restored exactly. A skill directory without the managed marker is
 somebody's own and is never overwritten: approval is not a licence to take over another skill.
 
+Removal leaves a skill directory that carries AoE's propagation marker (`.aoe-managed.json`)
+where it is, and reports it as kept: `aoe skill sync` deployed that copy, so AoE is the one that
+retires it. See `docs/install.md` §6 for the two systems' overlap.
+
 Because AoE's own skill list scans the harness roots it knows (`claude-user`, `gemini-user`,
 `opencode-user`, `agents-standard`), a user-scope install can show up there as an *external* skill
 as well as under `aoe-managed`: two entries, one file the plugin owns and one a copy in a harness's

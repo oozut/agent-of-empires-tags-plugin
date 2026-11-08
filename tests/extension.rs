@@ -626,6 +626,109 @@ fn the_users_own_instruction_file_is_kept_and_restored() {
     );
 }
 
+/// A copy `aoe skill sync` deployed belongs to AoE: its propagation marker is
+/// `marker_at`'s evidence that AoE, not this plugin, tracks that directory. A
+/// disable removes the reminder and leaves the skill to AoE, and says so — a
+/// disable that silently deleted another manager's file would be worse than one
+/// that explains itself.
+#[test]
+fn a_skill_copy_aoe_has_taken_over_is_left_to_aoe() {
+    let sandbox = Sandbox::new();
+    let row = user_scope_row();
+    let harness = row.agent.clone();
+    sandbox.write_config(&settings_config(
+        &format!("harness_extension = [\"{harness}\"]\n"),
+        "",
+    ));
+    approve_any(&sandbox, &harness);
+
+    let skill_dir = sandbox.path(&format!(
+        "home/{}/{}",
+        row.user_skill_root.trim_start_matches("~/"),
+        llm_tags::harness_extension::skill_dir(&row)
+    ));
+    let skill = skill_dir.join("SKILL.md");
+    assert!(skill.is_file(), "the skill was not installed: {skill:?}");
+    // What AoE leaves behind after `aoe skill sync --replace`.
+    sandbox.write_file(
+        &skill_dir.join(llm_tags::harness_extension::AOE_PROPAGATION_MARKER),
+        r#"{"version":1,"root":"x","directory":"aoe-activity","digest":"sha256:0"}"#,
+    );
+
+    let disabled = sandbox.run(&["extension", "disable", &harness]);
+    disabled.assert_ok();
+    assert!(
+        skill.is_file(),
+        "a disable deleted a copy AoE had taken over"
+    );
+    assert!(
+        disabled.stdout.contains("kept:") && disabled.stdout.contains("aoe skill sync"),
+        "the disable did not say the skill stayed, or why: {}",
+        disabled.stdout
+    );
+
+    // The reminder is still ours, and still goes.
+    let reminder = sandbox.path(&format!(
+        "home/{}",
+        row.user_instructions.trim_start_matches("~/")
+    ));
+    let body = std::fs::read_to_string(&reminder).unwrap_or_default();
+    assert!(
+        !body.contains("aoe-llm-tags:begin"),
+        "the marker block survived a disable: {body}"
+    );
+}
+
+/// A second approval of unchanged carriers writes nothing: rewriting identical
+/// bytes only churns the timestamp, and on a copy AoE propagated it reads as an
+/// edit AoE then has to preserve.
+#[test]
+fn approving_again_does_not_rewrite_files_that_are_already_right() {
+    let sandbox = Sandbox::new();
+    let row = user_scope_row();
+    let harness = row.agent.clone();
+    sandbox.write_config(&settings_config(
+        &format!("harness_extension = [\"{harness}\"]\n"),
+        "",
+    ));
+    approve_any(&sandbox, &harness);
+
+    let skill = sandbox.path(&format!(
+        "home/{}/{}/SKILL.md",
+        row.user_skill_root.trim_start_matches("~/"),
+        llm_tags::harness_extension::skill_dir(&row)
+    ));
+    let first = std::fs::metadata(&skill)
+        .and_then(|meta| meta.modified())
+        .expect("the skill's timestamp");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    approve_any(&sandbox, &harness);
+    let second = std::fs::metadata(&skill)
+        .and_then(|meta| meta.modified())
+        .expect("the skill's timestamp");
+    assert_eq!(
+        first, second,
+        "a second approval rewrote a file that was already right"
+    );
+
+    // And the guard is not a refusal to ever write: a copy that is no longer the
+    // bytes this build ships is put right, timestamp and all.
+    std::fs::write(
+        &skill,
+        format!("stale\n{}\n", llm_tags::harness_extension::MANAGED_MARKER),
+    )
+    .expect("make it stale");
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    approve_any(&sandbox, &harness);
+    let third = std::fs::metadata(&skill)
+        .and_then(|meta| meta.modified())
+        .expect("the skill's timestamp");
+    assert_ne!(second, third, "a stale skill was left stale");
+    assert!(std::fs::read_to_string(&skill)
+        .expect("the skill")
+        .contains(llm_tags::harness_extension::MANAGED_MARKER));
+}
+
 /// Every row that carries anything has a destination that exists, an artefact
 /// this build ships and a digest — the property that makes "works for all the
 /// harnesses" a check rather than a claim.

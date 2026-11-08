@@ -911,11 +911,11 @@ fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
                 adapter,
             );
             match result {
-                Ok(false) => {
+                Ok(revoked) if !revoked.had_receipt => {
                     warn(&format!("{} had no approval to revoke", adapter.agent));
                     EXIT_OK
                 }
-                Ok(true) => {
+                Ok(revoked) => {
                     if json {
                         println!(
                             "{}",
@@ -923,6 +923,15 @@ fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
                                 "revoked": adapter.agent,
                                 "receipt": crate::harness_extension::receipt_path(&app_dir)
                                     .display().to_string(),
+                                "removed": revoked.removed.iter()
+                                    .map(|path| path.display().to_string())
+                                    .collect::<Vec<_>>(),
+                                "kept": revoked.kept.iter()
+                                    .map(|(path, why)| serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "why": why,
+                                    }))
+                                    .collect::<Vec<_>>(),
                             })
                         );
                     } else {
@@ -938,6 +947,11 @@ fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
                              `{}` in the settings are the user's to remove.",
                             crate::harness_extension::SETTING
                         );
+                        // Say what stayed, and why, rather than letting a user find a
+                        // directory they expected to be gone.
+                        for (path, why) in &revoked.kept {
+                            println!("kept: {} ({why})", path.display());
+                        }
                     }
                     EXIT_OK
                 }

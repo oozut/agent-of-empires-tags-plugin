@@ -236,7 +236,7 @@ launch, `activity` listed as a plain tag) rather than a fourth spelling of "test
 | `bundle digest` | sha256 over `carrier:<scope>\n` then `<disclosed path>\n<sha256 of file>\n` per artefact, disclosure order | what a receipt pins; adding, moving or rewording a file asks for a fresh approval, because where it goes is part of the grant |
 | `managed skill` | `<app dir>/skills/aoe-activity/SKILL.md` | AoE's own skill store, so the skill is listed on the Skills page; written at approval, removed at `disable`, and never overwriting a copy without `MANAGED_MARKER` |
 | user-scope block | `MANAGED_MARKER`, `BLOCK_BEGIN` (`<!-- aoe-llm-tags:begin -->`), `BLOCK_END` (`<!-- aoe-llm-tags:end -->`) | the only span of a user's file this plugin writes; `strip_block` restores the rest exactly, and a file the block was alone in is deleted on removal |
-| `managed skill` | `<app dir>/skills/aoe-activity/SKILL.md` | AoE's own skill store, so the skill is listed on the Skills page; written at approval, removed at `disable`, and never overwriting a copy without `MANAGED_MARKER` |
+| `AOE_PROPAGATION_MARKER` | `.aoe-managed.json` | AoE's marker inside a copy `aoe skill sync` deployed; its presence means the copy is AoE's, so a `disable` leaves the directory and prints `kept:` instead of deleting it |
 
 ## 9. Discovery and config edits (M2)
 

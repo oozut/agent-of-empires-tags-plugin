@@ -163,7 +163,14 @@ impl Host {
         };
         let home = crate::harness_extension::home();
         let result = if command == "extension.disable" {
-            crate::harness_extension::revoke(&app_dir, home.as_deref(), adapter).map(|_| ())
+            crate::harness_extension::revoke(&app_dir, home.as_deref(), adapter).map(|revoked| {
+                // The page has no terminal: a copy left to AoE is reported here,
+                // because a user who clicks disable and then finds the directory
+                // still there deserves the reason.
+                for (path, why) in &revoked.kept {
+                    eprintln!("kept: {} ({why})", path.display());
+                }
+            })
         } else {
             let Some(carrier) = crate::harness_extension::carrier(adapter) else {
                 eprintln!(

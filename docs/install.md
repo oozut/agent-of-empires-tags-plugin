@@ -176,6 +176,28 @@ Both scopes also write the skill into AoE's managed store, so the Skills page li
 shows up there a second time as an *external* skill: two rows, one file the plugin owns and one the
 agent reads.
 
+### The same directories `aoe skill sync` writes
+
+AoE's own skill system knows a skills root for six agents (`claude-user`, `agents-standard`,
+`gemini-user`, `opencode-user`, `kimi-legacy`, `prime-agent-user`) and deploys managed skills into
+them when you ask it to. Some of those roots are the ones this plugin uses, so the two can meet:
+
+- `aoe skill sync` reports our copy as `conflict — a skill AoE does not manage already exists here`.
+  That is AoE saying what is true: the directory is ours, and AoE will not adopt it without being
+  told to. `aoe skill sync --replace aoe-activity` hands it over; from then on AoE tracks it, and
+  our next approval rewrites the same bytes (AoE then reports `unchanged`).
+- If a later plugin version ships different bytes, our approval writes them and AoE reports the
+  copy as `drifted — the propagated copy was edited in place; preserving it`. Nothing is lost; AoE
+  simply stops updating that copy. `--replace aoe-activity` gives it back to AoE.
+- `extension disable` removes the reminder from the instruction file, but leaves a skill directory
+  that carries AoE's own `.aoe-managed.json` marker where it is, and prints `kept: …` with the
+  reason. AoE retires it at its next `aoe skill sync` (reported as `removed`), because the managed
+  skill it came from is gone. A directory this plugin wrote (no AoE marker) is deleted, as before.
+
+The reverse direction is not available to us: a plugin host cannot call AoE's `skills.*` methods (it
+has no such RPC) and AoE does not deploy anything automatically, so this plugin writes its carriers
+itself rather than waiting for a sync that may never run.
+
 The hook reads one JSON file this plugin writes (`live.json`: the session's tags and its current
 activity) and sets the headers from it. The skill tells the agent to run `aoe-llm-tags activity
 <word>`, which writes nothing but this session's own tag. Neither reads your prompts, transcript,

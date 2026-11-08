@@ -52,7 +52,7 @@ pub const RECEIPT_FILE: &str = "harness-extension.toml";
 /// [`disclosure`] changes in a way a user should see again — every receipt with
 /// an older number stops being enough, and the file the user approves is the
 /// same file.
-pub const DISCLOSURE_VERSION: u32 = 3;
+pub const DISCLOSURE_VERSION: u32 = 4;
 
 /// The default file name inside the harness's extension directory. A row may
 /// override it; the name is ours so it can be recognised and removed.
@@ -86,6 +86,14 @@ pub const MANAGED_MARKER: &str = "<!-- aoe-llm-tags: managed skill -->";
 /// them is left byte-for-byte alone, and removal deletes exactly the span.
 pub const BLOCK_BEGIN: &str = "<!-- aoe-llm-tags:begin -->";
 pub const BLOCK_END: &str = "<!-- aoe-llm-tags:end -->";
+
+/// The marker AoE writes inside a skill copy it deployed with `aoe skill sync`.
+///
+/// Its presence means the copy in a harness's skills root is AoE's, not ours:
+/// our approval may have written the bytes, but AoE now tracks that directory
+/// and will remove it when its own source disappears. Deleting it would be us
+/// deleting AoE's file, so removal leaves it and says so.
+pub const AOE_PROPAGATION_MARKER: &str = ".aoe-managed.json";
 
 /// Where a row's carriers go.
 ///
@@ -464,30 +472,48 @@ pub fn accept(
     Ok(receipt)
 }
 
-/// Forget one harness's approval. Returns whether there was one.
-pub fn revoke(app_dir: &Path, home: Option<&Path>, adapter: &Adapter) -> Result<bool, String> {
+/// What taking one approval back changed, so the caller can say it out loud
+/// instead of guessing.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Revoked {
+    /// This harness had an approval, so something was revoked.
+    pub had_receipt: bool,
+    /// Paths this plugin removed.
+    pub removed: Vec<std::path::PathBuf>,
+    /// Paths left in place, each with its reason.
+    pub kept: Vec<(std::path::PathBuf, String)>,
+}
+
+/// Forget one harness's approval.
+pub fn revoke(app_dir: &Path, home: Option<&Path>, adapter: &Adapter) -> Result<Revoked, String> {
     let harness = adapter.agent.as_str();
+    let mut revoked = Revoked::default();
     // The managed entry is the discoverable copy, so it goes with the approval.
     let _ = remove_managed_skill(app_dir, adapter);
     // And so does anything this approval put in the user's own config. A
-    // revoke that left a skill behind would be a revocation in name only.
+    // revoke that left a skill behind would be a revocation in name only —
+    // except where AoE has taken that copy over, which `remove_user` reports.
     if let Some(home) = home {
         if carrier(adapter) == Some(Carrier::User) {
-            let _ = remove_user(home, adapter);
+            if let Ok(removal) = remove_user(home, adapter) {
+                revoked.removed = removal.removed;
+                revoked.kept = removal.kept;
+            }
         }
     }
     let (mut all, _) = receipts(app_dir);
     if all.remove(harness).is_none() {
-        return Ok(false);
+        return Ok(revoked);
     }
+    revoked.had_receipt = true;
     let path = receipt_path(app_dir);
     if all.is_empty() {
         let _ = std::fs::remove_file(&path);
-        return Ok(true);
+        return Ok(revoked);
     }
     crate::private::write_atomic(&path, &render_receipts(&all))
         .map_err(|err| format!("{} could not be written: {err}", path.display()))?;
-    Ok(true)
+    Ok(revoked)
 }
 
 fn render_receipts(all: &BTreeMap<String, Receipt>) -> String {
@@ -829,7 +855,17 @@ pub fn install_user(home: &Path, adapter: &Adapter) -> Result<Vec<PathBuf>, Stri
                 skill.artifact.display()
             ));
         };
-        write_carrier(&path, &text)?;
+        // Rewriting identical bytes would only churn the file's timestamp — and
+        // on a copy `aoe skill sync` deployed, it would look like an edit AoE has
+        // to preserve. Leave what is already right where it is.
+        let current = match std::fs::read_to_string(&path) {
+            Ok(text) => Some(text),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(format!("{} could not be read: {err}", path.display())),
+        };
+        if current.as_deref() != Some(text.as_str()) {
+            write_carrier(&path, &text)?;
+        }
         written.push(path);
     }
     if let Some(instructions) = &bundle.instructions {
@@ -845,25 +881,52 @@ pub fn install_user(home: &Path, adapter: &Adapter) -> Result<Vec<PathBuf>, Stri
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => return Err(format!("{} could not be read: {err}", path.display())),
         };
-        write_carrier(&path, &upsert_block(&existing, source))?;
+        let next = upsert_block(&existing, source);
+        if next != existing {
+            write_carrier(&path, &next)?;
+        }
         written.push(path);
     }
     Ok(written)
 }
 
+/// What taking one carrier back out of the user's own config did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Removal {
+    /// Paths this plugin removed.
+    pub removed: Vec<PathBuf>,
+    /// Paths it left in place, each with the reason, so a user is told rather
+    /// than left wondering why a directory is still there.
+    pub kept: Vec<(PathBuf, String)>,
+}
+
 /// Take the carriers back out of the user's own config. Returns the paths it
 /// changed: our skill directory, and the reminder's file when the block was the
 /// only thing in it (or the file itself when it was not).
-pub fn remove_user(home: &Path, adapter: &Adapter) -> Result<Vec<PathBuf>, String> {
+///
+/// A skill directory AoE has taken over (it carries
+/// [`AOE_PROPAGATION_MARKER`]) is left where it is: AoE removes it when the
+/// managed skill it came from goes away, and a plugin does not get to delete
+/// another manager's file.
+pub fn remove_user(home: &Path, adapter: &Adapter) -> Result<Removal, String> {
     let bundle = bundle(adapter, Carrier::User);
-    let mut touched = Vec::new();
+    let mut touched = Removal::default();
     if let Some(skill) = &bundle.skill {
         let path = skill.target(home);
         if path.symlink_metadata().is_ok() && owned_skill(&path) {
             if let Some(dir) = path.parent() {
-                std::fs::remove_dir_all(dir)
-                    .map_err(|err| format!("{} could not be removed: {err}", dir.display()))?;
-                touched.push(path);
+                if propagated_by_aoe(dir) {
+                    touched.kept.push((
+                        path.clone(),
+                        "`aoe skill sync` deployed this copy and tracks it, so AoE removes it at \
+                         its next sync"
+                            .to_string(),
+                    ));
+                } else {
+                    std::fs::remove_dir_all(dir)
+                        .map_err(|err| format!("{} could not be removed: {err}", dir.display()))?;
+                    touched.removed.push(path);
+                }
             }
         }
     }
@@ -876,13 +939,19 @@ pub fn remove_user(home: &Path, adapter: &Adapter) -> Result<Vec<PathBuf>, Strin
         if rest.trim().is_empty() {
             std::fs::remove_file(&path)
                 .map_err(|err| format!("{} could not be removed: {err}", path.display()))?;
-            touched.push(path);
+            touched.removed.push(path);
         } else if rest != existing {
             write_carrier(&path, &format!("{}\n", rest.trim_end()))?;
-            touched.push(path);
+            touched.removed.push(path);
         }
     }
     Ok(touched)
+}
+
+/// Whether AoE's own propagation marker sits in `dir`. AoE comes first, so the
+/// copy is AoE's to remove.
+fn propagated_by_aoe(dir: &Path) -> bool {
+    dir.join(AOE_PROPAGATION_MARKER).symlink_metadata().is_ok()
 }
 
 /// Whether the file at `path` is this plugin's own skill copy: it carries the
@@ -1298,12 +1367,19 @@ pub fn disclosure(plan: &Plan, harness_version: &str) -> String {
                      carry."
                 ),
             };
+            // A copy `aoe skill sync` deployed belongs to AoE, and a disable
+            // that deleted it would be a disable that broke AoE's bookkeeping.
+            // Say what happens instead of promising a deletion and not doing it.
             let undo = match (skill, reminder) {
                 (true, true) => {
-                    "deletes the skill\ndirectory and the block between the markers, \
-                                 leaving the rest of each file as it was,"
+                    "deletes the skill\ndirectory (a copy `aoe skill sync` has taken over is \
+                                 left to AoE) and the block\nbetween the markers, leaving the \
+                                 rest of each file as it was,"
                 }
-                (true, false) => "deletes the skill\ndirectory,",
+                (true, false) => {
+                    "deletes the skill\ndirectory (a copy `aoe skill sync` has taken over is \
+                                 left to AoE),"
+                }
                 _ => {
                     "removes the block between\nthe markers, leaving the rest of the file as it \
                       was,"
@@ -1489,13 +1565,14 @@ mod tests {
             managed: None,
         };
         let text = disclosure(&plan, "1.2.3");
+        let version = format!("v{DISCLOSURE_VERSION}");
         for needle in [
             "example",
             "<session config>/extensions/aoe-llm-tags.ts",
             &"b".repeat(64),
             "extension disable example",
             "does not: read your prompts",
-            "v3",
+            version.as_str(),
             "1.2.3",
         ] {
             assert!(
@@ -1558,8 +1635,16 @@ mod tests {
         accept(&dir, Some(&home), &other, &"d".repeat(64), "").expect("accept other");
         let (all, _) = receipts(&dir);
         assert_eq!(all.len(), 2);
-        assert!(revoke(&dir, Some(&home), &session_row()).expect("revoke"));
-        assert!(!revoke(&dir, Some(&home), &session_row()).expect("revoke twice"));
+        assert!(
+            revoke(&dir, Some(&home), &session_row())
+                .expect("revoke")
+                .had_receipt
+        );
+        assert!(
+            !revoke(&dir, Some(&home), &session_row())
+                .expect("revoke twice")
+                .had_receipt
+        );
         let (all, _) = receipts(&dir);
         assert_eq!(all.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
@@ -1638,7 +1723,8 @@ mod tests {
         );
 
         let touched = remove_user(&home, &user_row()).expect("remove");
-        assert_eq!(touched.len(), 2);
+        assert_eq!(touched.removed.len(), 2);
+        assert!(touched.kept.is_empty(), "nothing AoE owns here");
         assert_eq!(
             std::fs::read_to_string(&theirs).expect("read"),
             "# my own rules\n\nbe brief\n",
