@@ -211,12 +211,16 @@ fn the_editor_page_exists_and_speaks_the_bridge_it_is_given() {
 fn the_page_fires_the_methods_the_worker_dispatches_on() {
     let page = std::fs::read_to_string("ui/tags.html").expect("ui/tags.html");
     let mut fired: Vec<String> = Vec::new();
-    let mut rest = page.as_str();
-    while let Some(start) = rest.find("edit(\"") {
-        let after = &rest[start + "edit(\"".len()..];
-        let end = after.find('"').expect("a closing quote");
-        fired.push(after[..end].to_string());
-        rest = &after[end..];
+    // `edit` is a session edit; `extensionAction` is the machine-wide pair, which
+    // deliberately has no session to send. Both reach the worker the same way.
+    for call in ["edit(\"", "extensionAction(\""] {
+        let mut rest = page.as_str();
+        while let Some(start) = rest.find(call) {
+            let after = &rest[start + call.len()..];
+            let end = after.find('"').expect("a closing quote");
+            fired.push(after[..end].to_string());
+            rest = &after[end..];
+        }
     }
     assert!(!fired.is_empty(), "the page fires no worker method");
     for method in &fired {
@@ -232,5 +236,82 @@ fn the_page_fires_the_methods_the_worker_dispatches_on() {
             fired.contains(&method.to_string()),
             "the worker dispatches {method:?} but the page never fires it"
         );
+    }
+}
+
+/// `docs/carrier-matrix.md` is what the page's labels are drawn from, so its
+/// host columns are checked against the table they describe. The sandbox columns
+/// are only checked where the answer is the plugin's own (a `session`-scope
+/// carrier is in a copy a container never opens); the rest depend on what aoe
+/// seeds, which this plugin does not own, and the document says so.
+#[test]
+fn the_carrier_matrix_matches_what_the_build_actually_places() {
+    use llm_tags::harness_extension::{bundle, carrier, Carrier};
+
+    const DOC: &str = "docs/carrier-matrix.md";
+    let text = std::fs::read_to_string(DOC).expect("docs/carrier-matrix.md");
+    let start = text.find("## The matrix").expect("the matrix section");
+    let body = &text[start..];
+    let end = body.find("## Why each cell").expect("the section end");
+
+    let mut cells: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for line in body[..end].lines() {
+        let line = line.trim();
+        if !line.starts_with("| `") {
+            continue;
+        }
+        let row: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+        assert_eq!(row.len(), 9, "a carrier row needs 9 cells: {line}");
+        cells.insert(
+            row[0].trim_matches('`').to_string(),
+            row[1..].iter().map(|cell| cell.to_string()).collect(),
+        );
+    }
+    assert!(!cells.is_empty(), "no matrix rows parsed from {DOC}");
+
+    let (rows, warnings) = llm_tags::adapters::load(None);
+    assert!(warnings.is_empty(), "{warnings:?}");
+    for row in &rows {
+        let Some(cell) = cells.get(&row.agent) else {
+            panic!("{} has no row in {DOC}", row.agent);
+        };
+        let placed = match carrier(row) {
+            Some(scope) => bundle(row, scope),
+            None => Default::default(),
+        };
+        let check = |index: usize, has: bool, what: &str| {
+            assert_eq!(
+                cell[index] == "✓",
+                has,
+                "{}: {DOC} says {:?} for {what}",
+                row.agent,
+                cell[index]
+            );
+        };
+        check(1, placed.skill.is_some(), "the activity skill on the host");
+        check(2, placed.instructions.is_some(), "the reminder on the host");
+        // An in-process extension is what makes a per-request value possible.
+        check(
+            3,
+            !row.extension_artifact.is_empty(),
+            "a per-request update",
+        );
+
+        // A session-scope carrier lives in the copy, and a container opens no
+        // copy: those cells are the plugin's own answer, not aoe's.
+        if carrier(row) == Some(Carrier::Session) {
+            for (index, what) in [
+                (5, "the skill in a sandbox"),
+                (6, "the reminder in a sandbox"),
+                (7, "a per-request update in a sandbox"),
+            ] {
+                check(index, false, what);
+            }
+        }
+        // A row that expands nothing can only be tagged from a copy, so a
+        // container has nowhere to read the value from.
+        if row.interpolates.is_empty() {
+            check(4, false, "the tag in a sandbox");
+        }
     }
 }

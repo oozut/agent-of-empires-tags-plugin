@@ -69,7 +69,7 @@ Verified in `/var/lib/aoe/agent-of-empires-worktrees/koreans`; treat these as th
 | stdout is parsed as env: `KEY=VALUE` per line, first `=` splits, key trimmed, invalid env keys dropped, later duplicate wins, **value not trimmed**, lines without `=` are ignored | `parse_env_kv_lines` | Print exactly `NAME=value`, one line per enabled header; never a trailing space; diagnostics go to stderr. |
 | Non-zero exit aborts the session start; stderr is included in the error | `run_env_minting_hooks` | Exit 0 always. A broken store must not be able to block a launch. |
 | No default hook timeout (`current_hook_timeout()` is `None` outside recovery) | `run_hook_output` | Our own 2 s bound is the only protection. |
-| Both keys get the same lifecycle env: `AOE_SESSION_ID`, `AOE_SESSION_TITLE`, `AOE_PROJECT_PATH`, `AOE_PROFILE`, `AOE_TOOL`, `AOE_GROUP_PATH`, plus `AOE_SESSION_BRANCH`/`AOE_REPO_SLUG` when applicable | `lifecycle_env_vars` | One command serves both. No substrate flag needed for the tag value. |
+| Both keys get the same lifecycle env: `AOE_SESSION_ID`, `AOE_SESSION_TITLE`, `AOE_PROJECT_PATH`, `AOE_PROFILE`, `AOE_TOOL`, `AOE_GROUP_PATH`, plus `AOE_SESSION_BRANCH`/`AOE_REPO_SLUG` when applicable | `lifecycle_env_vars` | One command serves both, and the tag value needs no flag — but nothing here says *which* substrate is starting, and delivery differs (a sandboxed launch cannot read the app dir), so the installed line carries `--substrate host`/`sandbox`. |
 | Structured **host** sessions get only id/profile/tool/project | `before_session_env` in `src/acp/supervisor/launch.rs` | `handle` has no `AOE_GROUP_PATH`/title there — resolve them from the row. |
 | `[host_hooks]` is global/profile only; profile arrays **replace** global arrays | `resolve_before_{start,session}_hooks`, `merge_configs` | A profile that sets its own `before_session` silently drops the global line. `doctor` must read the effective config, not just the global one. |
 | Plugin settings are an opaque `toml::Table` under `[plugins."<id>".settings]`, kept even while the plugin is disabled | `src/session/config/mod.rs` (`settings: toml::Table`) | M0 can hand-write settings before any UI exists; they will not be pruned. |
@@ -181,14 +181,21 @@ coverage, env-name derivation, disabled headers emitting nothing, missing settin
 
 ## Step 2 — the two hook lines
 
-This is the whole user-facing setup. Same command, both keys, one string each (`<app_dir>` is the
-aoe app directory — this host's value is in `reference-deployment.md`):
+This is the whole user-facing setup. One command, one string per key, differing only in
+`--substrate` (`<app_dir>` is the aoe app directory — this host's value is in
+`reference-deployment.md`):
 
 ```toml
 [host_hooks]
-before_session = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE" || true']
-before_start   = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE" || true']
+before_session = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE" --substrate host || true']
+before_start   = ['AOE_BIN=/usr/local/bin/aoe <app_dir>/plugins/dev.oozut.llm-tags/bin/aoe-llm-tags hook --session "$AOE_SESSION_ID" --profile "$AOE_PROFILE" --tool "$AOE_TOOL" --project "$AOE_PROJECT_PATH" --group "$AOE_GROUP_PATH" --title "$AOE_SESSION_TITLE" --substrate sandbox || true']
 ```
+
+The flag is not decoration: aoe runs the two keys for disjoint launches — `before_session` for a
+host launch, `before_start` for a sandboxed one — and gives the hook no other way to tell. A host
+launch gets this session's config copy and the variable pointing at it; a sandboxed launch gets
+the tag variables and no copy, because the container cannot see the app dir (§Sandboxed sessions
+in `harness-adapters.md`).
 
 The number of enabled headers does **not** change these lines: one command prints all of them.
 Only the static harness mapping grows, one line per header.

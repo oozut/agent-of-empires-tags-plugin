@@ -43,8 +43,8 @@ capability set, re-run with `--yes` to re-approve it without a prompt.
 It prints exactly three kinds of line and nothing else:
 
 ```
-before_session = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" …'
-before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" …'
+before_session = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" … --substrate host || true'
+before_start   = 'AOE_BIN="/usr/local/bin/aoe" "<install>/bin/aoe-llm-tags" hook --session "$AOE_SESSION_ID" … --substrate sandbox || true'
 <harness config> → providers.<id>.headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\"; [ -n \"$v\" ] && printf %s \"$v\" || printf %s {}"
 ```
 
@@ -55,10 +55,15 @@ breaking the first launch — including a launch the plugin never sees, from a p
 without such a `guard_fallback` keep the plain env reference. Paste the printed value as-is:
 for a JSON config the quotes inside a command value are already escaped.
 
-1. Put both `before_*` lines under `[host_hooks]` in `<app_dir>/config.toml`. Both keys, the same
-   string: `before_session` covers host sessions, `before_start` covers sandboxed ones. If the
-   profile has a `[host_hooks]` array of its own, it **replaces** the global one — put the lines in
-   the profile file too, or only there.
+1. Put both `before_*` lines under `[host_hooks]` in `<app_dir>/config.toml`. Both keys, one
+   string each, differing only in the trailing `--substrate host` / `--substrate sandbox`:
+   `before_session` covers host sessions, `before_start` covers sandboxed ones. The flag is how
+   the hook knows whether the per-session config copy it writes is readable by the harness — a
+   container cannot see this plugin's app dir, so a sandboxed launch gets the variables and no
+   copy (`harness-adapters.md` §Sandboxed sessions). `doctor` fails a `before_start` line that
+   declares neither, which is what an install from before the flag looks like: re-run
+   `setup --print` and paste the two lines again. If the profile has a `[host_hooks]` array of
+   its own, it **replaces** the global one — put the lines in the profile file too, or only there.
 2. Add the mapping line(s) to the harness config named, one line per enabled header, leaving the
    rest of that file alone. For `pi` that means `~/.pi/agent/models.json`,
    `providers.<id>.headers["X-AoE-Tags"] = "!v=\"${AOE_LLM_TAGS-}\"; …"` (copy the value the
@@ -97,6 +102,29 @@ arrival with the fixture in §5. Every `warn`/`fail` names the piece to fix.
 
 Exit codes: `0` all good (warnings allowed), `1` at least one check failed, `2` bad usage.
 
+`doctor` reads the config and the mapping. `tools/verify-install.sh` (from the plugin source) goes
+further and checks the installed copy against the host it sits in, printing `PASS`/`FAIL` per line
+and exiting non-zero on the first failure — the four things that go stale after an upgrade, a move
+or a half-finished edit:
+
+```sh
+tools/verify-install.sh                    # reads the default app dir and profile
+AOE_APP_DIR=~/.config/agent-of-empires tools/verify-install.sh
+```
+
+- the binaries and the artefacts an approval needs are present;
+- the grant carries `runtime.worker` and `session.read` and no `net`;
+- **both hook lines match what `setup --print` emits** — a line that predates `--substrate`, or one
+  that still points at a path this install no longer occupies, fails here rather than at the next
+  launch;
+- one host launch and one sandboxed launch, in throwaway homes: the host one writes this session's
+  copy and exports the override variable, the sandboxed one writes nothing under the app dir;
+- `doctor` reports `0 failed`.
+
+It writes nothing outside a temporary directory and starts no session, so it is safe on a live
+host. What it cannot tell you is whether a harness honours what was written — that needs the
+harness, and is `tools/probe-harness.sh <agent>` (§5).
+
 ## 4. See a value
 
 Inside a session (or with the variables exported by hand):
@@ -129,12 +157,141 @@ their evidence to `docs/harness-evidence/`. A worked example, with the exact com
 real `pi`, not a wrapper that regenerates its config; the fixture must answer streaming requests),
 is in `docs/reference-deployment.md` §Proof runs.
 
+## 6. Optional: let a running session report changes (advanced)
+
+Everything above is launch-scoped: the values are fixed when the session starts, because a harness
+reads its config once. If you edit a tag while a session runs, the next request still carries the
+old one until you relaunch — and a session that moves from planning to debugging says nothing about
+it.
+
+**This plugin can install two things into a harness to fix that.** It is off by default and it
+never happens unless you approve the exact set of files, by digest.
+
+1. a **skill** that tells the agent to keep the session's activity current, and
+2. the same one-line reminder in the harness's always-loaded instructions, because a skill the
+   model never opens changes nothing.
+
+Where those two go depends on the harness, and the difference is the whole consent model:
+
+| Scope | Harnesses | Where the files land |
+|---|---|---|
+| session copy | `pi`, `vibe` | inside the private config copy this plugin already builds per session — nothing of yours is touched. `pi` also gets the request hook (below); `vibe` does not have one |
+| your own config | `claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid`, `qwen`, `kiro` | inside your own harness config under your home directory: a skill directory of its own, and a block between two marker lines in the file the harness reads into every conversation |
+
+Those harnesses have no per-session config copy this plugin can write into, so a session's activity
+can only reach them through your own configuration. That is a wider reach than a session copy, and
+the disclosure for them says so in those words before anything is written.
+
+What a `pi` session gets, in plain words:
+
+| Where | What |
+|---|---|
+| `…/sessions/<id>/pi/extensions/aoe-llm-tags.ts` | the hook: pi loads it inside the agent process, with the agent's own permissions, and it sets the `X-AoE-*` headers before each model request |
+| `…/sessions/<id>/pi/skills/aoe-activity/SKILL.md` | a skill that tells the agent to keep the session's activity current as the work moves between phases |
+| `…/sessions/<id>/pi/APPEND_SYSTEM.md` | the same reminder in pi's always-loaded instructions |
+| `<app dir>/skills/aoe-activity/` | the same skill in AoE's managed store, so it shows on the Skills page and can be read, edited or deleted there |
+
+and what a user-scope harness gets, taking `claude` as the example:
+
+| Where | What |
+|---|---|
+| `~/.claude/skills/aoe-activity/SKILL.md` | the skill, in the directory claude looks for skills |
+| `~/.claude/CLAUDE.md` | the reminder, between `<!-- aoe-llm-tags:begin -->` and `<!-- aoe-llm-tags:end -->`. Your own rules in that file stay byte for byte: only the block is written, only the block is removed |
+| `<app dir>/skills/aoe-activity/` | the same skill in AoE's managed store |
+
+Both scopes also write the skill into AoE's managed store, so the Skills page lists it as
+`aoe-managed`. AoE scans the harness roots it knows, so on the user-scope rows the installed copy
+shows up there a second time as an *external* skill: two rows, one file the plugin owns and one the
+agent reads.
+
+The whole picture — which of the four carriers reaches which harness, on a host launch and in a
+container — is `docs/carrier-matrix.md`.
+
+### Sandboxed sessions
+
+A session that aoe runs in a container reads none of the session-scope carriers: its config copy
+lives under the app dir, which is not mounted into the container (`docs/harness-adapters.md`
+§Sandboxed sessions). So for `pi` and `vibe` a sandboxed launch carries the tag through the launch
+environment and nothing else — no activity skill, no always-loaded reminder, no per-request
+update — and the hook says so, once, on stderr; `doctor` repeats it on the `extension <agent>`
+line. The approval is untouched: it still applies to that harness's host launches.
+
+The eight user-scope rows have the opposite property. Their carriers live in the harness's own
+config under your home, which is exactly what aoe seeds a sandbox from, so the skill and the
+reminder do arrive in the container. What aoe seeds differs per harness: `claude` gets its config
+file, `CLAUDE.md` and its `skills/` directory, `codex`/`gemini`/`qwen` their instruction file,
+`hermes` its `SOUL.md`, `kiro` its `steering/`. `droid` and `opencode` are seeded with neither the
+instruction file nor a skills directory, so their carriers stay on the host.
+
+### The same directories `aoe skill sync` writes
+
+AoE's own skill system knows a skills root for six agents (`claude-user`, `agents-standard`,
+`gemini-user`, `opencode-user`, `kimi-legacy`, `prime-agent-user`) and deploys managed skills into
+them when you ask it to. Some of those roots are the ones this plugin uses, so the two can meet:
+
+- `aoe skill sync` reports our copy as `conflict — a skill AoE does not manage already exists here`.
+  That is AoE saying what is true: the directory is ours, and AoE will not adopt it without being
+  told to. `aoe skill sync --replace aoe-activity` hands it over; from then on AoE tracks it, and
+  our next approval rewrites the same bytes (AoE then reports `unchanged`).
+- If a later plugin version ships different bytes, our approval writes them and AoE reports the
+  copy as `drifted — the propagated copy was edited in place; preserving it`. Nothing is lost; AoE
+  simply stops updating that copy. `--replace aoe-activity` gives it back to AoE.
+- `extension disable` removes the reminder from the instruction file, but leaves a skill directory
+  that carries AoE's own `.aoe-managed.json` marker where it is, and prints `kept: …` with the
+  reason. AoE retires it at its next `aoe skill sync` (reported as `removed`), because the managed
+  skill it came from is gone. A directory this plugin wrote (no AoE marker) is deleted, as before.
+
+The reverse direction is not available to us: a plugin host cannot call AoE's `skills.*` methods (it
+has no such RPC) and AoE does not deploy anything automatically, so this plugin writes its carriers
+itself rather than waiting for a sync that may never run.
+
+The hook reads one JSON file this plugin writes (`live.json`: the session's tags and its current
+activity) and sets the headers from it. The skill tells the agent to run `aoe-llm-tags activity
+<word>`, which writes nothing but this session's own tag. Neither reads your prompts, transcript,
+files or credentials, opens a socket or writes anywhere else. Your own `~/.pi/agent` is never
+written to — the session copy's directories hold links to your entries plus these files. If you
+already have an `APPEND_SYSTEM.md` there it is *appended to*, not replaced; a managed skill of the
+same name that carries no plugin marker is left alone.
+
+Only `pi` re-reads the value per request, so only `pi` shows an activity change mid-session. For
+every other harness the change reaches the agent at the next launch; the badge, the pane and the
+page change at once either way.
+
+The plugin's page (Dashboard → plugins → LLM Tags) shows the same disclosure for each harness, with
+a checkbox and an enable button — the page sends back the digest it displayed, so a stale page
+approves nothing. On the command line:
+
+```sh
+"<install>/bin/aoe-llm-tags" extension enable pi --print     # the disclosure + the sha256
+"<install>/bin/aoe-llm-tags" extension enable pi --accept <sha256>
+"<install>/bin/aoe-llm-tags" extension status                # what each harness is doing
+```
+
+Three things end the approval — a change to the bytes of any file in the set, a change to the
+disclosure's wording, or:
+
+```sh
+"<install>/bin/aoe-llm-tags" extension disable claude
+```
+
+A plugin update, a reinstall or a harness upgrade does **not** end it: the approval records the
+files and the wording, not the version. `extension disable` removes both carriers — the skill
+directory and the marker block, leaving the rest of the file as it was, and deleting the file only
+if the block was all it held. `doctor` prints one line per harness at all times, so "not sending"
+always has a stated reason. Sandboxed sessions are not covered — aoe stages only your own
+`extensions/` directory into a sandbox, so no extension of this plugin's is installed there.
+
 ## Updating, disabling, removing
 
 ```sh
 aoe plugin update dev.oozut.llm-tags --yes     # rebuild (or re-download), restart the worker
 aoe plugin disable dev.oozut.llm-tags          # contributions off; the pasted lines stay
 ```
+
+An approved session-scope extension is part of the per-session copies, so the same step that
+removes those removes it; your own `~/.pi/agent` was never touched, so nothing there needs undoing.
+A user-scope one is in your own config, so remove it with `extension disable <harness>` — it
+deletes the skill directory and the block between the markers, and nothing else.
 
 The hook lines and the mapping line live in files this plugin does not own, so it never adds or
 removes them. Removing it cleanly is therefore three steps, in this order:

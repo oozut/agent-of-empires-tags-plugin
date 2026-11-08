@@ -16,6 +16,30 @@
 #   config_format   json | toml | none
 #   mapping_format  one line per enabled header: {file} {header} {env_var} {provider}
 #   status          verified | documented | needs_research | unsupported
+#   extension_artifact  a file this harness loads *inside the agent process*, relative to the
+#                   plugin root. Present only where the harness has such a hook; absent means
+#                   launch-scope only. The plugin writes it into the session's config copy only
+#                   after the user approves that exact file (`harness_extension` setting plus a
+#                   sha256 receipt — src/harness_extension.rs).
+#   extension_subdir    directory inside the session config copy (default `extensions`)
+#   extension_filename  our file inside it (default `aoe-llm-tags.ts`)
+#   extension_env   variable the hook exports so the extension finds the session's live file
+#   skill_artifact  a skill shipped beside the extension, written into the session config copy so
+#                   the harness's own skill loader advertises it (and installed into AoE's managed
+#                   skills store so it appears in AoE's Skills page). Absent: extension only.
+#   skill_dir       our skill's directory name under the skills root (`aoe-activity`)
+#   skill_subdir    the skills root inside the config copy (`skills`)
+#   append_artifact instructions appended to the harness's always-loaded system context — the
+#                   carrier that does not depend on the agent choosing to load a skill
+#   append_filename the file the harness reads for that (`APPEND_SYSTEM.md` for pi)
+#   carrier_scope   `session` (the carriers go into the harness's per-session config copy, so a
+#                   session's own activity reaches it without touching the user's config) or
+#                   `user` (the harness has no session copy, so the carriers go into its own config
+#                   under the user's home, behind a marker block this plugin owns)
+#   user_skill_root the skills root in the user's own config (`~/.claude/skills`)
+#   user_instructions the always-loaded instruction file in the user's own config
+#                   (`~/.claude/CLAUDE.md`); a marker block is appended and everything else in the
+#                   file is left exactly as it was
 
 [[adapter]]
 agent = "pi"
@@ -38,6 +62,25 @@ write_mode = "overlay_dir"
 overlay_env = "PI_CODING_AGENT_DIR"
 overlay_file = "models.json"
 writer = "pi_models"
+# pi loads every `.ts` in `<config dir>/extensions/` in-process and re-emits
+# `before_provider_headers` before each model request, which is the only way a
+# tag edited mid-session can reach the next request (docs/harness-adapters.md
+# §Per-request values). Shipped in the plugin tree, written into a session's copy
+# only after the user approves this exact file.
+extension_artifact = "harness/pi.ts"
+extension_subdir = "extensions"
+extension_filename = "aoe-llm-tags.ts"
+extension_env = "AOE_LLM_TAGS_LIVE"
+# pi advertises `<agent dir>/skills/*/SKILL.md` in its system prompt and loads one on demand, and
+# it appends `<agent dir>/APPEND_SYSTEM.md` to the system prompt unconditionally. The skill carries
+# the procedure; the append file carries the one-line reminder, because a skill the model never
+# opens changes nothing.
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+skill_subdir = "skills"
+append_artifact = "harness/activity.append.md"
+append_filename = "APPEND_SYSTEM.md"
+carrier_scope = "session"
 status = "verified"
 notes = """
 Verified on the host (2026-11) through tools/probe-harness.sh (docs/harness-evidence/pi.json):
@@ -76,6 +119,12 @@ write_mode = "env_only"
 native_env = "ANTHROPIC_CUSTOM_HEADERS"
 native_format = "{header}: {value}"
 aoe_hooks = true
+carrier_scope = "user"
+user_skill_root = "~/.claude/skills"
+user_instructions = "~/.claude/CLAUDE.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "verified"
 notes = """
 No static config file: the variable carries whole header lines, so the value rides the launch
@@ -98,6 +147,12 @@ env_ref = "{env_var}"
 interpolates = ["header"]
 supports = ["header"]
 write_mode = "none"
+carrier_scope = "user"
+user_skill_root = "~/.codex/skills"
+user_instructions = "~/.codex/AGENTS.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "verified"
 notes = """
 codex can carry a query parameter too (`query_params`), and `src/writer.rs` has a `codex_toml`
@@ -123,6 +178,12 @@ write_mode = "overlay_file"
 overlay_env = "OPENCODE_CONFIG"
 overlay_file = "opencode.json"
 writer = "opencode_json"
+carrier_scope = "user"
+user_skill_root = "~/.config/opencode/skills"
+user_instructions = "~/.config/opencode/AGENTS.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "verified"
 notes = """
 OPENCODE_CONFIG names one file, so the session copy is that file alone and no sibling entries are
@@ -142,6 +203,12 @@ interpolates = ["header"]
 supports = ["header"]
 write_mode = "none"
 aoe_hooks = true
+carrier_scope = "user"
+user_skill_root = "~/.hermes/skills"
+user_instructions = "~/.hermes/SOUL.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "verified"
 notes = """
 Hermes expands `${VAR}` and `${env:VAR}` recursively in config strings (`_expand_env_vars`,
@@ -168,6 +235,12 @@ native_format = "{header}: {value}"
 native_sep = ","
 splits_on_commas = true
 aoe_hooks = true
+carrier_scope = "user"
+user_skill_root = "~/.gemini/skills"
+user_instructions = "~/.gemini/GEMINI.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "verified"
 notes = """
 gemini reads its whole header list from `GEMINI_CLI_CUSTOM_HEADERS` (`parseCustomHeaders`,
@@ -193,6 +266,12 @@ interpolates = ["header"]
 supports = ["header"]
 write_mode = "none"
 aoe_hooks = true
+carrier_scope = "user"
+user_skill_root = "~/.factory/skills"
+user_instructions = "~/.factory/AGENTS.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "documented"
 notes = """
 droid's settings carry `customModels[]` entries with an `extraHeaders` map, and user-level
@@ -220,6 +299,12 @@ interpolates = ["header"]
 supports = ["header"]
 write_mode = "none"
 aoe_hooks = true
+carrier_scope = "user"
+user_skill_root = "~/.qwen/skills"
+user_instructions = "~/.qwen/QWEN.md"
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+append_artifact = "harness/activity.append.md"
 status = "verified"
 notes = """
 qwen's settings carry `modelProviders` keyed by protocol, each entry a model config; a
@@ -247,6 +332,14 @@ write_mode = "overlay_dir"
 overlay_env = "VIBE_HOME"
 overlay_file = "config.toml"
 writer = "vibe_toml"
+carrier_scope = "session"
+# vibe reads its whole config from `$VIBE_HOME`, so the session copy can carry both the skill
+# (`skills/aoe-activity/`) and the reminder (`AGENTS.md`) without touching the user's own config.
+skill_artifact = "harness/skills/aoe-activity/SKILL.md"
+skill_dir = "aoe-activity"
+skill_subdir = "skills"
+append_artifact = "harness/activity.append.md"
+append_filename = "AGENTS.md"
 status = "verified"
 notes = """
 vibe reads its whole home from `$VIBE_HOME` (`utils/vibe_home.py`) and each `[[providers]]` entry
@@ -270,6 +363,11 @@ config_format = "none"
 supports = []
 write_mode = "none"
 aoe_hooks = true
+carrier_scope = "user"
+user_instructions = "~/.kiro/steering/aoe-activity.md"
+# kiro has no skill loader, so the skill is omitted rather than shipped where nothing reads it:
+# the carrier is a steering document, which kiro loads into every conversation.
+append_artifact = "harness/activity.append.md"
 status = "documented"
 notes = """
 kiro-cli 2.37.1 (`kiro-cli`, `kiro-cli-chat`, `kiro-cli-term` in `~/.local/bin`) has **no place to

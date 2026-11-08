@@ -7,7 +7,7 @@ mod common;
 
 use std::path::Path;
 
-use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_JSON};
+use common::{settings_config, Run, Sandbox, CLI, PLUGIN_ID, SESSION_ID, SESSION_JSON};
 
 fn hook(sandbox: &Sandbox) -> Run {
     sandbox.run(&["hook"])
@@ -22,6 +22,143 @@ fn hook_prints_one_name_value_line() {
     let default_value = sandbox.default_payload();
     assert_eq!(run.lines(), vec![format!("AOE_LLM_TAGS={default_value}")]);
     assert_eq!(run.stderr, "");
+}
+
+#[test]
+fn a_sandboxed_launch_exports_the_variables_and_writes_no_copy() {
+    // aoe runs `before_start` for a sandboxed launch, and its container cannot see
+    // this plugin's app dir: pointing the harness at a copy there leaves it with no
+    // config at all (`docs/harness-evidence/sandbox-pi.json`). So the sandbox
+    // substrate exports the variables and writes nothing, and the harness reads
+    // the mapping in its own config instead.
+    let sandbox = Sandbox::new();
+    sandbox.wire();
+
+    let host = hook(&sandbox);
+    host.assert_ok();
+    assert!(
+        host.lines()
+            .iter()
+            .any(|line| line.starts_with("PI_CODING_AGENT_DIR=")),
+        "a host launch points the harness at its copy: {}",
+        host.stdout
+    );
+
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert_eq!(
+        run.lines(),
+        vec![format!("AOE_LLM_TAGS={}", sandbox.default_payload())],
+        "{}",
+        run.stdout
+    );
+    assert_eq!(run.stderr, "");
+    let session_dir = sandbox.path(&format!(
+        "home/.config/agent-of-empires/sessions/{SESSION_ID}"
+    ));
+    assert!(
+        !session_dir.exists(),
+        "a sandboxed launch wrote a copy no container can read: {}",
+        session_dir.display()
+    );
+}
+
+#[test]
+fn a_sandboxed_launch_names_what_its_own_config_cannot_carry() {
+    // vibe needs the literal in its file (`interpolates = []`), which only the
+    // per-session copy can hold — so a sandboxed launch must say the tag is not
+    // sent rather than closing the session silently.
+    let mut sandbox = Sandbox::new();
+    sandbox.session(SESSION_ID, "vibe");
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert!(
+        run.stderr.contains("not sent for a sandboxed session"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.lines().len(),
+        1,
+        "the variables still travel: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_sandboxed_launch_says_the_extension_does_not_reach_it() {
+    // An approved extension on a session-scope row is files in this session's
+    // copy, and a container reads none of them. The hook already says what the
+    // row's own config cannot carry; an approval it cannot honour at all has to
+    // be said too, or the user waits for a skill the sandbox never opens.
+    let sandbox = Sandbox::new();
+    sandbox.wire();
+
+    let before = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    before.assert_ok();
+    assert_eq!(
+        before.stderr, "",
+        "nothing was approved, so nothing is missing"
+    );
+
+    sandbox.write_config(&settings_config("harness_extension = [\"pi\"]\n", ""));
+    common::approve_any(&sandbox, "pi");
+
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert!(
+        run.stderr.contains("not installed for a sandboxed session"),
+        "{}",
+        run.stderr
+    );
+    assert_eq!(
+        run.lines(),
+        vec![format!("AOE_LLM_TAGS={}", sandbox.default_payload())],
+        "the tag still travels through the launch environment: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_launch_on_the_host_is_told_nothing_about_the_sandbox() {
+    // The warning belongs to the substrate, not to the approval: a host launch
+    // does install the copy, so saying it did not would be the lie in reverse.
+    let sandbox = Sandbox::new();
+    sandbox.wire();
+    sandbox.write_config(&settings_config("harness_extension = [\"pi\"]\n", ""));
+    common::approve_any(&sandbox, "pi");
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert_eq!(run.stderr, "");
+    assert!(
+        run.lines()
+            .iter()
+            .any(|line| line.starts_with("AOE_LLM_TAGS_LIVE=")),
+        "a host launch exports the live file: {}",
+        run.stdout
+    );
+}
+
+#[test]
+fn a_sandboxed_launch_does_not_blame_itself_for_a_row_that_never_delivered() {
+    // cline has no write path and expands nothing, so a host launch sends no tag
+    // either. Warning that the sandbox "does not mount this session's copy" would
+    // name a copy that never existed and hide the real reason.
+    let mut sandbox = Sandbox::new();
+    sandbox.session(SESSION_ID, "cline");
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert_eq!(run.stderr, "", "{}", run.stderr);
+}
+
+#[test]
+fn an_unknown_substrate_is_a_usage_error() {
+    // The value decides the delivery, so a typo must not fall back to the other one.
+    let sandbox = Sandbox::new();
+    let run = sandbox.run(&["hook", "--substrate", "sandbx"]);
+    run.assert_code(2);
+    assert_eq!(run.stdout, "");
+    assert!(run.stderr.contains("host or sandbox"), "{}", run.stderr);
 }
 
 #[test]
@@ -168,12 +305,21 @@ fn setup_prints_two_hook_lines_and_one_mapping_line() {
 }
 
 #[test]
-fn both_hook_keys_get_the_same_command() {
+fn each_hook_key_declares_the_substrate_it_serves() {
+    // aoe runs the two keys for disjoint launches, so the line itself says where
+    // the hook runs: `before_session` is a host launch (a session copy is
+    // writable), `before_start` is a sandboxed one (it is not).
     let sandbox = Sandbox::new();
     let lines = setup_lines(&sandbox);
     let session = &lines[0]["before_session = ".len()..];
     let start = &lines[1]["before_start = ".len()..];
-    assert_eq!(session, start);
+    assert!(session.contains("--substrate host"), "{session}");
+    assert!(start.contains("--substrate sandbox"), "{start}");
+    assert_eq!(
+        session.replace("--substrate host", "--substrate sandbox"),
+        start,
+        "the two lines differ only in the substrate"
+    );
     let aoe = sandbox.env.get("AOE_BIN").unwrap();
     assert!(session.contains(&format!("AOE_BIN=\"{aoe}\"")), "{session}");
     assert!(session.contains("/aoe-llm-tags"), "{session}");
@@ -365,16 +511,34 @@ fn setup_without_print_is_a_usage_error() {
 }
 
 #[test]
+fn applying_in_a_sandbox_writes_no_config() {
+    // The container cannot read the copy, so `--apply` on that substrate must say
+    // so and leave the user's file alone rather than write one nothing opens.
+    let sandbox = Sandbox::new();
+    let path = sandbox.pi_models(&[("X-AoE-Tags", "$AOE_LLM_TAGS")]);
+    let before = std::fs::read(&path).expect("models.json");
+    let run = sandbox.run(&["setup", "--apply", "--yes", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert!(
+        run.stdout.contains("writes no session config"),
+        "{}",
+        run.stdout
+    );
+    assert_eq!(std::fs::read(&path).expect("models.json"), before);
+}
+
+#[test]
 fn setup_json_shape() {
     let sandbox = Sandbox::new();
     let run = sandbox.run(&["setup", "--print", "--json"]);
     run.assert_ok();
     let plan: serde_json::Value = serde_json::from_str(&run.stdout).expect("JSON");
     assert_eq!(plan["adapter"], "pi");
-    assert_eq!(
-        plan["hooks"]["before_session"],
-        plan["hooks"]["before_start"]
-    );
+    // One key per substrate: the same command, declaring which launch it is for.
+    let session = plan["hooks"]["before_session"].as_str().expect("a string");
+    let start = plan["hooks"]["before_start"].as_str().expect("a string");
+    assert!(session.contains("--substrate host"), "{session}");
+    assert!(start.contains("--substrate sandbox"), "{start}");
     assert_eq!(plan["mapping"][0]["header"], "X-AoE-Tags");
     assert_eq!(plan["mapping"][0]["env_var"], "AOE_LLM_TAGS");
     assert!(Path::new(plan["cli"].as_str().unwrap()).is_absolute());
@@ -771,5 +935,122 @@ fn a_launch_without_a_home_still_sends_its_header() {
         run.stderr.contains("no session edits are read"),
         "the warning says the edits were skipped: {}",
         run.stderr
+    );
+}
+
+#[test]
+fn activity_sets_the_reserved_tag_and_the_next_hook_carries_it() {
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:core\"]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nname = \"X-AoE-Tags\"\ntemplate = \"{tags}\"\n",
+        "",
+    ));
+    let run = sandbox.run(&["activity", "test"]);
+    run.assert_ok();
+    assert!(
+        run.stdout.contains("activity test (testing)"),
+        "{}",
+        run.stdout
+    );
+    // The value a surface renders is the label; the tag is what travels.
+    let launched = hook(&sandbox);
+    launched.assert_ok();
+    // The template renders the tag set, so the pair appears as a token and the
+    // session's other tags are still there.
+    assert!(
+        launched.lines()[0].contains("activity:test"),
+        "{}",
+        launched.stdout
+    );
+    assert!(
+        launched.lines()[0].contains("team:core"),
+        "the other tags survive: {}",
+        launched.stdout
+    );
+
+    let show = sandbox.run(&["activity", "--json"]);
+    show.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&show.stdout).expect("json");
+    assert_eq!(parsed["activity"], serde_json::json!("test"));
+    assert_eq!(parsed["icon"], serde_json::json!("flask-conical"));
+    assert_eq!(parsed["tone"], serde_json::json!("warn"));
+    assert!(
+        parsed["vocabulary"].as_array().unwrap().len() == 9,
+        "the vocabulary is listed: {parsed}"
+    );
+}
+
+#[test]
+fn an_unknown_activity_is_a_usage_error_that_names_the_vocabulary() {
+    let sandbox = Sandbox::new();
+    // A label is accepted (`testing`), so the typo has to be a real one.
+    let run = sandbox.run(&["activity", "testng"]);
+    run.assert_code(2);
+    assert!(run.stdout.is_empty(), "{}", run.stdout);
+    assert!(
+        run.stderr.contains("not an activity") && !run.stderr.contains("flask-conical"),
+        "{}",
+        run.stderr
+    );
+    assert!(run.stderr.contains("explore"), "{}", run.stderr);
+    // Nothing was written: a typo must not become a new activity.
+    let hook = hook(&sandbox);
+    hook.assert_ok();
+    assert!(!hook.lines()[0].contains("activity"), "{}", hook.stdout);
+}
+
+#[test]
+fn activity_is_cleared_and_a_second_verb_overwrites_rather_than_stacks() {
+    let sandbox = Sandbox::new();
+    sandbox.run(&["activity", "code"]).assert_ok();
+    sandbox.run(&["activity", "review"]).assert_ok();
+    let before = hook(&sandbox);
+    before.assert_ok();
+    assert!(
+        before.lines()[0].contains(r#""activity":"review""#),
+        "{}",
+        before.stdout
+    );
+    assert!(
+        !before.lines()[0].contains(r#""activity":"code""#),
+        "one key, one value: {}",
+        before.stdout
+    );
+
+    sandbox.run(&["activity", "--clear"]).assert_ok();
+    let after = hook(&sandbox);
+    after.assert_ok();
+    assert!(!after.lines()[0].contains("activity"), "{}", after.stdout);
+}
+
+#[test]
+fn activity_reaches_the_next_request_only_when_a_live_file_exists() {
+    // No extension approval: the launch did not set up per-request delivery, so
+    // the verb must not claim the next request carries it.
+    let sandbox = Sandbox::new();
+    let run = sandbox.run(&["activity", "plan"]);
+    run.assert_ok();
+    assert!(run.stdout.contains("next launch"), "{}", run.stdout);
+
+    // With a live file, the same edit refreshes it instead of waiting.
+    let live = sandbox.path(&format!(
+        "config/agent-of-empires/sessions/{SESSION_ID}/live.json"
+    ));
+    std::fs::create_dir_all(live.parent().unwrap()).expect("session dir");
+    std::fs::write(&live, r#"{"enabled":false,"targets":[]}"#).expect("live file");
+    let again = sandbox.run(&["activity", "test"]);
+    again.assert_ok();
+    assert!(again.stdout.contains("next request"), "{}", again.stdout);
+    let body: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&live).expect("live")).expect("json");
+    assert!(
+        body["targets"]
+            .as_array()
+            .expect("targets")
+            .iter()
+            .any(|target| target["value"]
+                .as_str()
+                .is_some_and(|value| value.contains(r#""activity":"test""#))),
+        "{body}"
     );
 }

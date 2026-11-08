@@ -102,6 +102,48 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
             .find(|entry| entry.contains("aoe-llm-tags"))
             .map(|entry| entry.to_string());
         if let Some(ours) = ours {
+            let expected = setup::Substrate::for_key(key);
+            let declared = setup::substrate_in(&ours);
+            // A line without the flag defaults to `host`, which is right for
+            // `before_session` and wrong for `before_start`: there the hook would
+            // build a copy under the app dir and point the container at a path it
+            // cannot see (probe: docs/harness-evidence/sandbox-pi.json).
+            let missing = declared.is_none() && expected == setup::Substrate::Sandbox;
+            let wrong = declared
+                .as_deref()
+                .is_some_and(|value| value != expected.as_str());
+            let other_key = if key == "before_session" {
+                "before_start"
+            } else {
+                "before_session"
+            };
+            if missing || wrong {
+                checks.push(Check {
+                    name: format!("{key} hook"),
+                    status: FAIL.to_string(),
+                    detail: if missing {
+                        format!(
+                            "{} predates sandbox delivery: it declares no --substrate, so a \
+                             sandboxed launch would point the harness at this plugin's app dir, \
+                             which aoe does not mount into the container. Re-run \
+                             `aoe-llm-tags setup --print` and replace the line",
+                            abbreviate(&ours)
+                        )
+                    } else {
+                        format!(
+                            "{} declares --substrate {}; {key} runs for {} launches only, so \
+                             `{}` needs the {} line. Re-run `aoe-llm-tags setup --print`",
+                            abbreviate(&ours),
+                            declared.clone().unwrap_or_default(),
+                            expected.as_str(),
+                            other_key,
+                            setup::Substrate::for_key(other_key).as_str()
+                        )
+                    },
+                });
+                hooks.insert(key, ours);
+                continue;
+            }
             checks.push(Check {
                 name: format!("{key} hook"),
                 status: OK.to_string(),
@@ -145,6 +187,7 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
     ));
     checks.push(check_session(&snap, flags));
     checks.push(check_session_config(adapter, &snap, env));
+    checks.extend(check_harness_extensions(&adapters, &snap, &app_dir));
 
     let harness = adapter.and_then(|adapter| adapters::config_path(adapter, env).0);
     for (item, target) in snap
@@ -604,6 +647,120 @@ fn check_session_config(adapter: Option<&Adapter>, snap: &Snapshot, env: &Env) -
 
 /// A non-header target is delivered by the per-session config, so the only
 /// question left is whether the harness can carry that kind at all.
+/// Harness-side extensions: one line per harness that *can* take one, plus one
+/// for any harness the user asked for that cannot.
+///
+/// This is the disclosure's other half: enabling an extension puts a file inside
+/// the agent process, so its state is never silent — "approved", "approved but
+/// the file changed", "you asked and it is not approved yet", or "this harness
+/// keeps to launch-time tags".
+fn check_harness_extensions(adapters: &[Adapter], snap: &Snapshot, app_dir: &Path) -> Vec<Check> {
+    let wanted = &snap.settings.harness_extension;
+    let (receipts, warnings) = crate::harness_extension::receipts(app_dir);
+    let mut checks: Vec<Check> = warnings
+        .into_iter()
+        .map(|warning| Check {
+            name: "extension receipts".to_string(),
+            status: WARN.to_string(),
+            detail: warning,
+        })
+        .collect();
+
+    // A row the user asked for is reported even when it has no destination: the
+    // request would otherwise be a promise this install never keeps, silently.
+    for adapter in adapters.iter().filter(|row| {
+        crate::harness_extension::carrier(row).is_some() || wanted.iter().any(|n| n == &row.agent)
+    }) {
+        let name = format!("extension {}", adapter.agent);
+        let check = match crate::harness_extension::plan(
+            adapter,
+            wanted,
+            app_dir,
+            &snap.facts.id,
+            crate::harness_extension::home().as_deref(),
+        ) {
+            Ok(plan) => {
+                let skill = match &plan.skill {
+                    Some(_) => {
+                        let path = crate::harness_extension::managed_skill_path(app_dir, adapter);
+                        if path.is_file() {
+                            format!("; skill {}", abbreviate(&path.to_string_lossy()))
+                        } else {
+                            "; skill missing from AoE's list (it leaves with the next approval or \
+                             `extension disable`)"
+                                .to_string()
+                        }
+                    }
+                    None => String::new(),
+                };
+                let scope = match plan.carrier {
+                    crate::harness_extension::Carrier::Session => {
+                        format!(
+                            "; live file {} — a sandboxed launch reads none of this, because aoe \
+                             mounts nothing from the app dir into the container",
+                            abbreviate(&plan.live.to_string_lossy())
+                        )
+                    }
+                    crate::harness_extension::Carrier::User => {
+                        let paths: Vec<String> = plan
+                            .parts()
+                            .map(|placement| {
+                                let base = crate::harness_extension::home()
+                                    .unwrap_or_else(|| std::path::PathBuf::from("~"));
+                                abbreviate(&placement.target(&base).to_string_lossy())
+                            })
+                            .collect();
+                        format!("; in your own config: {}", paths.join(", "))
+                    }
+                };
+                Check {
+                    name,
+                    status: OK.to_string(),
+                    detail: format!(
+                        "approved {} (bundle sha256 {}, disclosure v{}){}{}",
+                        receipts
+                            .get(&plan.harness)
+                            .map(|receipt| receipt.accepted_at.clone())
+                            .unwrap_or_else(|| "unknown".to_string()),
+                        &plan.sha256[..8],
+                        crate::harness_extension::DISCLOSURE_VERSION,
+                        scope,
+                        skill,
+                    ),
+                }
+            }
+            Err(refusal) => Check {
+                name,
+                status: if refusal.worth_a_warning() {
+                    WARN.to_string()
+                } else {
+                    SKIP.to_string()
+                },
+                detail: refusal.detail(),
+            },
+        };
+        checks.push(check);
+    }
+
+    // A name in the setting that no row claims would otherwise be a promise the
+    // install never keeps.
+    for name in wanted {
+        if adapters.iter().any(|row| &row.agent == name) {
+            continue;
+        }
+        checks.push(Check {
+            name: format!("extension {name}"),
+            status: WARN.to_string(),
+            detail: format!(
+                "{name} is not a harness this build has a row for; `{}` names nothing it can \
+                 install, and only launch-time tags are sent",
+                crate::harness_extension::SETTING
+            ),
+        });
+    }
+    checks
+}
+
 fn check_delivery(adapter: Option<&Adapter>, target: &crate::resolver::Target, env: &Env) -> Check {
     let name = format!("delivery {}", target.name);
     if target.kind == crate::resolver::DEFAULT_KIND {
@@ -742,6 +899,44 @@ fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) ->
                             crate::overlay::verdict(adapter),
                             path.display(),
                             adapter.agent
+                        ),
+                    };
+                }
+                // A sandboxed session reads this file instead of a copy, so the
+                // mapping has to be here for that substrate to send anything.
+                if found && adapters::interpolates(adapter, resolver::DEFAULT_KIND) {
+                    return Check {
+                        name,
+                        status: OK.to_string(),
+                        detail: format!(
+                            "{}{}, and {} carries it here too — the only place a sandboxed \
+                             session can read it",
+                            crate::overlay::verdict(adapter),
+                            known
+                                .as_slice()
+                                .first()
+                                .map(|provider| format!(
+                                    ": the session copy carries it for provider {provider}"
+                                ))
+                                .unwrap_or_else(|| format!(
+                                    ": {} names a provider the writer can use",
+                                    path.display()
+                                )),
+                            path.display()
+                        ),
+                    };
+                }
+                if adapters::interpolates(adapter, resolver::DEFAULT_KIND) && !found {
+                    return Check {
+                        name,
+                        status: WARN.to_string(),
+                        detail: format!(
+                            "the session copy carries it, but {} is not mapped in {}: a \
+                             sandboxed session reads that file and sends no {} there. Add the \
+                             line from `aoe-llm-tags setup --print` to cover both substrates",
+                            item.header,
+                            path.display(),
+                            item.header
                         ),
                     };
                 }

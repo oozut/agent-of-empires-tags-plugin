@@ -3,7 +3,7 @@ name = "LLM Tags"
 version = "0.1.0"
 api_version = 18
 aoe_version = ">=1.21.0, <2.0.0"
-description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it."
+description = "Send identifying headers with every LLM request a session makes, so any system on the path can attribute, route or validate it. Optionally installs a small extension and an activity skill into a harness's session configs — only after you approve that exact set of files — so a tag edited mid-session reaches the next request and the session's activity stays current."
 # Least privilege: the worker and the session rows it reads, and nothing else. The
 # plugin never opens a connection itself — the harness does, with the header this
 # plugin hands it — so `net` is not declared. Take it in the change that needs it.
@@ -217,6 +217,51 @@ It is set per project, and a profile or the global config can each hold it too; 
 parsed by the same code, so a value means the same thing wherever it was written. The session
 fields always win: `feature_tag = "session:mine"` is dropped rather than allowed to rewrite the
 session's identity.
+"""
+
+[[settings]]
+key = "harness_extension"
+label = "Harness-side extensions (advanced)"
+type = "string_list"
+help = """
+Harnesses that may receive this plugin's activity carriers. Empty by default: with nothing listed,
+every harness keeps to launch-time tags and this plugin writes no code anywhere.
+
+A launch-time hook can fill a header once per process, because a harness reads its config once
+and caches it. A harness that loads code from its config directory can do better — its extension
+re-reads this plugin's live file (`sessions/<id>/live.json`) before each model request, so a tag
+edited while a session runs reaches the next request, and the session can say what it is doing.
+
+The approval covers a set of files, not one: where the harness has a per-session config copy, the
+hook, a skill that tells the agent to keep the session's activity current
+(`skills/aoe-activity/SKILL.md`) and the same reminder in the harness's always-loaded instructions;
+where it has none, that skill and the reminder go into your own harness config instead — a skill
+directory of its own, and a block between two marker lines inside a file that stays yours. The
+disclosure names which of the two it is, because they are different grants. The skill is also added
+to AoE's own skill list, so it appears on the Skills page and can be read, edited or deleted there.
+
+Because that is code running with the agent's permissions, listing a harness here is only the
+first half of consent: it is what asks for the disclosure. The second half is the approval you
+give after reading it, which is recorded with the bundle's sha256 in
+`<app dir>/harness-extension.toml`:
+
+```sh
+aoe-llm-tags extension enable pi --print   # read it, note the sha256
+aoe-llm-tags extension enable pi --accept <sha256>
+```
+
+The same disclosure and its checkbox are on this plugin's page, which is the easier place to read
+it; the page echoes the file's sha256 back, so a page left open across a plugin update approves
+nothing. The approval is durable: a plugin update, a reinstall, a harness upgrade or a config edit
+leaves it working. Only three things end it — a change to the bytes of any file in the set, a
+bumped disclosure version, or `aoe-llm-tags extension disable <harness>`. Nothing is installed until both halves are in
+place, and `doctor` prints one line per harness either way.
+
+A name that no adapter row claims installs nothing and is reported rather than ignored, a row with
+no destination at all is refused by name (`cline`, `openclaw`: launch-time tags and nothing else),
+and a sandboxed session gets no extension: aoe stages only your own `extensions/` directory into
+the sandbox. On a harness without a request hook the activity reaches it at the next launch; only
+`pi` re-reads it per request.
 """
 
 [runtime]

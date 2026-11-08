@@ -582,3 +582,325 @@ fn an_unknown_request_is_answered_not_found() {
         "{response}"
     );
 }
+
+/// A live file exists only for a session launched with an approved extension, and
+/// it is how an edit reaches a request the session has not made yet. The worker is
+/// the only place that sees the edit and the new resolution together.
+#[test]
+fn a_live_file_follows_an_edit_and_a_revoke_without_a_relaunch() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "harness_extension = [\"pi\"]\n\
+         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
+         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let printed = sandbox.run(&["extension", "enable", "pi", "--print"]);
+    printed.assert_ok();
+    let digest = printed
+        .stdout
+        .lines()
+        .find_map(|line| line.split("--accept ").nth(1))
+        .map(str::trim)
+        .expect("the printed approve command");
+    sandbox
+        .run(&["extension", "enable", "pi", "--accept", digest])
+        .assert_ok();
+
+    // A launch: this is what puts the extension and the live file on disk.
+    let launched = sandbox.run(&["hook"]);
+    launched.assert_ok();
+    let live = std::path::PathBuf::from(
+        launched
+            .lines()
+            .into_iter()
+            .find_map(|line| line.strip_prefix("AOE_LLM_TAGS_LIVE="))
+            .expect("the live file"),
+    );
+    let read = || -> Value {
+        serde_json::from_str(&std::fs::read_to_string(&live).expect("live.json")).expect("json")
+    };
+    assert_eq!(read()["enabled"], json!(true));
+
+    // An edit from the pane: no relaunch, no second hook, one publish.
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify(
+        "tag.set",
+        json!({"session_id": SESSION, "key": "activity", "value": "test"}),
+    );
+    wire.wait_page();
+    let body = read();
+    assert_eq!(
+        body["targets"][0]["value"],
+        json!("aoe,activity:test"),
+        "{body}"
+    );
+    assert_eq!(body["enabled"], json!(true));
+
+    // A revoke: the same file flips, so a session that is already running stops
+    // sending dynamic values on its next request rather than at its next launch.
+    sandbox.run(&["extension", "disable", "pi"]).assert_ok();
+    wire.notify(
+        "tag.set",
+        json!({"session_id": SESSION, "key": "activity", "value": "review"}),
+    );
+    wire.wait_page();
+    let body = read();
+    assert_eq!(body["enabled"], json!(false), "{body}");
+    assert_eq!(body["targets"][0]["value"], json!("aoe,activity:review"));
+}
+
+/// A session that never got an extension gets no live file: the worker must not
+/// invent a delivery the launch did not set up.
+#[test]
+fn no_live_file_is_written_for_a_session_without_an_extension() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify(
+        "tag.set",
+        json!({"session_id": SESSION, "key": "team", "value": "core"}),
+    );
+    wire.wait_page();
+    let env = llm_tags::env::Env::new(sandbox.env.clone());
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
+    assert!(!llm_tags::harness_extension::live_path(&app_dir, SESSION).exists());
+}
+
+/// The page is where a user reads the disclosure and gives the approval, so its
+/// rows are the same verdict the launch uses — and the checkbox approves *those*
+/// bytes by echoing the digest it displayed.
+#[test]
+fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "harness_extension = [\"pi\"]\n\
+         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
+         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+
+    // The worker publishes on a host event, not at startup.
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+    let rows = page["extensions"].as_array().expect("extensions");
+    let pi = rows
+        .iter()
+        .find(|row| row["harness"] == json!("pi"))
+        .unwrap_or_else(|| panic!("no pi row in {page}"));
+    assert_eq!(pi["requested"], json!(true));
+    assert_eq!(pi["approved"], json!(false));
+    assert_eq!(pi["state"], json!("no_receipt"), "{pi}");
+    // Before anything is approved the page already carries the text that would be
+    // approved, so enabling is a decision the user could actually read first.
+    let disclosure = pi["disclosure"].as_str().expect("disclosure");
+    assert!(disclosure.contains("does not"), "{disclosure}");
+    assert!(disclosure.contains("session config"), "{disclosure}");
+    let digest = pi["sha256"].as_str().expect("the digest").to_string();
+    assert_eq!(digest.len(), 64);
+
+    // A stale page approves nothing: the digest it shows is the whole point.
+    wire.notify(
+        "extension.enable",
+        json!({"harness": "pi", "accept": "0".repeat(64), "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
+    assert!(
+        wire.log().contains("not the file this build ships"),
+        "{}",
+        wire.log()
+    );
+
+    wire.notify(
+        "extension.enable",
+        json!({"harness": "pi", "accept": digest, "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    let pi = &page["extensions"][0];
+    assert_eq!(pi["approved"], json!(true), "{pi}");
+    assert_eq!(pi["state"], json!("ok"));
+    assert!(pi["accepted_at"].as_str().unwrap_or_default().len() >= 10);
+
+    // The page has to say which of the two grants a row needs, and where the
+    // files go: a session copy and the user's own config are not the same offer.
+    let pi = &page["extensions"][0];
+    assert_eq!(pi["scope"], json!("session"), "{pi}");
+    let files = pi["files"].as_array().expect("the disclosed files");
+    assert_eq!(files.len(), 3, "{pi}");
+    assert!(files.iter().all(|path| path
+        .as_str()
+        .unwrap_or_default()
+        .starts_with("<session config>/")));
+
+    // And the button that stops it removes the approval, so the next launch of
+    // that harness installs nothing.
+    wire.notify(
+        "extension.disable",
+        json!({"harness": "pi", "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
+}
+
+/// The activity is the thing a row should show at a glance, so it leads the badge
+/// with its own icon; the other tags follow with the generic one, and the icon is
+/// presentation — the text is what a terminal renders.
+#[test]
+fn the_row_badge_leads_with_the_activity_and_its_icon() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "tags = [\"activity:test\", \"team:core\"]\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+
+    let badge = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("row-badge"))
+        .unwrap_or_else(|| panic!("no badge was pushed: {:?}", wire.pushes));
+    let items = badge["payload"]["items"].as_array().expect("items");
+    assert_eq!(items[0]["text"], json!("testing"), "{badge}");
+    assert_eq!(items[0]["icon"], json!("flask-conical"), "{badge}");
+    assert_eq!(items[0]["tone"], json!("warn"), "{badge}");
+    // The raw tag is still what travels; the icon never does.
+    assert!(!badge.to_string().contains("activity:test"), "{badge}");
+    let team = items
+        .iter()
+        .find(|item| item["text"] == json!("team"))
+        .unwrap_or_else(|| panic!("no team item in {badge}"));
+    assert_eq!(team["icon"], json!("tag"));
+}
+
+#[test]
+fn a_typo_in_the_activity_is_reported_not_iconified() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "tags = [\"activity:testng\", \"team:core\"]\n",
+        "",
+    ));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+    assert!(wire.log().contains("is not an activity"), "{}", wire.log());
+    let badge = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("row-badge"))
+        .expect("a badge");
+    let items = badge["payload"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no items in {badge}"));
+    assert!(
+        items
+            .iter()
+            .all(|item| item["icon"] != json!("flask-conical")),
+        "a typo must not borrow the icon of the word it nearly is: {badge}"
+    );
+    let activity = items
+        .iter()
+        .find(|item| item["text"] == json!("activity"))
+        .unwrap_or_else(|| panic!("the activity tag is still shown: {badge}"));
+    assert_eq!(
+        activity["icon"],
+        json!("tag"),
+        "an unknown value is a tag, not an icon"
+    );
+}
+
+/// The activity has to be changeable from inside the session, not only from the
+/// dashboard page: the pane is what the session view and the terminal UI show, so
+/// each value is a row that fires `tag.set`, with the current one marked.
+#[test]
+fn the_pane_offers_every_activity_and_marks_the_current_one() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"activity:debug\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+
+    let pane = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("pane"))
+        .expect("a pane");
+    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let section = blocks
+        .iter()
+        .find(|block| block["kind"] == json!("section") && block["title"] == json!("Activity"))
+        .unwrap_or_else(|| panic!("no Activity section in {pane}"));
+    let rows = section["children"].as_array().expect("rows");
+    assert_eq!(rows.len(), 9, "the whole vocabulary is offered: {section}");
+    let selected: Vec<&str> = rows
+        .iter()
+        .filter(|row| row["selected"] == json!(true))
+        .map(|row| row["label"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(selected, vec!["debugging"], "{section}");
+    for row in rows {
+        assert_eq!(row["method"], json!("tag.set"), "{row}");
+        assert_eq!(row["params"]["key"], json!("activity"), "{row}");
+    }
+    // The pane is text-and-tone first: every row has a label, and the icon is
+    // decoration the web renders and the terminal ignores.
+    assert!(rows.iter().all(|row| row["label"].is_string()));
+}
+
+/// A user-scope row on the page says so: the same card, a wider grant, and the
+/// paths it would write named before anything is written.
+#[test]
+fn the_page_names_the_users_own_config_for_a_user_scope_row() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config(
+        "harness_extension = [\"claude\"]\n\
+         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
+         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
+        "",
+    ));
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+    let claude = page["extensions"]
+        .as_array()
+        .expect("extensions")
+        .iter()
+        .find(|row| row["harness"] == json!("claude"))
+        .unwrap_or_else(|| panic!("no claude row in {page}"))
+        .clone();
+    assert_eq!(claude["requested"], json!(true));
+    assert_eq!(claude["scope"], json!("user"), "{claude}");
+    let files: Vec<&str> = claude["files"]
+        .as_array()
+        .expect("the disclosed files")
+        .iter()
+        .map(|path| path.as_str().unwrap_or_default())
+        .collect();
+    assert!(files.iter().all(|path| path.starts_with("~/")), "{files:?}");
+    assert!(
+        files.contains(&"~/.claude/CLAUDE.md"),
+        "the instruction file is not disclosed: {files:?}"
+    );
+    let disclosure = claude["disclosure"].as_str().expect("the disclosure");
+    assert!(disclosure.contains("your own"), "{disclosure}");
+    assert!(disclosure.contains("marker"), "{disclosure}");
+    assert!(!disclosure.contains("private config copy"), "{disclosure}");
+}

@@ -96,6 +96,18 @@
       </div>
     </div>
 
+    <h2>Activity</h2>
+    <div class="card">
+      <p class="note">
+        What this session is doing — <span class="mono">activity:code</span>, and one of a closed
+        list so the badge and the icon are always the same. It travels as a normal tag, so any
+        target carries it, and a running session that has an approved harness extension sends it
+        on its next request.
+      </p>
+      <div class="row" id="activities" style="flex-wrap: wrap; gap: 6px"></div>
+      <p class="note" id="activitysub"></p>
+    </div>
+
     <h2>Tags</h2>
     <div class="card">
       <table id="tags"><tbody></tbody></table>
@@ -159,6 +171,20 @@
       <p class="note" id="targetsub"></p>
     </div>
 
+    <h2>Harness extensions</h2>
+    <div class="card">
+      <p class="note">
+        A harness that loads code from its config directory can report a change on its
+        <em>next request</em> instead of at the next launch. To do that this plugin installs a small
+        set of files inside that harness's session config — the hook itself, a skill that keeps the
+        session's activity current, and a one-line reminder — plus that skill in AoE's own skill
+        list, and only after you approve the exact set below. Nothing is installed by default, and
+        every harness that has no such hook keeps to launch-time tags.
+      </p>
+      <div id="extensions"></div>
+      <p class="note" id="extensionsub"></p>
+    </div>
+
     <script>
       "use strict";
       const PLUGIN = "dev.oozut.llm-tags";
@@ -218,6 +244,12 @@
       // be offered here and unknown to the renderer.
       let references = [];
       let presets = [];
+      // One row per harness that could take an extension, as the worker resolves it:
+      // the page renders the verdict, it never decides one.
+      let extensions = [];
+      // The closed activity vocabulary, from the worker: the page renders it, it
+      // never names an icon of its own.
+      let activities = [];
 
       function banner(text, isError) {
         const el = document.getElementById("banner");
@@ -249,6 +281,121 @@
         const keys = (preset.tags || []).map((entry) => String(entry).split(":")[0]);
         const have = new Set((session.tags || []).map((tag) => tag.key));
         return keys.length > 0 && keys.every((key) => have.has(key));
+      }
+
+      function shortSha(sha) {
+        return sha ? `${sha.slice(0, 12)}…` : "";
+      }
+
+      // The approval itself. `extension.enable` carries the digest this page just
+      // showed, so a page left open across a plugin update approves nothing: the
+      // worker compares it with the file this build ships.
+      function extensionAction(method, params) {
+        return call("action", { method, params })
+          .then(() => {
+            banner("Saved. The next launch of that harness picks it up.", false);
+            setTimeout(refresh, 120);
+            setTimeout(refresh, 600);
+          })
+          .catch((err) => banner(String(err.message || err), true));
+      }
+
+      function renderActivities(session) {
+        const host = document.getElementById("activities");
+        host.innerHTML = "";
+        const canWrite = !!session && !context.readOnly && !context.cityhall;
+        const current = session && session.activity ? session.activity.key : null;
+        for (const activity of activities) {
+          const button = document.createElement("button");
+          button.className = activity.key === current ? "primary" : "quiet";
+          // Web gets the icon name; the label is what a terminal shows, and what
+          // the badge falls back to. The host renders `icon`, not this page.
+          button.textContent = `${activity.label}`;
+          button.title = `activity:${activity.key} — icon ${activity.icon}`;
+          button.disabled = !canWrite;
+          button.onclick = () => edit("tag.set", { key: "activity", value: activity.key });
+          host.appendChild(button);
+        }
+        document.getElementById("activitysub").textContent = current
+          ? `This session says activity:${current}. Click another to change it.`
+          : "This session has not said what it is doing.";
+      }
+
+      function renderExtensions() {
+        const host = document.getElementById("extensions");
+        host.innerHTML = "";
+        const canWrite = !context.readOnly && !context.cityhall;
+        document.getElementById("extensionsub").textContent = extensions.length
+          ? ""
+          : "This build carries no harness extension: every session keeps to launch-time tags.";
+        for (const row of extensions) {
+          const card = document.createElement("div");
+          card.style.padding = "10px 0";
+          card.style.borderTop = "1px solid var(--border, #3334)";
+
+          const title = document.createElement("div");
+          title.className = "mono";
+          title.textContent = `${row.harness} — ${row.approved ? "approved" : "not approved"}`;
+          card.appendChild(title);
+
+          const detail = document.createElement("p");
+          detail.className = "note";
+          const where = (row.scope === "user")
+            ? `in your own ${row.harness} config: ${(row.files || []).join(", ")}`
+            : (row.files || []).length
+              ? `in each session's private config copy: ${(row.files || []).join(", ")}`
+              : "nowhere yet";
+          detail.textContent =
+            row.state === "ok"
+              ? `Approved ${row.accepted_at || ""} · sha256 ${shortSha(row.sha256)} · disclosure v${row.disclosure_version}. Installed ${where}.`
+              : row.detail ||
+                (row.requested
+                  ? ""
+                  : `Not requested: add ${row.harness} to this plugin's "Harness extensions (advanced)" setting first.`);
+          card.appendChild(detail);
+
+          if (row.state !== "ok" && row.requested && row.disclosure) {
+            const text = document.createElement("p");
+            text.className = "note";
+            text.style.whiteSpace = "pre-wrap";
+            text.textContent = row.disclosure;
+            card.appendChild(text);
+          }
+
+          const actions = document.createElement("div");
+          actions.className = "row";
+          if (row.state === "ok") {
+            const off = document.createElement("button");
+            off.textContent = "Stop installing it";
+            off.disabled = !canWrite;
+            off.onclick = () => extensionAction("extension.disable", { harness: row.harness });
+            actions.appendChild(off);
+          } else if (row.requested && row.sha256) {
+            const tick = document.createElement("label");
+            tick.className = "tick";
+            const box = document.createElement("input");
+            box.type = "checkbox";
+            const text = document.createElement("span");
+            text.textContent =
+              (row.scope === "user")
+                ? `I understand this writes ${(row.files || []).length} file(s) into my own ${row.harness} configuration — a skill directory of its own and a block between two markers inside ${(row.files || [])[1] || "that file"} — and that everything outside those markers stays as it is.`
+                : `I understand ${row.harness} will run this file inside every ${row.harness} session launched by this plugin.`;
+            tick.append(box, text);
+            const on = document.createElement("button");
+            on.className = "primary";
+            on.textContent =
+              (row.scope === "user") ? `Write these into my ${row.harness} config` : `Enable for ${row.harness}`;
+            on.disabled = true;
+            box.onchange = () => {
+              on.disabled = !box.checked || !canWrite;
+            };
+            on.onclick = () =>
+              extensionAction("extension.enable", { harness: row.harness, accept: row.sha256 });
+            actions.append(tick, on);
+          }
+          if (actions.children.length) card.appendChild(actions);
+          host.appendChild(card);
+        }
       }
 
       function renderReferences() {
@@ -310,6 +457,8 @@
 
         document.getElementById("add").disabled = !session || context.readOnly || context.cityhall;
         renderReferences();
+        renderExtensions();
+        renderActivities(session);
         const preset = presets[0];
         const box = document.getElementById("gitpreset");
         const canWrite = !!session && !context.readOnly && !context.cityhall;
@@ -443,6 +592,8 @@
           sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
           references = Array.isArray(payload.references) ? payload.references : [];
           presets = Array.isArray(payload.presets) ? payload.presets : [];
+          extensions = Array.isArray(payload.extensions) ? payload.extensions : [];
+          activities = Array.isArray(payload.activities) ? payload.activities : [];
           if (!sessions.some((s) => s.id === selected)) selected = sessions[0] ? sessions[0].id : null;
           render();
         } catch (err) {

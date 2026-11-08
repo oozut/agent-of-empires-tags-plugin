@@ -73,6 +73,40 @@ pub struct Adapter {
     /// sends a corrupted value or refuses to send anything at all. Gemini's
     /// `GEMINI_CLI_CUSTOM_HEADERS` parser does exactly this.
     pub splits_on_commas: bool,
+    /// Artefact this harness loads *inside* the agent process, relative to the
+    /// plugin root (`harness/pi.ts`). Empty means this harness has no in-process
+    /// hook and stays launch-scope only — never guessed.
+    pub extension_artifact: String,
+    /// Directory inside the session config copy the artefact goes into
+    /// (`extensions`). Defaults to `extensions` when the row declares an artefact.
+    pub extension_subdir: String,
+    /// Our file's name inside that directory.
+    pub extension_filename: String,
+    /// The variable the hook exports so the extension finds `live.json`.
+    pub extension_env: String,
+    /// A skill shipped with the extension (`harness/skills/aoe-activity/SKILL.md`).
+    /// Absent means the harness gets the extension alone.
+    pub skill_artifact: String,
+    /// Our skill's directory inside the config copy's skills root.
+    pub skill_dir: String,
+    /// The skills root inside the session config copy (`skills`).
+    pub skill_subdir: String,
+    /// Instructions appended to the harness's always-loaded system context
+    /// (`harness/activity.append.md`). Absent means the skill is the only carrier.
+    pub append_artifact: String,
+    /// The file the harness reads for that (`APPEND_SYSTEM.md` for pi).
+    pub append_filename: String,
+    /// Where the activity carriers go: `session` (the harness's per-session
+    /// config copy, when it has one) or `user` (the harness's own config under
+    /// the user's home). A row with neither a hook nor a user target carries
+    /// nothing, and says so.
+    pub carrier_scope: String,
+    /// The skills root in the user's own config (`~/.claude/skills`).
+    pub user_skill_root: String,
+    /// The always-loaded instruction file in the user's own config
+    /// (`~/.claude/CLAUDE.md`). A block delimited by our markers is appended;
+    /// everything else in the file is left exactly as it was.
+    pub user_instructions: String,
     pub status: String,
     pub notes: String,
 }
@@ -207,6 +241,18 @@ fn parse_row(item: &toml::Value) -> Option<Adapter> {
         native_sep: or_default(text("native_sep"), "\n"),
         aoe_hooks: flag("aoe_hooks"),
         splits_on_commas: flag("splits_on_commas"),
+        extension_artifact: text("extension_artifact"),
+        extension_subdir: text("extension_subdir"),
+        extension_filename: text("extension_filename"),
+        extension_env: text("extension_env"),
+        skill_artifact: text("skill_artifact"),
+        skill_dir: text("skill_dir"),
+        skill_subdir: text("skill_subdir"),
+        append_artifact: text("append_artifact"),
+        append_filename: text("append_filename"),
+        carrier_scope: text("carrier_scope"),
+        user_skill_root: text("user_skill_root"),
+        user_instructions: text("user_instructions"),
         supports: {
             // `supports` absent means the default (a header); `supports = []` means
             // "no channel at all" and must stay empty, or a row that deliberately

@@ -54,7 +54,19 @@ duplicated; a launch with nothing to deliver creates nothing at all. Verified en
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 244 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 310 tests green.
+
+What each harness gets — tag, activity skill, reminder, per-request update — on a host launch and
+inside a container is one table in `docs/carrier-matrix.md`, with a drift test behind it.
+
+A **sandboxed** launch is told apart by the hook line, not by aoe: `before_start` carries
+`--substrate sandbox` and exports the tag variables only, because the container cannot see the app
+dir this plugin writes its per-session copy into — exporting that copy's path there left `pi` with
+no models at all. Measured, not argued: `tools/probe-sandbox.sh` (evidence
+`docs/harness-evidence/sandbox-pi.json`). One cell stays open — a harness that needs the literal in
+its own file (`vibe`) sends no tag in a sandbox until aoe mounts that directory; the hook says so
+on stderr.
+
 The consumer read-back leg is deferred, not missing: see `plan/roadmap.md`. See `plan/README.md`.
 
 ## Install
@@ -69,6 +81,28 @@ The plugin lands in `<app_dir>/plugins/dev.oozut.llm-tags/` (on this host
 `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/`), which is the path the hook
 lines reference and which survives upgrades.
 
+This plugin can also teach a harness to keep its own activity current: a **skill** that tells the
+agent to run `aoe-llm-tags activity <word>` as the work moves between phases, and the same one-line
+reminder in the harness's always-loaded instructions, because a skill the model never opens changes
+nothing. For **pi** there is a request hook too, so an activity change reaches the next request
+rather than the next launch; every other harness is launch-scope for the value itself.
+
+Where the skill and the reminder go depends on the harness, and the disclosure says which it is:
+
+| Scope | Harnesses | Where |
+|---|---|---|
+| the session's private config copy | `pi`, `vibe` | nothing of yours is touched |
+| your own harness config | `claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid`, `qwen`, `kiro` | a skill directory of its own, and a block between two marker lines in the file the harness reads every conversation — your own text in that file stays byte for byte |
+
+`claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid` and `qwen` have no per-session config
+copy this plugin can build, so "this session's activity" can only reach them through your own
+configuration; that is a different, wider grant, and the disclosure for those harnesses says so
+before anything is written. `cline` and `openclaw` have no destination at all and are refused by
+name: launch-time tags and nothing else.
+
+Both are off by default. Listing a harness in `harness_extension` only asks for the disclosure;
+nothing is written until you approve that exact set of files, by digest — see `docs/install.md` §6.
+
 Setting it up on a session is three steps: `setup --print` shows the two `[host_hooks]` lines and
 the mapping line per target, `doctor` says how each installed harness can be delivered
 (`wired` / `overlay` / `unsupported`), and `hook` is what aoe runs per launch — it mints the
@@ -78,7 +112,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 244 tests, no network (needs `git` for tests/git_real.rs)
+cargo test --locked                  # 310 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 
@@ -126,6 +160,24 @@ launch:
 The deliverable is the header set itself: which system consumes it is the operator's choice, and
 the plugin must work the same whichever one it is. The plugin never sees a prompt.
 
+A tag says what a session *is* (`feature:billing`, `team:core`). The reserved
+`activity` key says what it is *doing* — `explore`, `plan`, `code`, `test`, `debug`, `review`,
+`docs`, `ops`, `idle` — a closed vocabulary so the row badge, the pane and the page all show the
+same lucide icon and tone, with the word ("testing") as the fallback where an icon cannot render.
+Because an activity changes while a session runs, a launch-time value is not enough: a harness
+that loads an extension from its config can set the header on *each* request, which is why the
+plugin ships one, per harness, behind an approval that names the exact file (`docs/install.md` §6).
+
+Whichever side sets it, the edit is one command — `aoe-llm-tags activity test`, or `--clear`,
+or `--show` to read the current one and the vocabulary — and the dashboard's pane offers every
+value as a row, so the session view and the terminal UI can change it without a page. Last writer
+wins: a person may override what the agent declared, and the agent may move on when the task does.
+
+The agent side is a shipped skill (`aoe-activity`) plus the same one-line reminder in the harness's
+always-loaded instructions: a skill is advertised and loaded on demand, which is not enough on its
+own. Both are part of the set an approval covers, and the skill is also added to AoE's own skill
+list — visible on the Skills page, editable there, and removed with the approval.
+
 ## Docs
 
 Design (normative, in this order):
@@ -163,6 +215,8 @@ Plan (what ships when, and with which values):
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
 | `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane and page payloads — and a click's edit — can be checked without a browser |
+| `tools/verify-install.sh` | Checks one installed copy against the host it is installed in: the binaries and artefacts, the grant, both hook lines against `setup --print`, a host launch and a sandboxed one, and `doctor`. Prints `PASS`/`FAIL` per line |
 | `tools/check-page.mjs` | Runs the page's script against a stub DOM and a stub dashboard (needs `node`), which is how the bridge handshake is checked: a page can pass every static check and still throw the moment it runs |
+| `tools/probe-sandbox.sh` | Measures the delivery mechanisms inside the real sandbox image, one container per mechanism plus one real `aoe add --sandbox` session, so "does the tag reach a sandboxed harness?" is answered by a request at a sink and not by reading aoe's source (evidence: `docs/harness-evidence/sandbox-pi.json`) |
 | `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |
 | `tests/` | CLI, resolver and `doctor` tests behind a sandboxed app dir and a fake `aoe`; no aoe and no network needed |

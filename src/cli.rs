@@ -9,7 +9,7 @@
 //! `verify` (M2) is named but not implemented: it reports which milestone owns it
 //! rather than pretending to be a different error.
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use clap::{Args, Parser, Subcommand};
 
@@ -41,7 +41,7 @@ enum Command {
     #[command(
         about = "Mint the header variables for this launch. Used by both [host_hooks] keys."
     )]
-    Hook(FlagArgs),
+    Hook(HookArgs),
     /// print one header's value
     #[command(about = "Print a single header's value, for harnesses that take a command.")]
     Value {
@@ -78,6 +78,15 @@ enum Command {
         /// machine-readable output
         #[arg(long)]
         json: bool,
+        /// which launch this run is for: host writes the session copy, sandbox
+        /// writes variables only (the container cannot see the app dir)
+        #[arg(
+            long,
+            value_name = "host|sandbox",
+            default_value = "host",
+            value_parser = parse_substrate
+        )]
+        substrate: setup::Substrate,
         #[command(flatten)]
         flags: FlagArgs,
     },
@@ -127,6 +136,31 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+    /// say what this session is doing, in the closed activity vocabulary
+    #[command(
+        about = "Set this session's `activity` tag (`plan`, `code`, `test`, ...) — what a badge \
+                 shows and what a per-request target sends. Use it as work moves between \
+                 phases; a session with an approved harness extension sends it on its next \
+                 request.",
+        after_help = "The vocabulary is closed so every surface renders the same icon and tone. \
+                      An unknown name is an error, not a new activity."
+    )]
+    Activity {
+        /// one of explore, plan, code, test, debug, review, docs, ops, idle
+        #[arg(value_name = "NAME")]
+        name: Option<String>,
+        /// drop the activity: this session stops saying what it is doing
+        #[arg(long = "clear")]
+        clear: bool,
+        /// show the current activity and the vocabulary (the default)
+        #[arg(long = "show")]
+        show: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
     /// list every reference a template or a tag value may use
     #[command(
         about = "List the {references} this build understands — session fields, tag shapes and \
@@ -140,6 +174,19 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+    /// approve, revoke or report a harness-side extension
+    #[command(
+        about = "A harness-side extension lets a tag edited while a session runs reach its next \
+                 request, instead of the next launch. Enabling one installs a file into every \
+                 session's private config copy, so `enable` prints the disclosure first and \
+                 records the approval with the file's sha256; nothing is written until then."
+    )]
+    Extension {
+        #[command(subcommand)]
+        action: ExtensionCmd,
+        #[command(flatten)]
+        flags: FlagArgs,
+    },
     /// check the wiring; exit 1 if anything would silently send nothing
     #[command(about = "One line per check, with the absolute paths it looked at.")]
     Doctor {
@@ -149,6 +196,25 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
+}
+
+#[derive(Args, Debug)]
+struct HookArgs {
+    /// which substrate this launch runs in; the [host_hooks] key decides, so the
+    /// line `setup --print` emits carries it
+    #[arg(
+        long,
+        value_name = "host|sandbox",
+        default_value = "host",
+        value_parser = parse_substrate
+    )]
+    substrate: setup::Substrate,
+    #[command(flatten)]
+    flags: FlagArgs,
+}
+
+fn parse_substrate(value: &str) -> Result<setup::Substrate, String> {
+    setup::Substrate::parse(value).ok_or_else(|| format!("expected host or sandbox, got {value:?}"))
 }
 
 #[derive(Args, Debug, Default)]
@@ -194,6 +260,38 @@ impl FlagArgs {
     }
 }
 
+#[derive(Subcommand, Debug)]
+enum ExtensionCmd {
+    /// show each harness that can take an extension, and what was approved
+    Status {
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// read the disclosure and approve one harness's extension
+    Enable {
+        /// the harness id (`pi`) — one approval covers one harness, never a bundle
+        harness: String,
+        /// the sha256 the disclosure printed; required when stdin is not a terminal
+        #[arg(long = "accept", value_name = "SHA256")]
+        accept: Option<String>,
+        /// print the disclosure and this build's sha256, then stop
+        #[arg(long = "print")]
+        print: bool,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// revoke an approval; the next launch stops installing the file
+    Disable {
+        /// the harness id (`pi`)
+        harness: String,
+        /// machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 /// Run one command line. Returns the process exit code.
 pub fn run(argv: Vec<String>, env: &Env) -> i32 {
     // A named-but-absent verb answers for itself, flags and all: a bare
@@ -214,7 +312,7 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
     };
 
     match cli.command {
-        Command::Hook(flags) => hook(&flags, env),
+        Command::Hook(args) => hook(&args, env),
         Command::Value { header, flags } => value(&header, &flags, env),
         Command::Setup {
             print,
@@ -224,8 +322,11 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             undo,
             all,
             json,
+            substrate,
             flags,
-        } => setup_cmd(print, dry_run, apply, yes, undo, all, json, &flags, env),
+        } => setup_cmd(
+            print, dry_run, apply, yes, undo, all, json, substrate, &flags, env,
+        ),
         Command::Classify { json, flags } => classify_cmd(json, &flags, env),
         Command::Tag {
             set,
@@ -249,23 +350,40 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             &flags,
             env,
         ),
+        Command::Activity {
+            name,
+            clear,
+            show,
+            json,
+            flags,
+        } => activity_cmd(name, clear, show, json, &flags, env),
         Command::References { json, flags } => references_cmd(json, &flags, env),
+        Command::Extension { action, flags } => extension_cmd(action, &flags, env),
         Command::Doctor { json, flags } => doctor_cmd(json, &flags, env),
     }
 }
 
-fn hook(args: &FlagArgs, env: &Env) -> i32 {
+fn hook(args: &HookArgs, env: &Env) -> i32 {
     // The hook must never abort a session start: any failure is a stderr warning
     // and exit 0, including a panic in a code path we did not anticipate.
+    let substrate = args.substrate;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let snap = resolver::snapshot(&args.flags(env), env, None);
+        let snap = resolver::snapshot(&args.flags.flags(env), env, None);
         let mut lines = resolver::hook_lines(&snap.resolved);
         let mut warnings = snap.warnings.clone();
         // Per-session harness config (`docs/harness-adapters.md`): the values are
         // baked into a copy this session owns, and the harness is pointed at it.
-        // A failure here costs the file delivery, never the session.
-        match setup::overlay_for(&snap, env) {
-            Ok(Some((overlay, overlay_warnings))) => {
+        // A failure here costs the file delivery, never the session. A sandboxed
+        // launch gets no copy at all — the container cannot see the app dir — so
+        // it warns about what its own config cannot carry instead
+        // (`Substrate`, `setup::delivery_for`).
+        match setup::delivery_for(
+            &snap,
+            env,
+            substrate,
+            args.flags.adapter.as_deref().unwrap_or_default(),
+        ) {
+            Ok((setup::Delivery::Copy(overlay), overlay_warnings)) => {
                 warnings.extend(overlay_warnings);
                 for (name, why) in &overlay.skipped {
                     warnings.push(format!(
@@ -274,7 +392,9 @@ fn hook(args: &FlagArgs, env: &Env) -> i32 {
                 }
                 lines.extend(overlay.env_lines());
             }
-            Ok(None) => {}
+            Ok((setup::Delivery::Variables, overlay_warnings)) => {
+                warnings.extend(overlay_warnings);
+            }
             Err(err) => warnings.push(err),
         }
         (lines, warnings)
@@ -292,6 +412,151 @@ fn hook(args: &FlagArgs, env: &Env) -> i32 {
         let _ = writeln!(stdout, "{line}");
     }
     let _ = stdout.flush();
+    EXIT_OK
+}
+
+/// What this session is doing, as one reserved tag.
+///
+/// The vocabulary lives in [`crate::activity`] and is closed, so this is a thin
+/// validated write: it lands in the same per-session file `tag --set` writes, and
+/// then refreshes the live file a running session re-reads, so the change reaches
+/// the *next request* rather than the next launch. A session without a live file
+/// is left alone: the launch did not set up a per-request delivery, and inventing
+/// one here would claim something about the session that is not true.
+fn activity_cmd(
+    name: Option<String>,
+    clear: bool,
+    show: bool,
+    json: bool,
+    args: &FlagArgs,
+    env: &Env,
+) -> i32 {
+    let flags = args.flags(env);
+    let app_dir = match crate::settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            warn(&message);
+            return EXIT_FAIL;
+        }
+    };
+    let snap = resolver::snapshot(&flags, env, None);
+    warn_all(&snap.warnings);
+    let session = snap.facts.id.clone();
+    if session.is_empty() {
+        warn("`activity` needs a session: pass --session <id> or run inside a session (AOE_SESSION_ID)");
+        return EXIT_USAGE;
+    }
+    let current = crate::activity::of(&snap.tags);
+
+    let write = clear || (name.is_some() && !show);
+    if !write {
+        if json {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "session": session,
+                    "activity": current.map(|activity| activity.key),
+                    "label": current.map(|activity| activity.label),
+                    "icon": current.map(|activity| activity.icon),
+                    "tone": current.map(|activity| activity.tone),
+                    "vocabulary": crate::activity::legend(),
+                })
+            );
+            return EXIT_OK;
+        }
+        println!("session {session}");
+        match current {
+            Some(activity) => println!(
+                "  activity {} ({}, icon {})",
+                activity.key, activity.label, activity.icon
+            ),
+            None => println!("  (this session has not said what it is doing)"),
+        }
+        println!(
+            "  {}",
+            crate::activity::ALL
+                .iter()
+                .map(|activity| activity.key)
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return EXIT_OK;
+    }
+
+    let failure = if clear {
+        crate::session_tags::unset_tag(&app_dir, &session, crate::activity::KEY).err()
+    } else {
+        let requested = name.as_deref().unwrap_or_default();
+        match crate::activity::find(requested) {
+            Some(activity) => crate::session_tags::set_tag(
+                &app_dir,
+                &session,
+                &format!("{}:{}", crate::activity::KEY, activity.key),
+            )
+            .err(),
+            None => {
+                warn(&format!(
+                    "`{requested}` is not an activity: {}",
+                    crate::activity::ALL
+                        .iter()
+                        .map(|activity| activity.key)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+                return EXIT_USAGE;
+            }
+        }
+    };
+    if let Some(err) = failure {
+        warn(&err);
+        return EXIT_FAIL;
+    }
+
+    // Re-resolve so the value written to the live file is the one the resolver
+    // produced, not a copy made here: the extension repeats what it reads, and
+    // this is the only place that decides what a target carries.
+    let after = resolver::snapshot(&flags, env, None);
+    let (adapters, adapter_warnings) = crate::adapters::load(None);
+    warn_all(&adapter_warnings);
+    let refreshed = crate::harness_extension::refresh_live(
+        &app_dir,
+        &session,
+        crate::adapters::match_tool(&adapters, &after.facts.tool),
+        &after.settings.harness_extension,
+        &after.resolved,
+        crate::harness_extension::home().as_deref(),
+    );
+    let live = refreshed.is_some();
+    if let Some(Err(why)) = &refreshed {
+        warn(&format!("the live file was not refreshed: {why}"));
+    }
+
+    let now = crate::activity::of(&after.tags);
+    if json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "session": session,
+                "activity": now.map(|activity| activity.key),
+                "live": live,
+                "targets": after
+                    .resolved
+                    .iter()
+                    .map(|item| serde_json::json!({"name": item.header, "value": item.value}))
+                    .collect::<Vec<_>>(),
+            })
+        );
+        return EXIT_OK;
+    }
+    match now {
+        Some(activity) => println!("activity {} ({})", activity.key, activity.label),
+        None => println!("activity cleared"),
+    }
+    if live {
+        println!("  the next request this session makes carries it");
+    } else {
+        println!("  the next launch of this session carries it");
+    }
     EXIT_OK
 }
 
@@ -551,6 +816,7 @@ fn setup_cmd(
     undo: bool,
     all: bool,
     json: bool,
+    substrate: setup::Substrate,
     args: &FlagArgs,
     env: &Env,
 ) -> i32 {
@@ -575,7 +841,7 @@ fn setup_cmd(
                 }
             }
         }
-        return setup::apply_cmd(&args.flags(env), env);
+        return setup::apply_cmd(&args.flags(env), env, substrate);
     }
     if !(print || dry_run || json) {
         warn("`setup` only reads unless --apply/--undo; pass --print (or --json)");
@@ -647,6 +913,362 @@ fn classify_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {
         return EXIT_FAIL;
     }
     EXIT_OK
+}
+
+/// `extension status|enable|disable`: the one place an approval is recorded.
+///
+/// Intent lives in the settings (the user writes it); approval lives in the
+/// receipt file. `enable` prints the disclosure first and only writes when it
+/// has the digest the user was shown — from `--accept` on a non-tty, from an
+/// explicit `yes` on a terminal. Nothing here writes the global settings.
+fn extension_cmd(action: ExtensionCmd, args: &FlagArgs, env: &Env) -> i32 {
+    let app_dir = match crate::settings::app_dir(env) {
+        Ok(dir) => dir,
+        Err(message) => {
+            warn(&message);
+            return EXIT_USAGE;
+        }
+    };
+    let (adapters, warnings) = crate::adapters::load(None);
+    warn_all(&warnings);
+    match action {
+        ExtensionCmd::Status { json } => extension_status(&adapters, &app_dir, args, env, json),
+        ExtensionCmd::Enable {
+            harness,
+            accept,
+            print,
+            json,
+        } => extension_enable(
+            &adapters, &app_dir, args, env, &harness, accept, print, json,
+        ),
+        ExtensionCmd::Disable { harness, json } => {
+            let Some(adapter) = crate::adapters::find(&adapters, &harness) else {
+                warn(&format!(
+                    "no adapter row for {harness:?}; `doctor` lists the harnesses this build knows"
+                ));
+                return EXIT_USAGE;
+            };
+            let result = crate::harness_extension::revoke(
+                &app_dir,
+                crate::harness_extension::home().as_deref(),
+                adapter,
+            );
+            match result {
+                Ok(revoked) if !revoked.had_receipt => {
+                    warn(&format!("{} had no approval to revoke", adapter.agent));
+                    EXIT_OK
+                }
+                Ok(revoked) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::json!({
+                                "revoked": adapter.agent,
+                                "receipt": crate::harness_extension::receipt_path(&app_dir)
+                                    .display().to_string(),
+                                "removed": revoked.removed.iter()
+                                    .map(|path| path.display().to_string())
+                                    .collect::<Vec<_>>(),
+                                "kept": revoked.kept.iter()
+                                    .map(|(path, why)| serde_json::json!({
+                                        "path": path.display().to_string(),
+                                        "why": why,
+                                    }))
+                                    .collect::<Vec<_>>(),
+                            })
+                        );
+                    } else {
+                        println!(
+                            "revoked: {} ({} removed from {})",
+                            adapter.agent,
+                            adapter.agent,
+                            crate::harness_extension::receipt_path(&app_dir).display()
+                        );
+                        println!(
+                            "a session already running stops sending dynamic tags on its next \
+                             request; the next launch installs no extension. The strands of \
+                             `{}` in the settings are the user's to remove.",
+                            crate::harness_extension::SETTING
+                        );
+                        // Say what stayed, and why, rather than letting a user find a
+                        // directory they expected to be gone.
+                        for (path, why) in &revoked.kept {
+                            println!("kept: {} ({why})", path.display());
+                        }
+                    }
+                    EXIT_OK
+                }
+                Err(message) => {
+                    warn(&message);
+                    EXIT_FAIL
+                }
+            }
+        }
+    }
+}
+
+fn extension_status(
+    adapters: &[crate::adapters::Adapter],
+    app_dir: &std::path::Path,
+    args: &FlagArgs,
+    env: &Env,
+    json: bool,
+) -> i32 {
+    let snap = resolver::snapshot(&args.flags(env), env, None);
+    let (receipts, warnings) = crate::harness_extension::receipts(app_dir);
+    warn_all(&warnings);
+    let mut rows = Vec::new();
+    // A requested row with no destination is listed too: the user asked for it,
+    // and "nothing was installed" has to have a stated reason.
+    for adapter in adapters.iter().filter(|row| {
+        crate::harness_extension::carrier(row).is_some()
+            || snap
+                .settings
+                .harness_extension
+                .iter()
+                .any(|name| name == &row.agent)
+    }) {
+        let wanted = snap
+            .settings
+            .harness_extension
+            .iter()
+            .any(|name| name == &adapter.agent);
+        let (state, detail) = match crate::harness_extension::plan(
+            adapter,
+            &snap.settings.harness_extension,
+            app_dir,
+            &snap.facts.id,
+            crate::harness_extension::home().as_deref(),
+        ) {
+            Ok(plan) => (
+                crate::doctor::OK,
+                format!("approved ({})", &plan.sha256[..8]),
+            ),
+            Err(refusal) => (
+                if refusal.worth_a_warning() {
+                    crate::doctor::WARN
+                } else {
+                    crate::doctor::SKIP
+                },
+                refusal.reason().to_string(),
+            ),
+        };
+        rows.push((adapter, wanted, state, detail));
+    }
+    if json {
+        let value: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(adapter, wanted, state, detail)| {
+                serde_json::json!({
+                    "harness": adapter.agent,
+                    "requested": wanted,
+                    "state": state,
+                    "detail": detail,
+                    "artifact": adapter.extension_artifact,
+                    "receipt": receipts.get(&adapter.agent).map(|receipt| serde_json::json!({
+                        "sha256": receipt.sha256,
+                        "accepted_at": receipt.accepted_at,
+                        "disclosure_version": receipt.disclosure_version,
+                        "tested_harness": receipt.tested_harness,
+                    })),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(value));
+        return EXIT_OK;
+    }
+    if rows.is_empty() {
+        println!("no harness in this build loads an in-process extension: every harness keeps to launch-time tags");
+        return EXIT_OK;
+    }
+    for (adapter, wanted, state, detail) in rows {
+        println!(
+            "{:<10} {:<6} {:<6} {detail}",
+            adapter.agent,
+            state,
+            if wanted { "yes" } else { "no" },
+        );
+    }
+    println!(
+        "\ncolumns: harness, state, in `{}`, reason — `aoe-llm-tags extension enable <harness>` prints the disclosure",
+        crate::harness_extension::SETTING
+    );
+    if snap.settings.harness_extension.is_empty() {
+        println!(
+            "no harness is requested yet: add it to `{}` in settings, then approve it once",
+            crate::harness_extension::SETTING
+        );
+    }
+    EXIT_OK
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extension_enable(
+    adapters: &[crate::adapters::Adapter],
+    app_dir: &std::path::Path,
+    args: &FlagArgs,
+    env: &Env,
+    harness: &str,
+    accept: Option<String>,
+    print_only: bool,
+    json: bool,
+) -> i32 {
+    let Some(adapter) = crate::adapters::find(adapters, harness) else {
+        warn(&format!(
+            "no adapter row for {harness:?}; `aoe-llm-tags extension status` lists the harnesses \
+             this build can serve"
+        ));
+        return EXIT_USAGE;
+    };
+    let snap = resolver::snapshot(&args.flags(env), env, None);
+    let home = crate::harness_extension::home();
+    let proposal =
+        match crate::harness_extension::proposal(adapter, app_dir, &snap.facts.id, home.as_deref())
+        {
+            Ok(plan) => plan,
+            Err(refusal) => {
+                warn(&refusal.detail());
+                return EXIT_USAGE;
+            }
+        };
+    let text = crate::harness_extension::disclosure(&proposal, &harness_version(&adapter.agent));
+    if print_only {
+        println!("{text}");
+        println!();
+        println!("nothing was written. Approve with:");
+        println!(
+            "  aoe-llm-tags extension enable {} --accept {}",
+            adapter.agent, proposal.sha256
+        );
+        return EXIT_OK;
+    }
+
+    // Whatever the answer, the user sees what they are agreeing to: on a tty the
+    // prompt follows it, and `--accept` prints it too, so a scripted approval is
+    // still an informed one (and a log keeps the wording it approved).
+    println!("{text}");
+
+    let approved = match accept {
+        Some(digest) => {
+            let digest = digest.trim().to_ascii_lowercase();
+            if digest != proposal.sha256 {
+                warn(&format!(
+                    "the digest you accepted does not match this build's file \
+                     (accepted {digest}, this build {})",
+                    proposal.sha256
+                ));
+                warn("nothing was approved");
+                return EXIT_FAIL;
+            }
+            true
+        }
+        None if std::io::stdin().is_terminal() => {
+            print!(
+                "\nType `yes` to approve {} for this machine: ",
+                adapter.agent
+            );
+            let _ = std::io::stdout().flush();
+            let mut answer = String::new();
+            let _ = std::io::stdin().read_line(&mut answer);
+            answer.trim().eq_ignore_ascii_case("yes")
+        }
+        None => {
+            println!("{text}");
+            warn(
+                "stdin is not a terminal, so there is nobody to read the disclosure: re-run with \
+                 `--accept <sha256>` above",
+            );
+            return EXIT_USAGE;
+        }
+    };
+    if !approved {
+        warn("not approved; nothing was written");
+        return EXIT_OK;
+    }
+
+    match crate::harness_extension::accept(
+        app_dir,
+        home.as_deref(),
+        adapter,
+        &proposal.sha256,
+        &harness_version(&adapter.agent),
+    ) {
+        Ok(receipt) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "approved": adapter.agent,
+                        "sha256": receipt.sha256,
+                        "disclosure_version": receipt.disclosure_version,
+                        "accepted_at": receipt.accepted_at,
+                        "receipt": crate::harness_extension::receipt_path(app_dir).display().to_string(),
+                        "installs_on_next_launch": snap.settings.harness_extension
+                            .iter().any(|name| name == &adapter.agent),
+                    })
+                );
+            } else {
+                println!(
+                    "approved: {} (sha256 {}, disclosure v{}), recorded in {}",
+                    adapter.agent,
+                    &receipt.sha256[..12],
+                    receipt.disclosure_version,
+                    crate::harness_extension::receipt_path(app_dir).display()
+                );
+            }
+            // Intent is the user's: the plugin has no capability to write the
+            // settings, and asking for one to save a line would be a worse trade.
+            if !snap
+                .settings
+                .harness_extension
+                .iter()
+                .any(|name| name == &adapter.agent)
+            {
+                warn(&format!(
+                    "{} is not in `{}` yet, so nothing will be installed. Add it in the plugin \
+                     settings:  {} = [\"{}\"]",
+                    adapter.agent,
+                    crate::harness_extension::SETTING,
+                    crate::harness_extension::SETTING,
+                    adapter.agent
+                ));
+            } else {
+                match proposal.carrier {
+                    crate::harness_extension::Carrier::Session => println!(
+                        "the next launch of a {} session installs it in that session's config copy",
+                        adapter.agent
+                    ),
+                    crate::harness_extension::Carrier::User => {
+                        for placement in proposal.parts() {
+                            println!("installed: {}", placement.display);
+                        }
+                    }
+                }
+            }
+            EXIT_OK
+        }
+        Err(message) => {
+            warn(&message);
+            EXIT_FAIL
+        }
+    }
+}
+
+/// The harness's own version, for the receipt. Informational only: a harness
+/// upgrade never re-asks for approval, and a missing binary is not an error.
+fn harness_version(agent: &str) -> String {
+    let output = std::process::Command::new(agent).arg("--version").output();
+    let Ok(output) = output else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    text.lines()
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .take(48)
+        .collect()
 }
 
 fn doctor_cmd(json: bool, args: &FlagArgs, env: &Env) -> i32 {

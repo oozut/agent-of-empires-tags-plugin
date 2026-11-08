@@ -204,17 +204,30 @@ impl Sandbox {
 
     /// A plugin tree shaped like an install, so the hook line names this CLI.
     pub fn hook_command(&self) -> String {
+        self.hook_command_for("before_session")
+    }
+
+    /// The line a real install carries under `key`: the two keys declare
+    /// different substrates (`setup::Substrate::for_key`).
+    pub fn hook_command_for(&self, key: &str) -> String {
         let cli = self.root.join("plugin/bin/aoe-llm-tags");
         self.write_executable(&cli, "#!/bin/sh\nexit 0\n");
-        llm_tags::setup::hook_command(&cli, self.env.get("AOE_BIN").expect("AOE_BIN"))
+        llm_tags::setup::hook_command(
+            &cli,
+            self.env.get("AOE_BIN").expect("AOE_BIN"),
+            llm_tags::setup::Substrate::for_key(key),
+        )
     }
 
     /// A fully wired install: both hook keys, and the header mapped in pi.
     pub fn wire(&self) {
-        let command = self.hook_command();
         self.write_config(&settings_config(
             "",
-            &format!("before_session = ['{command}']\nbefore_start = ['{command}']\n"),
+            &format!(
+                "before_session = ['{}']\nbefore_start = ['{}']\n",
+                self.hook_command_for("before_session"),
+                self.hook_command_for("before_start")
+            ),
         ));
         self.pi_models(&[("X-AoE-Tags", "$AOE_LLM_TAGS")]);
     }
@@ -315,6 +328,23 @@ impl Run {
         );
         self
     }
+}
+
+/// Approve any harness by name, with the digest its disclosure printed: the two
+/// steps a user takes, in the order they take them.
+pub fn approve_any(sandbox: &Sandbox, harness: &str) -> Run {
+    let printed = sandbox.run(&["extension", "enable", harness, "--print"]);
+    printed.assert_ok();
+    let digest = printed
+        .stdout
+        .lines()
+        .find_map(|line| line.split("--accept ").nth(1))
+        .map(str::trim)
+        .expect("the printed approve command")
+        .to_string();
+    let run = sandbox.run(&["extension", "enable", harness, "--accept", &digest]);
+    run.assert_ok();
+    run
 }
 
 pub fn settings_config(settings: &str, hooks: &str) -> String {

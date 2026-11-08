@@ -243,6 +243,11 @@ pub struct Settings {
     /// Per-session only: a literal standing in for what a template-less target
     /// would render. Never read from a settings file — see [`crate::session_tags`].
     pub token: String,
+    /// Harnesses the user allows a harness-side extension in (`harness_extension`).
+    /// Intent only: `src/harness_extension.rs` also requires a receipt for the
+    /// exact file, so listing a harness here asks for the disclosure; it does not
+    /// approve one.
+    pub harness_extension: Vec<String>,
     pub warnings: Vec<String>,
 }
 
@@ -257,6 +262,7 @@ impl Default for Settings {
             session_tagging: DEFAULT_SESSION_TAGGING.to_string(),
             feature_tag: None,
             token: String::new(),
+            harness_extension: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -296,6 +302,11 @@ impl Settings {
             session_tagging: tagging,
             feature_tag,
             token: String::new(),
+            harness_extension: parse_name_list(
+                table.get("harness_extension"),
+                "harness_extension",
+                &mut warns,
+            ),
             warnings: warns,
         }
     }
@@ -2357,6 +2368,38 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
 }
 
 /// Static tags every session carries, merged in front of the rule matches.
+fn parse_name_list(
+    value: Option<&toml::Value>,
+    key: &str,
+    warnings: &mut Vec<String>,
+) -> Vec<String> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let Some(rows) = value.as_array() else {
+        warnings.push(format!(
+            "settings: {key} is not an array of harness names; ignoring it"
+        ));
+        return Vec::new();
+    };
+    let mut names: Vec<String> = Vec::new();
+    for (index, row) in rows.iter().enumerate() {
+        let Some(name) = row.as_str().map(str::trim).filter(|name| !name.is_empty()) else {
+            warnings.push(format!(
+                "settings: {key}[{}]={} is not a harness name; skipping it",
+                index + 1,
+                render_toml_scalar(row)
+            ));
+            continue;
+        };
+        let name = name.to_ascii_lowercase();
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 fn parse_static_tags(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<String> {
     let Some(value) = value else {
         return Vec::new();
@@ -2601,6 +2644,7 @@ mod tests {
             session_tagging: "short".to_string(),
             feature_tag: None,
             token: String::new(),
+            harness_extension: Vec::new(),
             warnings: Vec::new(),
         }
     }
@@ -3024,6 +3068,7 @@ mod tests {
             session_tagging: "short".to_string(),
             feature_tag: tag,
             token: String::new(),
+            harness_extension: Vec::new(),
             warnings: Vec::new(),
         }
     }

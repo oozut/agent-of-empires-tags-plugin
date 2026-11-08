@@ -325,7 +325,7 @@ Where the value comes from, per row, is one of three shapes:
 
 | Session scope | Rows | What the user has to do |
 |---|---|---|
-| `overlay_dir` / `overlay_file` | `pi`, `opencode`, `vibe` | nothing — the hook writes this session's copy and exports the override variable |
+| `overlay_dir` / `overlay_file` | `pi`, `opencode`, `vibe` | nothing — the hook writes this session's copy and exports the override variable (host launches; a sandboxed launch gets the variables only, so the row must interpolate — §Sandboxed sessions) |
 | `env_only` | `claude`, `gemini` | nothing — the hook exports the harness's own variable |
 | reference in the user's own config | `codex`, `hermes`, `qwen`, `droid`, `openclaw` | paste the one line `setup --print` shows (it names a *variable*, never a value); aoe installs its hooks into `codex`/`hermes`/`qwen`/`droid`, so the file cannot be scoped per session |
 | none | `cline`, `kiro` | nothing until the harness grows a scoping channel; `setup --apply` refuses and `classify` says `unsupported` |
@@ -461,7 +461,8 @@ same `lifecycle_env_vars` — `AOE_SESSION_ID`, `AOE_SESSION_TITLE`, `AOE_PROJEC
 `AOE_PROFILE`, `AOE_TOOL`, `AOE_GROUP_PATH`, plus `AOE_SESSION_BRANCH` (worktrees) and
 `AOE_REPO_SLUG` (parseable origin). So one command, installed once per key, mints the same
 values in either substrate; a hook installed in one key only tags one substrate and silently
-skips the other.
+skips the other. Which substrate is being served is not in that environment — the key is the
+only signal — so the installed line repeats it as `--substrate` (see §Sandboxed sessions).
 
 Where the minted value ends up:
 
@@ -515,10 +516,149 @@ worth optimising:
   no liveness over a minted variable, only a per-launch process spawn and a 10 s timeout —
   and it cannot reach the session store from inside a sandbox. Treat both as launch-time.
 
+  The exception is code the harness loads from its config directory: pi re-emits
+  `before_provider_headers` before every model request, so an approved extension can set the
+  header per request (below). That is a property of the harness, not of the header mechanism —
+  which is why the adapter row declares an `extension_artifact` or does not.
+
+### Per-request values
+
+| Harness | In-process request hook | Consequence |
+|---|---|---|
+| `pi` | yes — `before_provider_headers`, awaited per `stream()` | an approved extension can re-render the targets before each request |
+| everything else | none known | launch-scope; a value is fixed for the process |
+
+For pi the plugin ships `harness/pi.ts`, compiles it into the binary, and installs it into the
+session's config copy only when the user asked for it (`harness_extension`) **and** approved that
+exact file (a receipt holding its sha256). The extension reads one file the plugin writes —
+`sessions/<id>/live.json`, path exported as `AOE_LLM_TAGS_LIVE` — and sets the headers from it,
+fail-open: any error leaves the launch-time headers alone rather than failing the request. It
+reads nothing else, opens no socket, spawns nothing, and does nothing at all when the environment
+variable is absent, so it is inert outside an aoe session.
+
+The bundle an approval covers is not only the hook. A per-request value is only half the job: the
+other half is the activity being *current*, and that needs the agent to say so. So a row can name
+two more artefacts:
+
+| Field | pi | What it is |
+|---|---|---|
+| `skill_artifact` | `harness/skills/aoe-activity/SKILL.md` | a skill written into the session copy under `skills/<skill_dir>/SKILL.md`, which pi advertises in its system prompt and loads on demand |
+| `skill_dir` / `skill_subdir` | `aoe-activity` / `skills` | where it goes; both default, and `adapters.toml` sets them |
+| `append_artifact` | `harness/activity.append.md` | the same instruction in the always-loaded slot, because a skill the model never opens changes nothing. One file for every harness: what it says is about this plugin, not a vendor's format |
+| `append_filename` | `APPEND_SYSTEM.md` | the file that slot is called |
+
+One caveat, because pi does not combine same-named files: a repository with its own
+`.pi/APPEND_SYSTEM.md` takes precedence over the agent-dir one, so in that repository the reminder
+is not loaded — the skill, which is discovered independently, still is.
+
+The skill is also installed into **AoE's managed skill store** (`<app dir>/skills/aoe-activity/`)
+at approval time, so it appears on AoE's Skills page and can be read, edited or deleted like any
+other managed skill — that is the plugin's only write outside a session folder, and the disclosure
+says so. Its bytes end with a marker; a skill without the marker is somebody's own and is never
+overwritten (the session copy still delivers ours).
+
+The digest a receipt pins is therefore the **bundle** digest — every artefact of the row, with the
+path each one is written to, hashed in the disclosure's order — so adding a file, moving one, or
+rewording the skill asks for a fresh approval, exactly as changing the hook does. Where a file goes
+is part of what the user approved.
+
+### Two carrier scopes
+
+Only two of the harnesses this plugin knows read a config directory the hook can build per
+session. For the rest, "the session's own activity" can only reach the agent through its own
+configuration under `$HOME` — a different grant, disclosed as such, never folded into the
+session-copy wording.
+
+| `carrier_scope` | Harnesses | What approval writes | Marker block |
+|---|---|---|---|
+| `session` | `pi`, `vibe` | the session copy: `extensions/…` (when the row has a hook), `skills/<skill_dir>/SKILL.md`, `APPEND_SYSTEM.md` / `AGENTS.md` | no — the copy is entirely this plugin's |
+| `user` | `claude`, `codex`, `opencode`, `hermes`, `gemini`, `droid`, `qwen`, `kiro` | your own config: `~/.<harness>/skills/aoe-activity/SKILL.md` and a block inside `~/.<harness>/CLAUDE.md` (or `AGENTS.md`, `GEMINI.md`, `SOUL.md`, `QWEN.md`, or kiro's `~/.kiro/steering/aoe-activity.md`) | yes — `<!-- aoe-llm-tags:begin -->` … `<!-- aoe-llm-tags:end -->` |
+
+| Field | Example | What it means |
+|---|---|---|
+| `carrier_scope` | `user` | which of the two grants the row's carriers need |
+| `user_skill_root` | `~/.claude/skills` | `~`-relative only: an absolute path would write outside the one place a user-scope approval may touch |
+| `user_instructions` | `~/.claude/CLAUDE.md` | the file the harness reads into every conversation; the reminder goes between the markers and everything else in the file stays byte for byte |
+
+Removal deletes the skill directory (only if it carries the managed marker) and strips the block,
+then deletes the file itself *if the block was alone in it* — a file the user also writes in
+survives with their text restored exactly. A skill directory without the managed marker is
+somebody's own and is never overwritten: approval is not a licence to take over another skill.
+
+Removal leaves a skill directory that carries AoE's propagation marker (`.aoe-managed.json`)
+where it is, and reports it as kept: `aoe skill sync` deployed that copy, so AoE is the one that
+retires it. See `docs/install.md` §6 for the two systems' overlap.
+
+Because AoE's own skill list scans the harness roots it knows (`claude-user`, `gemini-user`,
+`opencode-user`, `agents-standard`), a user-scope install can show up there as an *external* skill
+as well as under `aoe-managed`: two entries, one file the plugin owns and one a copy in a harness's
+config. The `aoe-managed` one is the plugin's anchor — it is the writable one — and the copies are
+what the agents actually read.
+
+`kiro` ships no skill, because it has no skill loader: its carrier is the steering document alone.
+A row with no hook, no skill root and no instruction file is refused by name (`no_destination`)
+rather than given an invented path — it gets launch-time tags and nothing else (`cline`,
+`openclaw`).
+
+opencode's plugin API may offer an in-process equivalent; it is unverified, so its row has no
+`extension_artifact` and `doctor` says launch-scope — but its user-scope carriers still install.
+The full consent model and its refusal states are in `plan/m5.md`.
+
 The portable mechanism is therefore the hook minting the variables in both keys, with the
 harness config holding exactly one indirection per header: one header name to one variable.
 Renaming a header or changing a value format is a plugin-side change, never a user-side config
 edit.
+
+## Sandboxed sessions
+
+A sandboxed launch cannot use the per-session copy. The copy lives in the app dir on the host,
+and aoe mounts only the project and a projection of the agent's own config root into the
+container, so a hook that exported `PI_CODING_AGENT_DIR=<app dir>/sessions/<id>/pi` pointed the
+harness at a path that does not exist there: pi came up with **no models at all**, not merely an
+untagged request. `tools/probe-sandbox.sh` measures this against the real sandbox image and
+writes `docs/harness-evidence/sandbox-pi.json`; the same run shows the export *overriding* the
+value aoe sets for a sandboxed pi (`PI_CODING_AGENT_DIR=/root/.pi/agent`, the store aoe seeds
+from the host config).
+
+Delivery therefore depends on the substrate, and the hook is told which one it serves. aoe passes
+no sandbox flag and runs the two `[host_hooks]` keys for disjoint launches, so the key is the
+signal, and the line repeats it:
+
+| Key | Fires for | `--substrate` | Writes | Exports |
+|---|---|---|---|---|
+| `before_session` | a host launch | `host` | this session's copy | the tag variables **and** the copy's override variable |
+| `before_start` | a sandboxed launch | `sandbox` | nothing | the tag variables only |
+
+The sandboxed line still delivers, because `before_start` output becomes inherited container
+environment and the header's static mapping is in the store aoe seeds. That holds for every row
+that reaches its channel by reading a variable at request time — `pi` (`!v="${AOE_LLM_TAGS-}"`;
+`command_headers`), `opencode` (`{env:VAR}`), and the `env_only` rows (`claude`, `gemini`), which
+never needed a copy. It does **not** hold where the harness needs the literal in its file:
+
+- **vibe** (`config_headers`, `overlay_dir`, nothing expanded) can only be tagged from a copy, so
+  a sandboxed vibe session sends no tag until the app dir is mounted into the container. That is
+  one documented cell, not a silent failure: the hook says so on stderr and still exports the
+  variables, and `setup --apply` refuses nothing.
+- An adapter row added later inherits the same rule: the hook warns when an enabled target's kind
+  is not in the row's `interpolates`, naming this section.
+
+The extension carriers follow the same split, for the same reason (§Two carrier scopes). A
+`session`-scope row's skill and reminder are files in that unmounted copy, so a sandboxed launch
+gets neither: the tag still travels, but the agent cannot read its activity skill and has no
+reminder, and the per-request hook is not installed either, so the value is the one the launch
+minted. The hook says so on stderr — only when an approval actually exists, because an
+unapproved row is missing nothing it promised — and `doctor` says it on the `extension <agent>`
+line. A `user`-scope row is the other way round: its carriers are written into the harness's own
+config, which is what aoe seeds a sandbox *from*, so they arrive in the container with no extra
+work (subject to the seeding limits above: `droid` and `opencode` get no skill directory).
+
+The cell-by-cell result for all twelve rows, both substrates, is `docs/carrier-matrix.md`.
+
+`doctor` keeps the two substrates apart. It reads the `--substrate` off each installed line and
+fails a `before_start` line that declares none (an install from before this existed points a
+container at an unmounted app dir) or the wrong one, and it warns when a row that interpolates
+has no static mapping in the user's file — the copy would carry it for host launches, but a
+sandboxed launch reads that file and would send nothing.
 
 ## Auto-discovery
 

@@ -31,7 +31,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 
 | Parameter | Value | Status |
 |---|---|---|
-| Keys | `[host_hooks].before_session` **and** `.before_start`, same command string | decided |
+| Keys | `[host_hooks].before_session` **and** `.before_start`, same command differing only in `--substrate` (`host` / `sandbox`) | decided |
 | Placement | global `<app_dir>/config.toml` (recommended); per profile `<app_dir>/profiles/<name>/config.toml`. Profile arrays replace global arrays | decided |
 | `AOE_BIN` | `AOE_BIN` → `PATH` lookup → `/usr/local/bin/aoe` | proposed |
 | Contract with aoe | stdout `KEY=VALUE` per line, later wins, no trailing whitespace, exit 0 always, 2 s bound on any subprocess | decided |
@@ -61,6 +61,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 | `signing_key` | string | `""` | ≥16 chars when signature is `hmac` | M1 | open (#8) |
 | `feature_tag` | string | `""` | one tag entry: `feature:billing`, a bare `billing` (= `feature:billing`), or a stored pair `{ key = "feature", value = "billing" }` | M1 | decided |
 | `feature_tag` scope | — | `per_project = true` (requires `api_version ≥ 18`) | global, profile and project hold the same entry grammar | M1 | decided |
+| `harness_extension` | `string_list` | `[]` | adapter ids (`pi`); **intent only** — the file is installed only with a matching receipt, so an empty list writes no code anywhere; a name no row claims is a `doctor` warning, never a silent skip | M5 | decided |
 
 M0 rule semantics (implemented in `src/resolver.rs`, M0-T02):
 
@@ -135,6 +136,36 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | A target whose `kind` the harness does not support | `setup --apply` refuses the whole plan; `doctor` fails that target | decided |
 | Malformed config TOML | warn on stderr, ignore that file (profile falls back to global, global to defaults), exit 0 | decided |
 
+## 5b. Activity vocabulary
+
+`activity` is a reserved tag key, so it is written, inherited and delivered like any other tag
+(`activity:code`, `aoe-llm-tags tag --set activity:test`). The value is closed: a surface that has
+an icon for it renders that icon, and a value outside the list is a warning (stderr once per
+launch, `activity` listed as a plain tag) rather than a fourth spelling of "testing".
+
+| Value | Icon (lucide) | Tone | A row says |
+|---|---|---|---|
+| `explore` | `compass` | neutral | exploring |
+| `plan` | `map` | info | planning |
+| `code` | `code` | neutral | coding |
+| `test` | `flask-conical` | warn | testing |
+| `debug` | `bug` | danger | debugging |
+| `review` | `git-pull-request` | info | reviewing |
+| `docs` | `book-open` | neutral | writing docs |
+| `ops` | `terminal` | warn | ops |
+| `idle` | `pause` | neutral | idle |
+
+| Rule | Value | Status |
+|---|---|---|
+| Where it is defined | `src/activity.rs`; the icon and tone live there, not in a settings file and not in the payload | decided |
+| Resolution | the last `activity` tag wins (a session's own edits apply after inherited tags) | decided |
+| Unknown value | warning, and the tag is shown as a plain tag — never given a guessed icon | decided |
+| Bare `activity` marker | not an activity, not a typo: no icon, no warning | decided |
+| Surfaces | row badge leads with the activity and its icon, then up to three tags with `tag`, then `+n`; the pane's row carries the icon; the page renders the vocabulary as buttons and shows the current one | decided |
+| Terminal UI | text and tone only, so the label ("testing") is the fallback everywhere, and the page names the icon in the tooltip | decided |
+| Who sets it | the agent, from the shipped skill's instruction (run `aoe-llm-tags activity <word>` when a phase starts); a person, from the pane's rows, the page's buttons or the CLI (`activity <word>`, `--clear`); **no heuristic**, because an inferred activity is a guess sent downstream as a claim about the session | decided |
+| Delivery | an ordinary tag: launch-scoped, or per-request once a session has an approved harness extension (M5) | decided |
+
 ## 6. CLI surface
 
 | Command / flag | Value | Milestone |
@@ -147,10 +178,14 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `setup <agent> --yes` | apply with backup | M2 (open #5) |
 | `setup <agent> --undo` | restore the backup / remove the marker block; `--undo --all` is the pre-uninstall step (removes every session copy and names the lines only the user can delete) | M2 |
 | `tag --set K:V` / `--unset K` / `--token V` / `--clear-token` / `--reset` / `--json` | this session's own tags and literal token; writes `sessions/<id>/overrides.toml` and nothing else (implemented, M2) | M2 |
+| `activity <name>` / `--clear` / `--show` / `--json` | one validated `activity` tag for this session, then (when the session has a live file) a refresh of it, so a running session's next request carries the new value; the vocabulary is closed, so an unknown name is exit 2 | M5 |
 | `overrides.toml` `tags` / `unset` / `token` | a session's edits, in the same tag grammar as `tags`; applied inside `snapshot`, so every verb and the UI share one answer | M2 |
 | `verify [--window 24h]` | one request, then look for the header consumer-side — **roadmap-gated** (`plan/roadmap.md` §1): not in M0–M2 | roadmap |
 | `--session` `--profile` `--tool` `--project` `--group` `--title` | fallbacks for row fields (values from `AOE_*`) | M0 |
 | `--adapter <agent>` | pin the adapter row instead of detecting | M0 |
+| `extension status [--json]` | per harness: requested, state, receipt (implemented, M5-T01) | M5 |
+| `extension enable <harness> [--print] [--accept <sha256>]` | prints the disclosure, records the approval; `--accept` is required when stdin is not a tty (implemented) | M5 |
+| `extension disable <harness>` | removes the approval; the next launch installs no file, a running session stops sending dynamic values (implemented) | M5 |
 | `--json` | machine-readable output (doctor, status) | M0 |
 | Exit codes | `0` ok/degraded, `1` a failing `doctor` check, `2` usage error | M0 |
 
@@ -164,6 +199,13 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | Hook line guard | the installed command ends `|| true` | `aoe plugin uninstall` cannot remove the pasted `[host_hooks]` lines; without the guard a stale line exits 127 and aborts every launch, with the guard it is a no-op |
 | Mapping guard | for a strict harness the printed value is a command: `!v="${VAR-}"; [ -n "$v" ] && printf %s "$v" \|\| printf %s {}` | the mapping lives in a file the plugin does not own, so it outlives an uninstall; a bare `$VAR` there makes the harness fail its first request, this value sends `{}` instead |
 | Doctor output | absolute paths always | hook debugging without paths is the expensive failure |
+| Receipt file | `<app dir>/harness-extension.toml`, `[extension.<harness>]` | durable across plugin update/reinstall; `plugin.storage` is cleared by the host, this must not be |
+| Receipt validity | `sha256` + `disclosure_version` only | `accepted_at`, `accepted_plugin` and `tested_harness` are informational: a plugin or harness upgrade must not re-ask |
+| `DISCLOSURE_VERSION` | `1` | the wording is part of what was approved; bumping it invalidates every receipt |
+| Artefact digest | `sha256(include_str!("../harness/pi.ts"))` | compiled in, so "the file the user approved" is a property of the build, not of what sits next to it at runtime |
+| Refusal reasons | `no_artifact`, `no_intent`, `no_directory`, `missing_artifact`, `no_receipt`, `hash_mismatch`, `disclosure_mismatch` | one `doctor` sentence and one launch warning each; the first two are silent at launch because nothing was asked for |
+| Live file | `sessions/<id>/live.json`, exported as `AOE_LLM_TAGS_LIVE` | carries the values the launch already resolved plus `enabled`; never a token, never a prompt |
+| Extension directory | a real directory of links to the user's own entries, plus this plugin's file | the usual whole-directory link would make the plugin write *through* into the user's config |
 
 ## 8. Adapter data (`adapters.toml`)
 
@@ -181,6 +223,20 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | `config_format` | `json`, `toml`, `yaml`, `none` | |
 | `status` | `verified`, `documented`, `needs_research`, `unsupported` | per row |
 | `verified_with` | `{ agent_version, aoe_version }` or absent | set only by a real run |
+| `extension_artifact` | path relative to the plugin root (`harness/pi.ts`) or absent | present only where the harness loads code from its config; the plugin ships it compiled in and installs it only after the user approves that exact file (M5) |
+| `extension_subdir` | default `extensions` | directory inside the session config copy |
+| `extension_filename` | default `aoe-llm-tags.ts` | ours, so a revoke knows what to remove |
+| `extension_env` | default `AOE_LLM_TAGS_LIVE` | the variable the hook exports so the extension finds the live file |
+| `skill_artifact` | pi: `harness/skills/aoe-activity/SKILL.md` | a skill shipped with the bundle, written into the session copy so the harness advertises it |
+| `skill_dir` / `skill_subdir` | default `aoe-activity` / `skills` | `<session config>/skills/<skill_dir>/SKILL.md`; the session copy's skills root stays a real directory holding links to the user's own skills |
+| `append_artifact` / `append_filename` | `harness/activity.append.md` / `APPEND_SYSTEM.md` (pi), `AGENTS.md` (vibe) | the always-loaded carrier: a skill the model never opens changes nothing, so the one-line instruction travels in the system prompt too. One reminder file for every harness — what it says is about this plugin, not a vendor's format |
+| `carrier_scope` | `session` (pi, vibe) or `user` (claude, codex, opencode, hermes, gemini, droid, qwen, kiro) or absent | which grant the carriers need. Absent with no user path either ⇒ `no_destination`, and the harness gets launch-time tags only |
+| `user_skill_root` | `~/.claude/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.hermes/skills`, `~/.gemini/skills`, `~/.factory/skills`, `~/.qwen/skills` | `~`-relative only: an absolute path would write outside the one place a user-scope approval may touch |
+| `user_instructions` | `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.config/opencode/AGENTS.md`, `~/.hermes/SOUL.md`, `~/.gemini/GEMINI.md`, `~/.factory/AGENTS.md`, `~/.qwen/QWEN.md`, `~/.kiro/steering/aoe-activity.md` | the file the harness reads into every conversation; the reminder goes between two markers and the rest stays byte for byte |
+| `bundle digest` | sha256 over `carrier:<scope>\n` then `<disclosed path>\n<sha256 of file>\n` per artefact, disclosure order | what a receipt pins; adding, moving or rewording a file asks for a fresh approval, because where it goes is part of the grant |
+| `managed skill` | `<app dir>/skills/aoe-activity/SKILL.md` | AoE's own skill store, so the skill is listed on the Skills page; written at approval, removed at `disable`, and never overwriting a copy without `MANAGED_MARKER` |
+| user-scope block | `MANAGED_MARKER`, `BLOCK_BEGIN` (`<!-- aoe-llm-tags:begin -->`), `BLOCK_END` (`<!-- aoe-llm-tags:end -->`) | the only span of a user's file this plugin writes; `strip_block` restores the rest exactly, and a file the block was alone in is deleted on removal |
+| `AOE_PROPAGATION_MARKER` | `.aoe-managed.json` | AoE's marker inside a copy `aoe skill sync` deployed; its presence means the copy is AoE's, so a `disable` leaves the directory and prints `kept:` instead of deleting it |
 
 ## 9. Discovery and config edits (M2)
 
