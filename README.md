@@ -215,6 +215,7 @@ Plan (what ships when, and with which values):
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
 | `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane and page payloads — and a click's edit — can be checked without a browser |
+| `tools/verify-install.sh` | Checks one installed copy against the host it is installed in: the binaries and artefacts, the grant, both hook lines against `setup --print`, a host launch and a sandboxed one, and `doctor`. Prints `PASS`/`FAIL` per line |
 | `tools/check-page.mjs` | Runs the page's script against a stub DOM and a stub dashboard (needs `node`), which is how the bridge handshake is checked: a page can pass every static check and still throw the moment it runs |
 | `tools/probe-sandbox.sh` | Measures the delivery mechanisms inside the real sandbox image, one container per mechanism plus one real `aoe add --sandbox` session, so "does the tag reach a sandboxed harness?" is answered by a request at a sink and not by reading aoe's source (evidence: `docs/harness-evidence/sandbox-pi.json`) |
 | `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |

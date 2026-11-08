@@ -102,6 +102,29 @@ arrival with the fixture in §5. Every `warn`/`fail` names the piece to fix.
 
 Exit codes: `0` all good (warnings allowed), `1` at least one check failed, `2` bad usage.
 
+`doctor` reads the config and the mapping. `tools/verify-install.sh` (from the plugin source) goes
+further and checks the installed copy against the host it sits in, printing `PASS`/`FAIL` per line
+and exiting non-zero on the first failure — the four things that go stale after an upgrade, a move
+or a half-finished edit:
+
+```sh
+tools/verify-install.sh                    # reads the default app dir and profile
+AOE_APP_DIR=~/.config/agent-of-empires tools/verify-install.sh
+```
+
+- the binaries and the artefacts an approval needs are present;
+- the grant carries `runtime.worker` and `session.read` and no `net`;
+- **both hook lines match what `setup --print` emits** — a line that predates `--substrate`, or one
+  that still points at a path this install no longer occupies, fails here rather than at the next
+  launch;
+- one host launch and one sandboxed launch, in throwaway homes: the host one writes this session's
+  copy and exports the override variable, the sandboxed one writes nothing under the app dir;
+- `doctor` reports `0 failed`.
+
+It writes nothing outside a temporary directory and starts no session, so it is safe on a live
+host. What it cannot tell you is whether a harness honours what was written — that needs the
+harness, and is `tools/probe-harness.sh <agent>` (§5).
+
 ## 4. See a value
 
 Inside a session (or with the variables exported by hand):
