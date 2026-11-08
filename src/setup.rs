@@ -533,6 +533,12 @@ fn sandbox_gaps(adapter: &Adapter, snap: &resolver::Snapshot) -> Vec<String> {
         if adapters::interpolates(adapter, &item.kind) {
             continue;
         }
+        // Only a loss if the host launch would have sent it. A row with no write
+        // path and no interpolation (`cline`) sends nothing there either, so
+        // blaming the sandbox would name the wrong cause.
+        if !crate::overlay::can_write(adapter) {
+            continue;
+        }
         gaps.push(format!(
             "{} is not sent for a sandboxed session: adapter {} needs the value written \
              into its own config, and aoe does not mount this session's copy into the \

@@ -54,7 +54,10 @@ duplicated; a launch with nothing to deliver creates nothing at all. Verified en
 **and** a `samplingParams` body field), `opencode` (header **and** a query parameter), `claude`
 (env-only header) and `codex` (header through a reference in its own config) — evidence in
 `docs/harness-evidence/`, regenerate with `tools/probe-harness.sh <agent>` and, for a real aoe
-session per harness, `tools/probe-session.sh <agent>`. 308 tests green.
+session per harness, `tools/probe-session.sh <agent>`. 310 tests green.
+
+What each harness gets — tag, activity skill, reminder, per-request update — on a host launch and
+inside a container is one table in `docs/carrier-matrix.md`, with a drift test behind it.
 
 A **sandboxed** launch is told apart by the hook line, not by aoe: `before_start` carries
 `--substrate sandbox` and exports the tag variables only, because the container cannot see the app
@@ -109,7 +112,7 @@ it. Nothing in `~/.pi`, `~/.codex`, `~/.claude` or `~/.config/opencode` is modif
 Build and test from a checkout (the host's own build step uses the same two commands):
 
 ```sh
-cargo test --locked                  # 308 tests, no network (needs `git` for tests/git_real.rs)
+cargo test --locked                  # 310 tests, no network (needs `git` for tests/git_real.rs)
 cargo build --release --locked       # target/release/{aoe-llm-tags,aoe-llm-tags-worker}
 ```
 

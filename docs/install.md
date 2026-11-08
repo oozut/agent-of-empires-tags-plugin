@@ -181,6 +181,9 @@ Both scopes also write the skill into AoE's managed store, so the Skills page li
 shows up there a second time as an *external* skill: two rows, one file the plugin owns and one the
 agent reads.
 
+The whole picture — which of the four carriers reaches which harness, on a host launch and in a
+container — is `docs/carrier-matrix.md`.
+
 ### Sandboxed sessions
 
 A session that aoe runs in a container reads none of the session-scope carriers: its config copy

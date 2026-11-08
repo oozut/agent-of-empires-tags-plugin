@@ -652,6 +652,8 @@ line. A `user`-scope row is the other way round: its carriers are written into t
 config, which is what aoe seeds a sandbox *from*, so they arrive in the container with no extra
 work (subject to the seeding limits above: `droid` and `opencode` get no skill directory).
 
+The cell-by-cell result for all twelve rows, both substrates, is `docs/carrier-matrix.md`.
+
 `doctor` keeps the two substrates apart. It reads the `--substrate` off each installed line and
 fails a `before_start` line that declares none (an install from before this existed points a
 container at an unmounted app dir) or the wrong one, and it warns when a row that interpolates

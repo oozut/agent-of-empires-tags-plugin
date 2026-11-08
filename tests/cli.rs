@@ -140,6 +140,18 @@ fn a_launch_on_the_host_is_told_nothing_about_the_sandbox() {
 }
 
 #[test]
+fn a_sandboxed_launch_does_not_blame_itself_for_a_row_that_never_delivered() {
+    // cline has no write path and expands nothing, so a host launch sends no tag
+    // either. Warning that the sandbox "does not mount this session's copy" would
+    // name a copy that never existed and hide the real reason.
+    let mut sandbox = Sandbox::new();
+    sandbox.session(SESSION_ID, "cline");
+    let run = sandbox.run(&["hook", "--substrate", "sandbox"]);
+    run.assert_ok();
+    assert_eq!(run.stderr, "", "{}", run.stderr);
+}
+
+#[test]
 fn an_unknown_substrate_is_a_usage_error() {
     // The value decides the delivery, so a typo must not fall back to the other one.
     let sandbox = Sandbox::new();
