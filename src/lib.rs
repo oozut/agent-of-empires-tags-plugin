@@ -17,6 +17,7 @@ pub mod gitinfo;
 pub mod harness_extension;
 pub mod overlay;
 pub mod private;
+pub mod registry;
 pub mod resolver;
 pub mod session_tags;
 pub mod settings;

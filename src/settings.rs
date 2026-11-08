@@ -204,6 +204,41 @@ pub fn host_hook_entries<'a>(config: &'a toml::Table, key: &str) -> Vec<&'a str>
     }
 }
 
+/// One JSON value as TOML, for the settings a host RPC returns.
+///
+/// `None` for `null`: TOML has no null, and a setting a project did not set is
+/// the same thing as a setting that is absent.
+pub fn json_to_toml(value: &serde_json::Value) -> Option<toml::Value> {
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(v) => Some(toml::Value::Boolean(*v)),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                Some(toml::Value::Integer(i))
+            } else {
+                n.as_f64().map(toml::Value::Float)
+            }
+        }
+        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
+        serde_json::Value::Array(items) => {
+            let mut out = Vec::new();
+            for item in items {
+                out.push(json_to_toml(item)?);
+            }
+            Some(toml::Value::Array(out))
+        }
+        serde_json::Value::Object(map) => {
+            let mut table = toml::Table::new();
+            for (key, val) in map {
+                if let Some(converted) = json_to_toml(val) {
+                    table.insert(key.clone(), converted);
+                }
+            }
+            Some(toml::Value::Table(table))
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

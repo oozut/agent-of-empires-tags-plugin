@@ -161,17 +161,30 @@ The deliverable is the header set itself: which system consumes it is the operat
 the plugin must work the same whichever one it is. The plugin never sees a prompt.
 
 A tag says what a session *is* (`feature:billing`, `team:core`). The reserved
-`activity` key says what it is *doing* — `explore`, `plan`, `code`, `test`, `debug`, `review`,
-`docs`, `ops`, `idle` — a closed vocabulary so the row badge, the pane and the page all show the
-same lucide icon and tone, with the word ("testing") as the fallback where an icon cannot render.
+`activity` key says what it is *doing* — `code`, `test`, `review`, whatever this session's
+**family** defines. A family is a named set of activities, each with a label, a lucide icon, a
+tone, and a sentence saying when to move into it ("when starting to implement the feature, move
+the activity to coding"); the built-in one is the nine phases `explore`, `plan`, `code`, `test`,
+`debug`, `review`, `docs`, `ops`, `idle`. A family is closed, so the badge, the pane and the page
+always show the same icon and tone, with the word ("testing") as the fallback where an icon
+cannot render — but which words exist is yours to choose, per project: define a family in the
+plugin's settings or in the repository's own `.aoe/activity.toml`, and pick it with the
+per-project `activity_family` setting. A session pins its family at launch, so editing one
+applies to the next session and never relabels a running one.
+
 Because an activity changes while a session runs, a launch-time value is not enough: a harness
 that loads an extension from its config can set the header on *each* request, which is why the
 plugin ships one, per harness, behind an approval that names the exact file (`docs/install.md` §6).
 
 Whichever side sets it, the edit is one command — `aoe-llm-tags activity test`, or `--clear`,
-or `--show` to read the current one and the vocabulary — and the dashboard's pane offers every
-value as a row, so the session view and the terminal UI can change it without a page. Last writer
-wins: a person may override what the agent declared, and the agent may move on when the task does.
+or `--show` to read the current one, the family it belongs to and the words that family allows —
+and the dashboard's pane offers every value as a row, so the session view and the terminal UI can
+change it without a page. Last writer wins: a person may override what the agent declared, and the
+agent may move on when the task does.
+
+The `when` sentences are guidance today: nothing moves the activity automatically, because a
+guess about the work would be a claim sent downstream. They are stored in the shape a future
+release can act on, so a machine-readable trigger can join them without changing the file.
 
 The agent side is a shipped skill (`aoe-activity`) plus the same one-line reminder in the harness's
 always-loaded instructions: a skill is advertised and loaded on demand, which is not enough on its

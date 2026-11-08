@@ -136,34 +136,45 @@ Template-resolution notes (implemented in `src/resolver.rs`, M0-T02):
 | A target whose `kind` the harness does not support | `setup --apply` refuses the whole plan; `doctor` fails that target | decided |
 | Malformed config TOML | warn on stderr, ignore that file (profile falls back to global, global to defaults), exit 0 | decided |
 
-## 5b. Activity vocabulary
+## 5b. Activity families
 
 `activity` is a reserved tag key, so it is written, inherited and delivered like any other tag
-(`activity:code`, `aoe-llm-tags tag --set activity:test`). The value is closed: a surface that has
-an icon for it renders that icon, and a value outside the list is a warning (stderr once per
-launch, `activity` listed as a plain tag) rather than a fourth spelling of "testing".
+(`activity:code`, `aoe-llm-tags tag --set activity:test`). The *values* are a **family**: a named
+set of activities, each with a label, a lucide icon, a tone, and a `when` sentence that says what
+has to be true to move into it. A family is closed — an activity it does not define is a warning
+and gets no icon, so a typo stays visible instead of becoming a fourth spelling of "testing".
 
-| Value | Icon (lucide) | Tone | A row says |
-|---|---|---|---|
-| `explore` | `compass` | neutral | exploring |
-| `plan` | `map` | info | planning |
-| `code` | `code` | neutral | coding |
-| `test` | `flask-conical` | warn | testing |
-| `debug` | `bug` | danger | debugging |
-| `review` | `git-pull-request` | info | reviewing |
-| `docs` | `book-open` | neutral | writing docs |
-| `ops` | `terminal` | warn | ops |
-| `idle` | `pause` | neutral | idle |
+The built-in `default` family is the nine phases (below). A user replaces it by defining their own
+family in the plugin settings (the settings UI, or the settings table directly) or in a TOML file
+inside the repository, and choosing it with the per-project `activity_family` setting.
+
+| Value | Icon (lucide) | Tone | A row says | `when` (default family) |
+|---|---|---|---|---|
+| `explore` | `compass` | neutral | exploring | when reading the codebase, grepping, or mapping a subsystem |
+| `plan` | `map` | info | planning | when agreeing a design, writing a plan or a task list |
+| `code` | `code` | neutral | coding | when starting to implement or edit source files |
+| `test` | `flask-conical` | warn | testing | when writing or running tests, or the build |
+| `debug` | `bug` | danger | debugging | when chasing a failure to its cause |
+| `review` | `git-pull-request` | info | reviewing | when reading a diff for correctness, or reviewing a branch |
+| `docs` | `book-open` | neutral | writing docs | when writing a README, docs, a changelog or comments |
+| `ops` | `terminal` | warn | ops | when touching dependencies, packaging, CI, deploys or migrations |
+| `idle` | `pause` | neutral | idle | when waiting on the user, or nothing is in flight |
 
 | Rule | Value | Status |
 |---|---|---|
-| Where it is defined | `src/activity.rs`; the icon and tone live there, not in a settings file and not in the payload | decided |
-| Resolution | the last `activity` tag wins (a session's own edits apply after inherited tags) | decided |
+| Where a family is defined | built-in `default` in `src/activity.rs`; the plugin settings `activity_families` (global, profile, or a project); the repository's file `activity_file` (default `.aoe/activity.toml`) | decided |
+| Precedence | built-in → settings → repo file, each *replacing* a same-named family whole (a repo family is not merged into a settings family of the same name). Everything a more specific source does not name still comes from the one below | decided |
+| Which family a session uses | the repo file's `default = "…"`, else the `activity_family` setting (per project, falling back to profile then global), else `default`. A name nothing defines is a warning and the built-in family | decided |
+| The repo file | relative to the project root, cannot leave it, ≤64 KiB, TOML. **Missing is silent** (unlike `tags_file`): a repository that declares no families is not a problem | decided |
+| Launch-scoped | the hook pins the resolved family into `sessions/<id>/activity.toml`; the `activity` verb, the pane and the page read the pin. Editing a family (or the choice) therefore applies to the **next** session, never to a running one. Only the current value changes mid-session. A launch that resolves nothing but the built-in writes no pin | decided |
+| Resolution of the current value | the last `activity` tag wins (a session's own edits apply after inherited tags) | decided |
+| Accepted spellings | the key (`test`), the prefixed form (`activity:test`), any case, and the label (`testing`); the stored value is always `activity:<key>` | decided |
 | Unknown value | warning, and the tag is shown as a plain tag — never given a guessed icon | decided |
 | Bare `activity` marker | not an activity, not a typo: no icon, no warning | decided |
-| Surfaces | row badge leads with the activity and its icon, then up to three tags with `tag`, then `+n`; the pane's row carries the icon; the page renders the vocabulary as buttons and shows the current one | decided |
+| `when` | prose, stored and shown (pane tooltip, page tooltip, `activity --json`), **not enforced**: nothing moves the activity automatically, because an inferred activity is a guess sent downstream as a claim about the session. A machine-readable trigger can be added beside it without changing the file shape | decided |
+| Surfaces | row badge leads with the activity and its icon, then up to three tags with `tag`, then `+n`; the pane's rows are the session's family; the page's buttons are the **selected session's** family, with the other families named under the card | decided |
 | Terminal UI | text and tone only, so the label ("testing") is the fallback everywhere, and the page names the icon in the tooltip | decided |
-| Who sets it | the agent, from the shipped skill's instruction (run `aoe-llm-tags activity <word>` when a phase starts); a person, from the pane's rows, the page's buttons or the CLI (`activity <word>`, `--clear`); **no heuristic**, because an inferred activity is a guess sent downstream as a claim about the session | decided |
+| Who sets it | the agent, from the shipped skill's instruction (run `aoe-llm-tags activity <word>` when a phase starts, after `activity --show` tells it the family); a person, from the pane's rows, the page's buttons or the CLI (`activity <word>`, `--clear`); **no heuristic** | decided |
 | Delivery | an ordinary tag: launch-scoped, or per-request once a session has an approved harness extension (M5) | decided |
 
 ## 6. CLI surface
@@ -178,7 +189,7 @@ launch, `activity` listed as a plain tag) rather than a fourth spelling of "test
 | `setup <agent> --yes` | apply with backup | M2 (open #5) |
 | `setup <agent> --undo` | restore the backup / remove the marker block; `--undo --all` is the pre-uninstall step (removes every session copy and names the lines only the user can delete) | M2 |
 | `tag --set K:V` / `--unset K` / `--token V` / `--clear-token` / `--reset` / `--json` | this session's own tags and literal token; writes `sessions/<id>/overrides.toml` and nothing else (implemented, M2) | M2 |
-| `activity <name>` / `--clear` / `--show` / `--json` | one validated `activity` tag for this session, then (when the session has a live file) a refresh of it, so a running session's next request carries the new value; the vocabulary is closed, so an unknown name is exit 2 | M5 |
+| `activity <name>` / `--clear` / `--show` / `--json` | one validated `activity` tag for this session, then (when the session has a live file) a refresh of it, so a running session's next request carries the new value; `--show` prints the session's family, where it came from and the words it allows; a word outside that family is exit 2 | M5 |
 | `overrides.toml` `tags` / `unset` / `token` | a session's edits, in the same tag grammar as `tags`; applied inside `snapshot`, so every verb and the UI share one answer | M2 |
 | `verify [--window 24h]` | one request, then look for the header consumer-side — **roadmap-gated** (`plan/roadmap.md` §1): not in M0–M2 | roadmap |
 | `--session` `--profile` `--tool` `--project` `--group` `--title` | fallbacks for row fields (values from `AOE_*`) | M0 |

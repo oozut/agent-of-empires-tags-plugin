@@ -980,6 +980,244 @@ fn activity_sets_the_reserved_tag_and_the_next_hook_carries_it() {
     );
 }
 
+/// The settings rows one family, as the settings UI writes them. The array header
+/// is absolute, so it names the plugin settings table again.
+const WORK_FAMILY: &str = r#"activity_family = "work"
+
+[[plugins."dev.oozut.llm-tags".settings.activity_families]]
+family = "work"
+value = "write"
+label = "writing"
+icon = "pen-line"
+tone = "info"
+when = "when starting to implement the feature, move the activity to writing"
+
+[[plugins."dev.oozut.llm-tags".settings.activity_families]]
+family = "work"
+value = "measure"
+label = "measuring"
+icon = "ruler"
+"#;
+
+#[test]
+fn a_family_from_the_settings_replaces_the_builtin_vocabulary() {
+    // The nine words are a default, not the vocabulary: a user defines their own
+    // and names it as the family a session starts in. Nothing else changes — the
+    // value is still one reserved tag.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(WORK_FAMILY, ""));
+
+    let show = sandbox.run(&["activity", "--show"]);
+    show.assert_ok();
+    assert!(show.stdout.contains("family work"), "{}", show.stdout);
+    assert!(show.stdout.contains("write"), "{}", show.stdout);
+    assert!(
+        !show.stdout.contains("explore"),
+        "the built-in words are not this family's: {}",
+        show.stdout
+    );
+
+    sandbox.run(&["activity", "writing"]).assert_ok();
+    let json = sandbox.run(&["activity", "--json"]);
+    json.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&json.stdout).expect("json");
+    assert_eq!(parsed["activity"], serde_json::json!("write"));
+    assert_eq!(parsed["label"], serde_json::json!("writing"));
+    assert_eq!(parsed["family"], serde_json::json!("work"));
+    assert_eq!(parsed["source"], serde_json::json!("settings"));
+    // `when` is the part an agent reads, so it travels with the value.
+    assert_eq!(
+        parsed["vocabulary"][0]["when"],
+        serde_json::json!("when starting to implement the feature, move the activity to writing")
+    );
+    assert_eq!(parsed["vocabulary"].as_array().unwrap().len(), 2);
+
+    // A word the new family does not define is refused, and the refusal names
+    // that family rather than the built-in one.
+    let refused = sandbox.run(&["activity", "test"]);
+    refused.assert_code(2);
+    assert!(refused.stderr.contains("work family"), "{}", refused.stderr);
+    assert!(refused.stderr.contains("write"), "{}", refused.stderr);
+    assert!(!refused.stderr.contains("explore"), "{}", refused.stderr);
+}
+
+#[test]
+fn the_repository_file_wins_and_replaces_a_same_named_family_whole() {
+    // The settings define `work` with two rows; the repository defines `work`
+    // with one. The repository's definition replaces the family, it does not
+    // extend it: `measure` is gone, so a reader never has to reason about a
+    // half-and-half family.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(WORK_FAMILY, ""));
+    sandbox.write_file(
+        &sandbox.project().join(".aoe/activity.toml"),
+        r#"default = "work"
+
+[families.work.activities.code]
+label = "coding"
+icon = "code"
+tone = "neutral"
+when = "when starting to implement the feature"
+"#,
+    );
+
+    let show = sandbox.run(&["activity", "--json"]);
+    show.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&show.stdout).expect("json");
+    assert_eq!(parsed["family"], serde_json::json!("work"));
+    assert!(
+        parsed["source"].as_str().unwrap().starts_with("repo "),
+        "the choice came from the repository: {parsed}"
+    );
+    let words: Vec<&str> = parsed["vocabulary"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["key"].as_str())
+        .collect();
+    assert_eq!(words, vec!["code"], "{parsed}");
+
+    // `default` in the file outranks `activity_family`; the words it kept are
+    // the repository's, and the ones it dropped are gone.
+    sandbox.run(&["activity", "code"]).assert_ok();
+    sandbox.run(&["activity", "write"]).assert_code(2);
+}
+
+#[test]
+fn a_running_session_keeps_the_family_it_launched_with() {
+    // The whole point of pinning: editing a family must never relabel a session
+    // that is already running. The launch writes the family it resolved, and
+    // every mid-session read uses that file.
+    let sandbox = Sandbox::new();
+    let file = sandbox.project().join(".aoe/activity.toml");
+    sandbox.write_file(
+        &file,
+        r#"default = "work"
+
+[families.work.activities.write]
+label = "writing"
+when = "when implementing"
+"#,
+    );
+    let launched = hook(&sandbox);
+    launched.assert_ok();
+    let pin = sandbox.path(&format!(
+        "config/agent-of-empires/sessions/{SESSION_ID}/activity.toml"
+    ));
+    assert!(pin.exists(), "the launch pins the family: {pin:?}");
+    let pinned = std::fs::read_to_string(&pin).expect("pin");
+    assert!(pinned.contains("writing"), "{pinned}");
+
+    // The repository renames its activity afterwards; the running session does
+    // not care.
+    sandbox.write_file(
+        &file,
+        r#"default = "work"
+
+[families.work.activities.code]
+label = "coding"
+"#,
+    );
+    let show = sandbox.run(&["activity", "--json"]);
+    show.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&show.stdout).expect("json");
+    assert_eq!(parsed["family"], serde_json::json!("work"));
+    assert_eq!(
+        parsed["vocabulary"][0]["key"],
+        serde_json::json!("write"),
+        "the pinned family, not the edited one: {parsed}"
+    );
+    sandbox.run(&["activity", "write"]).assert_ok();
+    sandbox.run(&["activity", "code"]).assert_code(2);
+}
+
+#[test]
+fn a_project_registry_entry_chooses_the_family_a_launch_resolves() {
+    // `activity_family` and `activity_families` are per_project, and a launch has
+    // no host RPC: the hook reads the registry file the host writes. This is that
+    // file, with the project's own settings and a different family from the
+    // global one.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "activity_family = \"global\"\n\n[[plugins.\"dev.oozut.llm-tags\".settings.activity_families]]\nfamily = \"global\"\nvalue = \"triage\"\n",
+        "",
+    ));
+    let registry = sandbox.path("config/agent-of-empires/projects.json");
+    std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
+    std::fs::write(
+        &registry,
+        serde_json::json!([{
+            "name": "project",
+            "path": sandbox.project().display().to_string(),
+            "overrides": {
+                "plugin_settings": {
+                    PLUGIN_ID: {
+                        "activity_family": "project",
+                        "activity_families": [{
+                            "family": "project",
+                            "value": "ship",
+                            "label": "shipping",
+                        }],
+                    }
+                }
+            }
+        }])
+        .to_string(),
+    )
+    .unwrap();
+
+    let show = sandbox.run(&["activity", "--json"]);
+    show.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&show.stdout).expect("json");
+    assert_eq!(parsed["family"], serde_json::json!("project"), "{parsed}");
+    assert_eq!(parsed["vocabulary"][0]["key"], serde_json::json!("ship"));
+
+    // The launch resolves the same way, so the session that starts here carries
+    // the project's vocabulary.
+    let launched = hook(&sandbox);
+    launched.assert_ok();
+    let pin = sandbox.path(&format!(
+        "config/agent-of-empires/sessions/{SESSION_ID}/activity.toml"
+    ));
+    let pinned = std::fs::read_to_string(&pin).expect("pin");
+    assert!(pinned.contains("ship"), "{pinned}");
+    assert!(!pinned.contains("triage"), "{pinned}");
+}
+
+#[test]
+fn a_malformed_family_file_is_a_warning_and_the_session_still_starts() {
+    let sandbox = Sandbox::new();
+    sandbox.write_file(
+        &sandbox.project().join(".aoe/activity.toml"),
+        "not = = toml",
+    );
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert!(run.stderr.contains("is not valid TOML"), "{}", run.stderr);
+    assert_eq!(
+        run.lines().len(),
+        1,
+        "the tag still travels: {}",
+        run.stdout
+    );
+    // The built-in family is what a broken file leaves behind.
+    let show = sandbox.run(&["activity", "--json"]);
+    show.assert_ok();
+    let parsed: serde_json::Value = serde_json::from_str(&show.stdout).expect("json");
+    assert_eq!(parsed["family"], serde_json::json!("default"));
+}
+
+#[test]
+fn a_missing_family_file_is_silent() {
+    // Unlike `tags_file`, the activity file is optional in every repository: a
+    // project that declares no families is not a problem to report at every
+    // launch.
+    let sandbox = Sandbox::new();
+    let run = hook(&sandbox);
+    run.assert_ok();
+    assert_eq!(run.stderr, "");
+}
+
 #[test]
 fn an_unknown_activity_is_a_usage_error_that_names_the_vocabulary() {
     let sandbox = Sandbox::new();

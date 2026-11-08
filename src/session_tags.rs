@@ -379,6 +379,10 @@ mod tests {
             feature_tag: None,
             token: String::new(),
             harness_extension: Vec::new(),
+            activity_family: String::new(),
+            activity_families: Vec::new(),
+            activity_file: crate::activity::DEFAULT_FILE.to_string(),
+            activity_repo: None,
             warnings: Vec::new(),
         }
     }

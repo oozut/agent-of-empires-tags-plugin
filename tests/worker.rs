@@ -88,6 +88,9 @@ struct Wire {
     stdin: ChildStdin,
     lines: Receiver<Value>,
     settings: BTreeMap<String, Value>,
+    /// `config.get` answers for the project the host was asked about, the way the
+    /// host does: the project's value when it has one, the global one otherwise.
+    project_settings: BTreeMap<(String, String), Value>,
     rows: Vec<Value>,
     /// Every host call the worker made, in order: `(method, params)`.
     calls: Vec<(String, Value)>,
@@ -144,12 +147,19 @@ impl Wire {
             stdin,
             lines,
             settings: settings_of(sandbox),
+            project_settings: BTreeMap::new(),
             rows: rows.to_vec(),
             calls: Vec::new(),
             pushes: Vec::new(),
             log,
             next_id: 900,
         }
+    }
+
+    /// A `per_project` setting as the host would hand it back for one project.
+    fn set_project(&mut self, path: &Path, key: &str, value: Value) {
+        self.project_settings
+            .insert((path.display().to_string(), key.to_string()), value);
     }
 
     fn log(&self) -> String {
@@ -202,9 +212,12 @@ impl Wire {
         let result = match method.as_str() {
             "sessions.list" => json!({ "sessions": self.rows }),
             "config.get" => {
-                let value = params["key"]
-                    .as_str()
-                    .and_then(|key| self.settings.get(key))
+                let key = params["key"].as_str().unwrap_or_default();
+                let project = params["project_path"].as_str().unwrap_or_default();
+                let value = self
+                    .project_settings
+                    .get(&(project.to_string(), key.to_string()))
+                    .or_else(|| self.settings.get(key))
                     .cloned()
                     .unwrap_or(Value::Null);
                 json!({ "value": value })
@@ -862,6 +875,69 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
     // The pane is text-and-tone first: every row has a label, and the icon is
     // decoration the web renders and the terminal ignores.
     assert!(rows.iter().all(|row| row["label"].is_string()));
+}
+
+/// A family is per project, so the pane and the page offer the project's words —
+/// not the built-in nine, and not another project's. Both surfaces come from the
+/// session's own resolved family, so they cannot disagree.
+#[test]
+fn the_project_family_is_what_the_pane_and_the_page_offer() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"activity:write\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.set_project(&repo, "activity_family", json!("work"));
+    wire.set_project(
+        &repo,
+        "activity_families",
+        json!([
+            {"family": "work", "value": "write", "label": "writing", "icon": "pen-line", "tone": "info"},
+            {"family": "work", "value": "measure", "label": "measuring", "icon": "ruler"},
+        ]),
+    );
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+
+    let pane = wire
+        .pushes
+        .iter()
+        .rev()
+        .find(|params| params["slot"] == json!("pane"))
+        .expect("a pane");
+    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let section = blocks
+        .iter()
+        .find(|block| block["kind"] == json!("section") && block["title"] == json!("Activity"))
+        .unwrap_or_else(|| panic!("no Activity section in {pane}"));
+    let rows = section["children"].as_array().expect("rows");
+    let labels: Vec<&str> = rows
+        .iter()
+        .filter_map(|row| row["label"].as_str())
+        .collect();
+    assert_eq!(labels, vec!["writing", "measuring"], "{section}");
+    let selected: Vec<&str> = rows
+        .iter()
+        .filter(|row| row["selected"] == json!(true))
+        .map(|row| row["label"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(selected, vec!["writing"], "{section}");
+
+    // The page carries the same family and the same words, so the badge it draws
+    // is the badge the badge column draws.
+    let session = page["sessions"]
+        .as_array()
+        .and_then(|sessions| sessions.iter().find(|s| s["id"] == json!(SESSION)))
+        .expect("the session row");
+    assert_eq!(session["family"], json!("work"), "{session}");
+    assert_eq!(session["activity"]["label"], json!("writing"), "{session}");
+    let words: Vec<&str> = session["activities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["key"].as_str())
+        .collect();
+    assert_eq!(words, vec!["write", "measure"], "{session}");
 }
 
 /// A user-scope row on the page says so: the same card, a wider grant, and the

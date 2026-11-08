@@ -171,6 +171,53 @@ fn check<'a>(report: &'a llm_tags::doctor::Report, name: &str) -> &'a llm_tags::
 // --- a wired install --------------------------------------------------------
 
 #[test]
+fn the_activity_family_is_reported_with_the_words_it_allows() {
+    // The vocabulary is data, so a session's words are a fact about this machine
+    // that doctor can state: the family, where it came from, and what it allows.
+    let (sandbox, _) = wired();
+    let report = report(&sandbox);
+    let family = check(&report, "activity family");
+    assert_eq!(family.status, llm_tags::doctor::OK, "{family:?}");
+    assert!(
+        family.detail.contains("family default (built-in)"),
+        "{}",
+        family.detail
+    );
+    for word in ["explore", "plan", "code", "test"] {
+        assert!(family.detail.contains(word), "{}", family.detail);
+    }
+}
+
+#[test]
+fn a_project_family_is_what_doctor_reports_and_a_broken_file_is_a_warning() {
+    let (sandbox, _) = wired();
+    std::fs::create_dir_all(sandbox.project().join(".aoe")).unwrap();
+    std::fs::write(
+        sandbox.project().join(".aoe/activity.toml"),
+        "default = \"work\"\n\n[families.work.activities.write]\nlabel = \"writing\"\n",
+    )
+    .unwrap();
+    let resolved = report(&sandbox);
+    let family = check(&resolved, "activity family");
+    assert_eq!(family.status, llm_tags::doctor::OK, "{family:?}");
+    assert!(
+        family.detail.contains("family work (repo"),
+        "{}",
+        family.detail
+    );
+    assert!(family.detail.contains("write"), "{}", family.detail);
+    assert!(!family.detail.contains("explore"), "{}", family.detail);
+
+    // A file this build cannot read is a warning, not a failure: the session
+    // still starts with the families that did resolve.
+    std::fs::write(sandbox.project().join(".aoe/activity.toml"), "[families").unwrap();
+    let broken = report(&sandbox);
+    let family = check(&broken, "activity family");
+    assert_eq!(family.status, llm_tags::doctor::WARN, "{family:?}");
+    assert!(family.detail.contains("activity.toml"), "{}", family.detail);
+}
+
+#[test]
 fn a_clean_install_passes() {
     let (sandbox, _) = wired();
     let report = report(&sandbox);

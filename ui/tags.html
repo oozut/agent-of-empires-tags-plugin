@@ -99,13 +99,17 @@
     <h2>Activity</h2>
     <div class="card">
       <p class="note">
-        What this session is doing — <span class="mono">activity:code</span>, and one of a closed
-        list so the badge and the icon are always the same. It travels as a normal tag, so any
-        target carries it, and a running session that has an approved harness extension sends it
-        on its next request.
+        What this session is doing — <span class="mono">activity:code</span>, one word from this
+        session's <em>family</em>, so the badge and the icon are always the same. It travels as a
+        normal tag, so any target carries it, and a running session that has an approved harness
+        extension sends it on its next request. Each word carries the sentence that says when to
+        move into it; the family itself is defined for the project (settings, or its own
+        <span class="mono">.aoe/activity.toml</span>) and is pinned when a session launches, so
+        editing it applies to the next session.
       </p>
       <div class="row" id="activities" style="flex-wrap: wrap; gap: 6px"></div>
       <p class="note" id="activitysub"></p>
+      <p class="note" id="activityfamily"></p>
     </div>
 
     <h2>Tags</h2>
@@ -247,9 +251,11 @@
       // One row per harness that could take an extension, as the worker resolves it:
       // the page renders the verdict, it never decides one.
       let extensions = [];
-      // The closed activity vocabulary, from the worker: the page renders it, it
-      // never names an icon of its own.
-      let activities = [];
+      // Each session's own activity family, from the worker: the page renders the
+      // words it was given and never names an icon or a word of its own.
+      let pageFamily = "";
+      let pageActivities = [];
+      let pageFamilies = [];
 
       function banner(text, isError) {
         const el = document.getElementById("banner");
@@ -305,20 +311,39 @@
         host.innerHTML = "";
         const canWrite = !!session && !context.readOnly && !context.cityhall;
         const current = session && session.activity ? session.activity.key : null;
+        // A session carries its own pinned family; the page-level list is the same
+        // resolution without a project, and only used when there is no session.
+        const activities =
+          session && Array.isArray(session.activities) && session.activities.length
+            ? session.activities
+            : pageActivities;
         for (const activity of activities) {
           const button = document.createElement("button");
           button.className = activity.key === current ? "primary" : "quiet";
           // Web gets the icon name; the label is what a terminal shows, and what
           // the badge falls back to. The host renders `icon`, not this page.
           button.textContent = `${activity.label}`;
-          button.title = `activity:${activity.key} — icon ${activity.icon}`;
+          // The `when` sentence is why the family exists: it is what an agent
+          // reads to decide the move, so a person hovering a word sees the same
+          // rule the agent does.
+          button.title = activity.when
+            ? `activity:${activity.key} — ${activity.when}`
+            : `activity:${activity.key} — icon ${activity.icon}`;
           button.disabled = !canWrite;
           button.onclick = () => edit("tag.set", { key: "activity", value: activity.key });
           host.appendChild(button);
         }
+        const family = (session && session.family) || pageFamily || "default";
+        // Where the words come from, and what else this machine defines: a session
+        // is pinned to one family at launch, so this is the only place a person
+        // sees the others without opening the project form.
+        const others = pageFamilies.filter((name) => name !== family);
+        document.getElementById("activityfamily").textContent = others.length
+          ? `This session's family is ${family}. Also defined here: ${others.join(", ")}. A family is chosen per project and pinned when a session launches.`
+          : "";
         document.getElementById("activitysub").textContent = current
-          ? `This session says activity:${current}. Click another to change it.`
-          : "This session has not said what it is doing.";
+          ? `This session says activity:${current}, from the ${family} family. Click another to change it.`
+          : `This session has not said what it is doing. Family ${family}.`;
       }
 
       function renderExtensions() {
@@ -593,7 +618,9 @@
           references = Array.isArray(payload.references) ? payload.references : [];
           presets = Array.isArray(payload.presets) ? payload.presets : [];
           extensions = Array.isArray(payload.extensions) ? payload.extensions : [];
-          activities = Array.isArray(payload.activities) ? payload.activities : [];
+          pageFamily = typeof payload.family === "string" ? payload.family : "";
+          pageActivities = Array.isArray(payload.activities) ? payload.activities : [];
+          pageFamilies = Array.isArray(payload.families) ? payload.families : [];
           if (!sessions.some((s) => s.id === selected)) selected = sessions[0] ? sessions[0].id : null;
           render();
         } catch (err) {

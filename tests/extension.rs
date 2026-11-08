@@ -22,12 +22,12 @@ use llm_tags::harness_extension::DISCLOSURE_VERSION;
 /// bytes, so a new digest invalidates every receipt and asks them again. Update
 /// this constant together with `DISCLOSURE_VERSION` when the bundle's behaviour
 /// changes, and with nothing else when only its comments do.
-const BUNDLE_SHA256: &str = "0228e63707ff451a4890a3a94d24f8a6e8b5b3c157524fdf903a73073dbadb75";
+const BUNDLE_SHA256: &str = "2ee4b401717377ac1b41203e567e389251ded1e15dd6b4870108709379f83805";
 
 /// The digest pinned for the same carriers in a harness's own config: the same
 /// skill and reminder, placed under `~/.claude` instead of a session copy, so a
 /// different grant and a different digest.
-const USER_BUNDLE_SHA256: &str = "069d8952700ca4fbd2729d319dd522a091fe3c2a875f368269e0285576e16a08";
+const USER_BUNDLE_SHA256: &str = "d1b0c64984846210604f3b36001034f12a51cf656eae6e96001c370c873ae0b0";
 
 /// The first row whose carriers go into the user's own config, with the paths a
 /// user-scope approval writes. Taken from the table, not spelled here: the row

@@ -248,6 +248,18 @@ pub struct Settings {
     /// exact file, so listing a harness here asks for the disclosure; it does not
     /// approve one.
     pub harness_extension: Vec<String>,
+    /// The activity family a session starts in (`activity_family`). Per project,
+    /// so the project's registry entry can replace it before this table is
+    /// parsed; empty means "the built-in `default` family".
+    pub activity_family: String,
+    /// Activity rows from the settings UI (`activity_families`), in the flat
+    /// `{family, value, label, icon, tone, when}` shape. Parsed and merged by
+    /// [`crate::activity::resolve`], which owns the precedence order.
+    pub activity_families: Vec<toml::Value>,
+    /// A project-relative TOML file a repository declares its families in.
+    pub activity_file: String,
+    /// That file, once the project path is known; `None` means "not read".
+    pub activity_repo: Option<toml::Table>,
     pub warnings: Vec<String>,
 }
 
@@ -263,6 +275,10 @@ impl Default for Settings {
             feature_tag: None,
             token: String::new(),
             harness_extension: Vec::new(),
+            activity_family: String::new(),
+            activity_families: Vec::new(),
+            activity_file: crate::activity::DEFAULT_FILE.to_string(),
+            activity_repo: None,
             warnings: Vec::new(),
         }
     }
@@ -307,6 +323,10 @@ impl Settings {
                 "harness_extension",
                 &mut warns,
             ),
+            activity_family: parse_activity_family(table.get("activity_family"), &mut warns),
+            activity_families: parse_activity_families(table.get("activity_families"), &mut warns),
+            activity_file: parse_activity_file(table.get("activity_file"), &mut warns),
+            activity_repo: None,
             warnings: warns,
         }
     }
@@ -506,104 +526,17 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
         return (Vec::new(), warnings);
     }
 
-    let relative = Path::new(configured);
-    let escapes = relative.is_absolute()
-        || relative.components().any(|component| {
-            matches!(
-                component,
-                std::path::Component::ParentDir
-                    | std::path::Component::RootDir
-                    | std::path::Component::Prefix(_)
-            )
-        });
-    if escapes {
-        warnings.push(format!(
-            "settings: tags_file {configured:?} must be a relative path inside the project \
-             ({project_path}); ignoring it"
-        ));
-        return (Vec::new(), warnings);
-    }
-
-    let path = Path::new(project_path).join(relative);
-
-    // Existence first: a file that is not there costs no open and no read.
-    match std::fs::symlink_metadata(&path) {
-        Ok(_) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            warnings.push(format!(
-                "settings: tags_file {} does not exist in {}; no tags loaded",
-                configured,
-                Path::new(project_path).display()
-            ));
-            return (Vec::new(), warnings);
-        }
-        Err(err) => {
-            warnings.push(format!(
-                "settings: tags_file {}: cannot be read ({err}); no tags loaded",
-                path.display()
-            ));
-            return (Vec::new(), warnings);
-        }
-    }
-
-    // The repository owns this path, so it is untrusted: the file it resolves to
-    // has to stay inside the project. Refusing `..` is not enough — a symlink is
-    // how a relative path leaves the tree without ever containing one — so the
-    // *canonical* target is what gets checked.
-    let root = match std::fs::canonicalize(project_path) {
-        Ok(root) => root,
-        Err(err) => {
-            warnings.push(format!(
-                "settings: tags_file {}: the project {} cannot be resolved ({err}); \
-                 no tags loaded",
-                configured,
-                Path::new(project_path).display()
-            ));
-            return (Vec::new(), warnings);
-        }
+    let resolved = match resolve_project_file(
+        project_path,
+        configured,
+        "tags_file",
+        "no tags loaded",
+        &mut warnings,
+    ) {
+        Some(resolved) => resolved,
+        None => return (Vec::new(), warnings),
     };
-    let resolved = match std::fs::canonicalize(&path) {
-        Ok(resolved) => resolved,
-        Err(err) => {
-            warnings.push(format!(
-                "settings: tags_file {}: cannot be resolved ({err}); no tags loaded",
-                path.display()
-            ));
-            return (Vec::new(), warnings);
-        }
-    };
-    if !resolved.starts_with(&root) {
-        warnings.push(format!(
-            "settings: tags_file {} resolves to {}, which is not inside the project {}; \
-             no tags loaded",
-            configured,
-            resolved.display(),
-            root.display()
-        ));
-        return (Vec::new(), warnings);
-    }
-
-    // A regular file or nothing: a FIFO has no size to trust and never reaches
-    // EOF, a device never runs out of bytes, and a directory is not a document.
-    // The check is on the resolved path, so no open happens for a file this
-    // launch has no business reading.
-    let is_file = match std::fs::metadata(&resolved) {
-        Ok(meta) => meta.is_file(),
-        Err(err) => {
-            warnings.push(format!(
-                "settings: tags_file {}: cannot be read ({err}); no tags loaded",
-                path.display()
-            ));
-            return (Vec::new(), warnings);
-        }
-    };
-    if !is_file {
-        warnings.push(format!(
-            "settings: tags_file {} is not a regular file; no tags loaded",
-            path.display()
-        ));
-        return (Vec::new(), warnings);
-    }
+    let path = Path::new(project_path).join(configured);
 
     // Read through the cap instead of trusting `metadata().len()`: a growing file
     // reports the length it had a moment ago, and this is the read that must be
@@ -671,6 +604,184 @@ pub fn load_tags_file(project_path: &str, configured: &str) -> (Vec<Tag>, Vec<St
     (tags, warnings)
 }
 
+/// Resolve `<project>/<configured>` to a file this launch may read.
+///
+/// The path comes from a setting and the file from a repository, so both are
+/// untrusted: the file must stay inside the project (a symlink is how a relative
+/// path leaves the tree without ever containing `..`, so the canonical target is
+/// checked), it must be a regular file, and the cap is applied to the read rather
+/// than to what `metadata` claims. `None` means the caller loads nothing;
+/// `what`/`tail` only shape the warning a user reads.
+fn resolve_project_file(
+    project_path: &str,
+    configured: &str,
+    what: &str,
+    tail: &str,
+    warnings: &mut Vec<String>,
+) -> Option<PathBuf> {
+    let relative = Path::new(configured);
+    let escapes = relative.is_absolute()
+        || relative.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir
+                    | std::path::Component::RootDir
+                    | std::path::Component::Prefix(_)
+            )
+        });
+    if escapes {
+        warnings.push(format!(
+            "settings: {what} {configured:?} must be a relative path inside the project \
+             ({project_path}); ignoring it"
+        ));
+        return None;
+    }
+
+    let path = Path::new(project_path).join(relative);
+
+    // Existence first: a file that is not there costs no open and no read.
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {
+            warnings.push(format!(
+                "settings: {what} {} does not exist in {}; {tail}",
+                configured,
+                Path::new(project_path).display()
+            ));
+            return None;
+        }
+        Err(err) => {
+            warnings.push(format!(
+                "settings: {what} {}: cannot be read ({err}); {tail}",
+                path.display()
+            ));
+            return None;
+        }
+    }
+
+    let root = match std::fs::canonicalize(project_path) {
+        Ok(root) => root,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: {what} {}: the project {} cannot be resolved ({err}); {tail}",
+                configured,
+                Path::new(project_path).display()
+            ));
+            return None;
+        }
+    };
+    let resolved = match std::fs::canonicalize(&path) {
+        Ok(resolved) => resolved,
+        Err(err) => {
+            warnings.push(format!(
+                "settings: {what} {}: cannot be resolved ({err}); {tail}",
+                path.display()
+            ));
+            return None;
+        }
+    };
+    if !resolved.starts_with(&root) {
+        warnings.push(format!(
+            "settings: {what} {} resolves to {}, which is not inside the project {}; {tail}",
+            configured,
+            resolved.display(),
+            root.display()
+        ));
+        return None;
+    }
+    match std::fs::metadata(&resolved) {
+        Ok(meta) if meta.is_file() => Some(resolved),
+        Ok(_) => {
+            warnings.push(format!(
+                "settings: {what} {} is not a regular file; {tail}",
+                path.display()
+            ));
+            None
+        }
+        Err(err) => {
+            warnings.push(format!(
+                "settings: {what} {}: cannot be read ({err}); {tail}",
+                path.display()
+            ));
+            None
+        }
+    }
+}
+
+/// Read the TOML activity file a settings `activity_file` names, inside the
+/// session's project.
+///
+/// The file is optional in every repository — the built-in family and the
+/// settings are enough — so a missing file is silent, unlike a missing
+/// `tags_file`. A malformed file, one that leaves the project, or one over the
+/// cap is a warning and no families, never an error: a launch must not fail over
+/// a declaration.
+pub fn load_activity_file(
+    project_path: &str,
+    configured: &str,
+) -> (Option<toml::Table>, Vec<String>) {
+    let mut warnings = Vec::new();
+    let configured = configured.trim();
+    if configured.is_empty() || project_path.trim().is_empty() {
+        return (None, warnings);
+    }
+    let path = Path::new(project_path).join(configured);
+    match std::fs::symlink_metadata(&path) {
+        Ok(_) => {}
+        // Optional: a repository that declares nothing costs no warning.
+        Err(err) if err.kind() == ErrorKind::NotFound => return (None, warnings),
+        Err(_) => {}
+    }
+    let resolved = match resolve_project_file(
+        project_path,
+        configured,
+        "activity_file",
+        "no activity families loaded",
+        &mut warnings,
+    ) {
+        Some(resolved) => resolved,
+        None => return (None, warnings),
+    };
+    let raw = match read_capped(&resolved, TAGS_FILE_MAX_BYTES) {
+        Ok(bytes) if bytes.len() as u64 > TAGS_FILE_MAX_BYTES => {
+            warnings.push(format!(
+                "settings: activity_file {} is larger than {TAGS_FILE_MAX_BYTES} bytes; \
+                 no activity families loaded",
+                path.display()
+            ));
+            return (None, warnings);
+        }
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(raw) => raw,
+            Err(_) => {
+                warnings.push(format!(
+                    "settings: activity_file {} is not valid UTF-8; no activity families loaded",
+                    path.display()
+                ));
+                return (None, warnings);
+            }
+        },
+        Err(err) => {
+            warnings.push(format!(
+                "settings: activity_file {}: cannot be read ({err}); no activity families loaded",
+                path.display()
+            ));
+            return (None, warnings);
+        }
+    };
+    match raw.parse::<toml::Table>() {
+        Ok(table) => (Some(table), warnings),
+        Err(err) => {
+            warnings.push(format!(
+                "settings: activity_file {} is not valid TOML ({err}); \
+                 no activity families loaded",
+                path.display()
+            ));
+            (None, warnings)
+        }
+    }
+}
+
 /// Read at most one byte past `limit`, so the caller can tell "exactly at the
 /// cap" from "over it" without reading the rest. The file is already known to be
 /// a regular file inside the project; the cap is still applied here because this
@@ -725,7 +836,7 @@ fn sanitize_json_strings(value: Value) -> Value {
 
 /// The first `limit` characters — a character count, like [`TAG_MAX_CHARS`], so a
 /// multi-byte value is never cut mid-character.
-fn truncate_chars(text: &str, limit: usize) -> String {
+pub fn truncate_chars(text: &str, limit: usize) -> String {
     match text.char_indices().nth(limit) {
         Some((end, _)) => text[..end].to_string(),
         None => text.to_string(),
@@ -1219,6 +1330,10 @@ pub struct ResolvedHeader {
 pub struct Snapshot {
     pub facts: SessionFacts,
     pub settings: Settings,
+    /// The activity families this launch resolved, and the one it starts in. The
+    /// hook pins it into the session directory; a mid-session read prefers the
+    /// pin (`crate::activity::for_session`).
+    pub families: crate::activity::Families,
     /// The tags as they are sent: matched, parsed, and with every `{git.xxx}`
     /// reference in a value already expanded. `settings.tags` still holds the
     /// entries as stored, which is what an editor has to show.
@@ -1996,7 +2111,8 @@ pub fn snapshot_with_table(
     } else {
         facts.profile.clone()
     };
-    let (raw_table, raw_warnings) = match table_override {
+    let from_worker = table_override.is_some();
+    let (mut raw_table, raw_warnings) = match table_override {
         Some(table) => (table, Vec::new()),
         None => {
             let raw = settings::load(&profile, None, env);
@@ -2005,12 +2121,33 @@ pub fn snapshot_with_table(
     };
     let mut warnings = session_warnings;
     warnings.extend(raw_warnings.iter().cloned());
+    // `activity_family` and `activity_families` are `per_project`: the host keeps
+    // the project's copy in `projects.json`, and a launch happens in a bare shell
+    // with no host RPC, so the registry is read and folded into the same settings
+    // table here. A worker passes its own table (and asks the host instead), so
+    // this only runs for a launch, `value`, `doctor` or the `activity` verb.
+    if !from_worker {
+        if let Ok(app_dir) = settings::app_dir(env) {
+            let (project, project_warnings) =
+                crate::registry::project_settings(&app_dir, &profile, &facts.path);
+            warnings.extend(project_warnings);
+            for (key, value) in project {
+                if let Some(converted) = settings::json_to_toml(&value) {
+                    raw_table.insert(key, converted);
+                }
+            }
+        }
+    }
     let mut configured = Settings::from_table(&raw_table, warnings);
     // A repo declares its own tags in a JSON file named by `tags_file`. They are
     // merged before the session's edits, so a session can still replace or drop
     // one, and they sit in front of the settings `tags` because the repository is
     // the more specific declaration.
     apply_tags_file(&mut configured, &facts.path);
+    // The repository's activity families are read at launch like its tags: the
+    // most specific declaration, so editing one applies to the next session and
+    // never to a running one.
+    apply_activity_file(&mut configured, &facts.path);
     // A session's own edits (the UI page and the `tag` command write them) are
     // applied here, once, so the hook, `status`, `doctor` and the worker all see
     // the same tags. They live in the session's directory, never the config, and
@@ -2031,12 +2168,17 @@ pub fn snapshot_with_table(
         render_headers(&configured, &mut facts, runner, env, remaining);
     let mut all_warnings = configured.warnings.clone();
     all_warnings.extend(render_warnings);
+    // One resolution, every surface: the hook (which pins it), `activity --show`,
+    // `doctor`, the pane and the page all read this field.
+    let families = crate::activity::resolve(&configured);
+    all_warnings.extend(families.warnings.iter().cloned());
 
     Snapshot {
         facts,
         settings: configured,
         tags,
         resolved,
+        families,
         warnings: all_warnings,
         raw: raw_table,
     }
@@ -2400,6 +2542,69 @@ fn parse_name_list(
     names
 }
 
+/// `activity_family`: the family a session starts in. A blank string means "the
+/// built-in `default` family", which is also what an unusable value means.
+fn parse_activity_family(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> String {
+    let Some(value) = value else {
+        return String::new();
+    };
+    let Some(name) = value.as_str().map(str::trim) else {
+        warnings.push(format!(
+            "settings: activity_family={} is not a family name; using the default family",
+            render_toml_scalar(value)
+        ));
+        return String::new();
+    };
+    if name.is_empty() {
+        return String::new();
+    }
+    if !crate::activity::valid_family_name(name) {
+        warnings.push(format!(
+            "settings: activity_family {name:?} must be letters, digits, `.`, `_` or `-`; \
+             using the default family"
+        ));
+        return String::new();
+    }
+    name.to_string()
+}
+
+/// `activity_families`: the rows the settings UI writes. Kept as raw TOML values
+/// here — [`crate::activity::resolve`] validates them field by field, so a bad row
+/// is reported once, in the place that also knows about the repo file.
+fn parse_activity_families(
+    value: Option<&toml::Value>,
+    warnings: &mut Vec<String>,
+) -> Vec<toml::Value> {
+    let Some(value) = value else {
+        return Vec::new();
+    };
+    let Some(rows) = value.as_array() else {
+        warnings.push(
+            "settings: activity_families is not an array of activity rows; ignoring it".to_string(),
+        );
+        return Vec::new();
+    };
+    rows.clone()
+}
+
+/// `activity_file`: where the repository declares its families, relative to the
+/// project root. An empty string turns the repo file off for a machine that wants
+/// the settings to be the only source.
+fn parse_activity_file(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> String {
+    let Some(value) = value else {
+        return crate::activity::DEFAULT_FILE.to_string();
+    };
+    let Some(path) = value.as_str().map(str::trim) else {
+        warnings.push(format!(
+            "settings: activity_file={} is not a path; using {}",
+            render_toml_scalar(value),
+            crate::activity::DEFAULT_FILE
+        ));
+        return crate::activity::DEFAULT_FILE.to_string();
+    };
+    path.to_string()
+}
+
 fn parse_static_tags(value: Option<&toml::Value>, warnings: &mut Vec<String>) -> Vec<String> {
     let Some(value) = value else {
         return Vec::new();
@@ -2449,6 +2654,17 @@ fn apply_tags_file(settings: &mut Settings, project_path: &str) {
     let mut merged: Vec<String> = file_tags.iter().map(Tag::entry).collect();
     merged.append(&mut settings.tags);
     settings.tags = merged;
+}
+
+/// Read the repository's activity families and hand them to the resolver.
+///
+/// Not merged with the settings here: a same-named family replaces the whole
+/// definition at the next level up, and that rule lives in one place,
+/// [`crate::activity::resolve`].
+fn apply_activity_file(settings: &mut Settings, project_path: &str) {
+    let (table, warnings) = load_activity_file(project_path, &settings.activity_file);
+    settings.warnings.extend(warnings);
+    settings.activity_repo = table;
 }
 
 /// One warning when the merged inherited set is over the per-header budget.
@@ -2645,6 +2861,10 @@ mod tests {
             feature_tag: None,
             token: String::new(),
             harness_extension: Vec::new(),
+            activity_family: String::new(),
+            activity_families: Vec::new(),
+            activity_file: crate::activity::DEFAULT_FILE.to_string(),
+            activity_repo: None,
             warnings: Vec::new(),
         }
     }
@@ -3069,6 +3289,10 @@ mod tests {
             feature_tag: tag,
             token: String::new(),
             harness_extension: Vec::new(),
+            activity_family: String::new(),
+            activity_families: Vec::new(),
+            activity_file: crate::activity::DEFAULT_FILE.to_string(),
+            activity_repo: None,
             warnings: Vec::new(),
         }
     }

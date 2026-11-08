@@ -220,6 +220,126 @@ session's identity.
 """
 
 [[settings]]
+key = "activity_family"
+label = "Activity family for this project"
+type = "string"
+default = ""
+per_project = true
+help = """
+Which activity family a new session starts in. Set it per project, so a repository's sessions begin
+in the vocabulary that repository works in; the global value is the fallback, and an empty value
+means the built-in `default` family.
+
+A family is the set of words the `activity` tag can take — `test`, `code`, `review`, or whatever
+you define — each with a label, a lucide icon, a tone, and a sentence saying when to move into it.
+The value here is only the *choice*: the definitions live in `activity_families` below, or in the
+repository's own file (`activity_file`).
+
+A session pins its family when it launches. Changing this, or editing a family, therefore applies
+to the next session and never to one already running: only the current activity changes while a
+session runs. The repository's own file can name its default family, and it wins over this.
+"""
+
+[[settings]]
+key = "activity_families"
+label = "Activity families"
+type = "object_list"
+per_project = true
+help = """
+The activities a session can be set to, grouped into named families. This is how a user replaces
+the built-in nine (`explore`, `plan`, `code`, `test`, `debug`, `review`, `docs`, `ops`, `idle`): define
+a family here and choose it with `activity_family`.
+
+One row is one activity. `family` names the family it belongs to; rows with the same family form
+one family, and a family with no rows does not exist. `value` is the word the agent says
+(`aoe-llm-tags activity <value>`), lowercase letters, digits and `-`. `label` is what a badge shows
+(`coding`), `icon` a lucide name (`code`), `tone` one of `neutral`, `info`, `success`, `warn`,
+`danger`. `when` is the part an agent reads: a sentence saying what has to be true to move into the
+activity, for example "when starting to implement the feature, move the activity to coding".
+
+`when` is guidance, not a rule: nothing moves the activity automatically today, and the agent is
+told to change it explicitly when a phase starts. It is stored in the shapes it will be enforced
+in, so a later release can add a machine-readable trigger beside it without changing the file.
+
+A family is closed: a value the family does not define is reported and given no icon, so a typo
+stays visible instead of becoming a fourth spelling of `testing`. The same-named family in a
+repository's file replaces the whole definition here, and the repository's file wins.
+
+Definitions are read at launch and pinned into the session, so editing a family applies to the next
+session, not to a running one.
+"""
+
+[[settings.fields]]
+key = "family"
+label = "Family"
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "value"
+label = "Value"
+type = "string"
+required = true
+
+[[settings.fields]]
+key = "label"
+label = "Label"
+type = "string"
+
+[[settings.fields]]
+key = "icon"
+label = "Lucide icon"
+type = "string"
+default = "tag"
+
+[[settings.fields]]
+key = "tone"
+label = "Tone"
+type = "select"
+options = ["neutral", "info", "success", "warn", "danger"]
+default = "neutral"
+
+[[settings.fields]]
+key = "when"
+label = "When to move here"
+type = "string"
+multiline = true
+
+[[settings]]
+key = "activity_file"
+label = "Activity families file inside the project"
+type = "string"
+default = ".aoe/activity.toml"
+help = """
+A TOML file inside each session's project that declares that repository's activity families, so a
+repository can carry its own vocabulary and every checkout gets it without a config edit. The path is
+relative to the project root and cannot leave it; an empty value turns the file off.
+
+```toml
+default = "work"
+
+[families.work.activities.code]
+label = "coding"
+icon = "code"
+tone = "neutral"
+when = "when starting to implement the feature, move the activity to coding"
+
+[families.work.activities.review]
+label = "reviewing"
+icon = "git-pull-request"
+tone = "info"
+when = "when reviewing the code, move the activity to review"
+```
+
+A flat `[[activities]]` array with a `family` field is accepted too — the same shape the settings
+rows use. Values merge with the settings by family name, and the repository's file wins a conflict: a
+family it names replaces that family whole, while families it does not name still come from the
+settings. A missing file is silent; a malformed one, one that leaves the project, or one over 64 KiB
+is a warning and no families, never a failed launch. It is read at launch, so an edit applies to the
+next session.
+"""
+
+[[settings]]
 key = "harness_extension"
 label = "Harness-side extensions (advanced)"
 type = "string_list"

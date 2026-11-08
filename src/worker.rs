@@ -368,8 +368,13 @@ impl Host {
         let rules_val = setting(self, "rules");
         let session_tagging_val = setting(self, "session_tagging");
         let harness_extension_val = setting(self, "harness_extension");
-        // feature_tag is per_project; fetch the global value once as a fallback.
-        let feature_tag_global = setting(self, "feature_tag");
+        // These are per_project; fetch the global value once as a fallback for a
+        // session with no project, or for a key the project did not set.
+        let per_project_global = [
+            ("feature_tag", setting(self, "feature_tag")),
+            ("activity_family", setting(self, "activity_family")),
+            ("activity_families", setting(self, "activity_families")),
+        ];
 
         let mut table = toml::Table::new();
         for (key, value) in [
@@ -381,7 +386,7 @@ impl Host {
             ("harness_extension", harness_extension_val.clone()),
         ] {
             if let Some(value) = value {
-                if let Some(converted) = json_to_toml(&value) {
+                if let Some(converted) = crate::settings::json_to_toml(&value) {
                     table.insert(key.to_string(), converted);
                 }
             }
@@ -441,21 +446,26 @@ impl Host {
             // a bare word, or a stored `{key, value}` pair, and all three mean
             // the same entry.
             let mut session_table = table.clone();
-            let mut params = serde_json::json!({"key": "feature_tag"});
-            if let Some(project_path) = session
-                .get("project_path")
-                .and_then(serde_json::Value::as_str)
-            {
-                params["project_path"] = serde_json::Value::String(project_path.to_string());
-            }
-            let feature_tag_value = self
-                .call_host("config.get", params)
-                .ok()
-                .and_then(|v| v.get("value").cloned())
-                .or_else(|| feature_tag_global.clone());
-            if let Some(value) = feature_tag_value {
-                if let Some(converted) = json_to_toml(&value) {
-                    session_table.insert("feature_tag".to_string(), converted);
+            for (key, global) in &per_project_global {
+                let mut params = serde_json::json!({"key": key});
+                if let Some(project_path) = session
+                    .get("project_path")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !project_path.is_empty() {
+                        params["project_path"] =
+                            serde_json::Value::String(project_path.to_string());
+                    }
+                }
+                let value = self
+                    .call_host("config.get", params)
+                    .ok()
+                    .and_then(|v| v.get("value").cloned())
+                    .or_else(|| global.clone());
+                if let Some(value) = value {
+                    if let Some(converted) = crate::settings::json_to_toml(&value) {
+                        session_table.insert((*key).to_string(), converted);
+                    }
                 }
             }
 
@@ -510,17 +520,23 @@ impl Host {
             // rendered tag set — `git.branch = git-tags`, not the reference it was
             // written as. The editor page below shows the stored entry instead,
             // because that is what a user edits.
-            let activity = crate::activity::of(&snap.tags);
-            for value in crate::activity::unknown(&snap.tags) {
-                // A closed vocabulary, so a typo is reported rather than given a
-                // guessed icon: "testing" is not "test".
+            // The family this session was launched with, not the one the settings
+            // hold now: an edited family applies to the next session, and the pane
+            // must not relabel a running one.
+            let (families, family_warnings) = match &app_dir {
+                Ok(app_dir) => crate::activity::for_session(app_dir, &id, &snap.families),
+                Err(_) => (snap.families.clone(), Vec::new()),
+            };
+            for warning in family_warnings {
+                eprintln!("{id}: {warning}");
+            }
+            let activity = crate::activity::of(&families, &snap.tags);
+            for value in crate::activity::unknown(&families, &snap.tags) {
+                // A family is closed too: a typo is reported rather than given a
+                // guessed icon: "testing" is not "test" unless the family says so.
                 eprintln!(
                     "{id}: `{KEY}:{value}` is not an activity ({})",
-                    crate::activity::ALL
-                        .iter()
-                        .map(|activity| activity.key)
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    families.names_in_use(),
                     KEY = crate::activity::KEY
                 );
             }
@@ -536,8 +552,14 @@ impl Host {
                     .then(|| {
                         tag.value
                             .as_str()
-                            .and_then(crate::activity::find)
-                            .map(|found| (found.label.to_string(), found.icon, found.tone))
+                            .and_then(|value| families.find(value))
+                            .map(|found| {
+                                (
+                                    found.label.to_string(),
+                                    found.icon.clone(),
+                                    found.tone.clone(),
+                                )
+                            })
                     })
                     .flatten();
                 let mut row = serde_json::json!({
@@ -589,7 +611,9 @@ impl Host {
             // marked so a human can see what the agent last declared. A terminal
             // UI renders these as text and tone, so the label carries the meaning
             // and the icon is decoration.
-            let activity_rows: Vec<serde_json::Value> = crate::activity::ALL
+            let activity_rows: Vec<serde_json::Value> = families
+                .chosen()
+                .activities
                 .iter()
                 .map(|candidate| {
                     let current = activity.is_some_and(|now| now.key == candidate.key);
@@ -614,7 +638,7 @@ impl Host {
             blocks.push(serde_json::json!({
                 "kind": "section",
                 "title": "Activity",
-                "value": activity.map(|now| now.label).unwrap_or("not set"),
+                "value": activity.map(|now| now.label.clone()).unwrap_or_else(|| "not set".to_string()),
                 "collapsible": true,
                 "collapsed": true,
                 "children": activity_rows,
@@ -764,6 +788,11 @@ impl Host {
                     "icon": activity.icon,
                     "tone": activity.tone,
                 })),
+                // The page offers this session's own family, not the page's: a
+                // session pinned to a family must not be offered a word that
+                // family does not define.
+                "family": families.chosen.clone(),
+                "activities": families.legend(),
                 "path": match &app_dir {
                     Ok(app_dir) => crate::session_tags::path(app_dir, &id)
                         .display()
@@ -811,6 +840,11 @@ impl Host {
             })
             .unwrap_or_default();
         let extensions = extension_rows(&adapters, &intent, app_dir.as_deref().ok());
+        // The page edits families for the *next* session, so it shows the families
+        // the settings and the built-in default define — the same resolution a
+        // launch would get, minus the repo file (the page has no project).
+        let page_families =
+            crate::activity::resolve(&resolver::Settings::from_table(&table, Vec::new()));
         let _ = self.call_host(
             "ui.state.set",
             serde_json::json!({
@@ -821,7 +855,9 @@ impl Host {
                     "references": references,
                     "presets": presets,
                     "extensions": extensions,
-                    "activities": crate::activity::legend(),
+                    "activities": page_families.legend(),
+                    "family": page_families.chosen.clone(),
+                    "families": page_families.names(),
                     "page": EDITOR_PAGE,
                 }
             }),
@@ -896,37 +932,6 @@ fn tag_entry(params: &serde_json::Value) -> Option<String> {
             serde_json::Value::String(text.clone())
         )),
         Some(other) => Some(format!("{key}:={other}")),
-    }
-}
-
-fn json_to_toml(value: &serde_json::Value) -> Option<toml::Value> {
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::Bool(v) => Some(toml::Value::Boolean(*v)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Some(toml::Value::Integer(i))
-            } else {
-                n.as_f64().map(toml::Value::Float)
-            }
-        }
-        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
-        serde_json::Value::Array(items) => {
-            let mut out = Vec::new();
-            for item in items {
-                out.push(json_to_toml(item)?);
-            }
-            Some(toml::Value::Array(out))
-        }
-        serde_json::Value::Object(map) => {
-            let mut table = toml::Table::new();
-            for (key, val) in map {
-                if let Some(converted) = json_to_toml(val) {
-                    table.insert(key.clone(), converted);
-                }
-            }
-            Some(toml::Value::Table(table))
-        }
     }
 }
 

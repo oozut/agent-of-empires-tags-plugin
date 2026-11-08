@@ -136,17 +136,21 @@ enum Command {
         #[command(flatten)]
         flags: FlagArgs,
     },
-    /// say what this session is doing, in the closed activity vocabulary
+    /// say what this session is doing, in this session's activity family
     #[command(
         about = "Set this session's `activity` tag (`plan`, `code`, `test`, ...) — what a badge \
                  shows and what a per-request target sends. Use it as work moves between \
                  phases; a session with an approved harness extension sends it on its next \
                  request.",
-        after_help = "The vocabulary is closed so every surface renders the same icon and tone. \
-                      An unknown name is an error, not a new activity."
+        after_help = "The words are this session's family: the built-in nine, or the family the \
+                      project defines in its settings or its `.aoe/activity.toml`. `--show` \
+                      prints the family and what it allows. A word outside the family is an \
+                      error, not a new activity, so every surface renders the same icon and \
+                      tone. The family is pinned when the session launches: editing one \
+                      applies to the next session."
     )]
     Activity {
-        /// one of explore, plan, code, test, debug, review, docs, ops, idle
+        /// a word from this session's family (`--show` lists them)
         #[arg(value_name = "NAME")]
         name: Option<String>,
         /// drop the activity: this session stops saying what it is doing
@@ -371,6 +375,21 @@ fn hook(args: &HookArgs, env: &Env) -> i32 {
         let snap = resolver::snapshot(&args.flags.flags(env), env, None);
         let mut lines = resolver::hook_lines(&snap.resolved);
         let mut warnings = snap.warnings.clone();
+        // Pin the activity family here, at the one moment the session is new: a
+        // family edited later then applies to the *next* launch, and the `activity`
+        // verb, the pane and the page all read the pin instead of the settings.
+        // A sandboxed launch cannot write the host's app dir and does not need to
+        // — its mid-session reads happen on the host, which resolves live.
+        if substrate == setup::Substrate::Host
+            && !snap.facts.id.is_empty()
+            && snap.families.needs_pin()
+        {
+            if let Ok(app_dir) = crate::settings::app_dir(env) {
+                if let Err(why) = crate::activity::pin(&app_dir, &snap.facts.id, &snap.families) {
+                    warnings.push(why);
+                }
+            }
+        }
         // Per-session harness config (`docs/harness-adapters.md`): the values are
         // baked into a copy this session owns, and the harness is pointed at it.
         // A failure here costs the file delivery, never the session. A sandboxed
@@ -446,7 +465,12 @@ fn activity_cmd(
         warn("`activity` needs a session: pass --session <id> or run inside a session (AOE_SESSION_ID)");
         return EXIT_USAGE;
     }
-    let current = crate::activity::of(&snap.tags);
+    // The family this session was launched with: editing a family applies to the
+    // next session, so a mid-session read must use the pin, not live settings.
+    let (families, family_warnings) =
+        crate::activity::for_session(&app_dir, &session, &snap.families);
+    warn_all(&family_warnings);
+    let current = crate::activity::of(&families, &snap.tags);
 
     let write = clear || (name.is_some() && !show);
     if !write {
@@ -455,11 +479,13 @@ fn activity_cmd(
                 "{}",
                 serde_json::json!({
                     "session": session,
-                    "activity": current.map(|activity| activity.key),
-                    "label": current.map(|activity| activity.label),
-                    "icon": current.map(|activity| activity.icon),
-                    "tone": current.map(|activity| activity.tone),
-                    "vocabulary": crate::activity::legend(),
+                    "activity": current.map(|activity| activity.key.clone()),
+                    "label": current.map(|activity| activity.label.clone()),
+                    "icon": current.map(|activity| activity.icon.clone()),
+                    "tone": current.map(|activity| activity.tone.clone()),
+                    "family": families.chosen.clone(),
+                    "source": families.source,
+                    "vocabulary": families.legend(),
                 })
             );
             return EXIT_OK;
@@ -472,14 +498,18 @@ fn activity_cmd(
             ),
             None => println!("  (this session has not said what it is doing)"),
         }
+        // The family is named, with where it came from: "activity test" means
+        // something different in a family that has no `test`.
         println!(
-            "  {}",
-            crate::activity::ALL
-                .iter()
-                .map(|activity| activity.key)
-                .collect::<Vec<_>>()
-                .join(", ")
+            "  family {} ({})",
+            families.chosen,
+            if families.source.trim().is_empty() {
+                "definition unknown"
+            } else {
+                families.source.as_str()
+            }
         );
+        println!("  {}", families.names_in_use());
         return EXIT_OK;
     }
 
@@ -487,7 +517,7 @@ fn activity_cmd(
         crate::session_tags::unset_tag(&app_dir, &session, crate::activity::KEY).err()
     } else {
         let requested = name.as_deref().unwrap_or_default();
-        match crate::activity::find(requested) {
+        match families.find(requested) {
             Some(activity) => crate::session_tags::set_tag(
                 &app_dir,
                 &session,
@@ -496,12 +526,9 @@ fn activity_cmd(
             .err(),
             None => {
                 warn(&format!(
-                    "`{requested}` is not an activity: {}",
-                    crate::activity::ALL
-                        .iter()
-                        .map(|activity| activity.key)
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    "`{requested}` is not an activity in the {} family: {}",
+                    families.chosen,
+                    families.names_in_use()
                 ));
                 return EXIT_USAGE;
             }
@@ -531,13 +558,13 @@ fn activity_cmd(
         warn(&format!("the live file was not refreshed: {why}"));
     }
 
-    let now = crate::activity::of(&after.tags);
+    let now = crate::activity::of(&families, &after.tags);
     if json {
         println!(
             "{}",
             serde_json::json!({
                 "session": session,
-                "activity": now.map(|activity| activity.key),
+                "activity": now.map(|activity| activity.key.clone()),
                 "live": live,
                 "targets": after
                     .resolved
