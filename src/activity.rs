@@ -23,7 +23,7 @@
 //!
 //! **Definitions are launch-scoped.** The hook pins the resolved family into
 //! `<app_dir>/sessions/<id>/activity.toml`, and every mid-session read — the
-//! `activity` verb, the pane, the page — reads that pin. Editing a family
+//! `activity` verb and the pane — reads that pin. Editing a family
 //! therefore changes the *next* session, never one already running; only the
 //! current value changes while a session runs. `plan/parameters.md` §5b.
 //!
@@ -87,7 +87,7 @@ pub struct Families {
     /// `list`: an unknown choice is a warning and [`DEFAULT_FAMILY`].
     pub chosen: String,
     /// Where the chosen family's definition came from (`built-in`, `settings`,
-    /// `repo .aoe/activity.toml`), for `activity --show` and the page.
+    /// `repo .aoe/activity.toml`), for `activity --show` and the pane's note.
     pub source: String,
     pub warnings: Vec<String>,
 }
@@ -422,7 +422,7 @@ pub fn unknown(families: &Families, tags: &[Tag]) -> Vec<String> {
         .collect()
 }
 
-/// One family as the page's legend, and the rows a pane offers.
+/// One family as the pane offers it: a row per activity, icon and tone included.
 pub fn legend(family: &Family) -> Vec<serde_json::Value> {
     family
         .activities

@@ -46,6 +46,14 @@ src/gitinfo.rs                  step 8   {git.*} facts from the session's checko
                                          one `git` budget for the whole resolve, credential-free
                                          remote, `git.dirty` = false on a clean tree, `git.repo`
                                          from origin or the shared `.git` of a linked worktree
+src/levels.rs                   M4       the two levels above a session, in <app dir>/tags.toml:
+                                         a project's entries and the AoE-wide ones, each an
+                                         overlay of add/hide; the settings are never rewritten
+src/activity.rs                 M6       the activity vocabulary as data: a family of activities
+                                         (label, icon, tone, `when`), the built-in default, the
+                                         precedence order, and the family a session pins
+src/registry.rs                 M6       a launch's read of the host's projects.json: the two
+                                         per_project keys, since a hook has no host RPC
 adapters.toml                   step 4   adapter rows (pi first), data not code; include_str!'d
 tools/build-worker.sh           step 10  source-install build: cargo → bin/ (release assets skip it)
 .github/workflows/ci.yml        step 10  fmt + clippy + test, then the per-os/arch asset matrix

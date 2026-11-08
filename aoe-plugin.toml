@@ -22,8 +22,8 @@ id = "llm_tags_badge"
 slot = "pane"
 id = "llm_tags_pane"
 
-# The per-session editor: the only place a tag or the token is changed, and it
-# changes them for one session. Nothing here can write the global settings.
+# Session details: the literal token and the harness extension approvals. The
+# tag editor lives in the pane; this page cannot write the global settings.
 [[ui]]
 slot = "page"
 id = "tags"

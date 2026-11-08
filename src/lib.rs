@@ -15,6 +15,7 @@ pub mod doctor;
 pub mod env;
 pub mod gitinfo;
 pub mod harness_extension;
+pub mod levels;
 pub mod overlay;
 pub mod private;
 pub mod registry;

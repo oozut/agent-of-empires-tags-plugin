@@ -210,23 +210,42 @@ fn the_editor_page_exists_and_speaks_the_bridge_it_is_given() {
 #[test]
 fn the_page_fires_the_methods_the_worker_dispatches_on() {
     let page = std::fs::read_to_string("ui/tags.html").expect("ui/tags.html");
+    // The pane's rows carry their method in the payload the worker builds, so the
+    // worker's own source is the second place a method is named. A surface may
+    // only fire what the worker dispatches, so both are scanned.
+    let worker = std::fs::read_to_string("src/worker.rs").expect("src/worker.rs");
     let mut fired: Vec<String> = Vec::new();
-    // `edit` is a session edit; `extensionAction` is the machine-wide pair, which
-    // deliberately has no session to send. Both reach the worker the same way.
-    for call in ["edit(\"", "extensionAction(\""] {
-        let mut rest = page.as_str();
-        while let Some(start) = rest.find(call) {
-            let after = &rest[start + call.len()..];
-            let end = after.find('"').expect("a closing quote");
-            fired.push(after[..end].to_string());
-            rest = &after[end..];
+    for source in [page.as_str(), worker.as_str()] {
+        // `edit` is a session edit; `extensionAction` is the machine-wide pair,
+        // which deliberately has no session to send; `"method": "..."` is a pane
+        // row. All three reach the worker the same way.
+        for call in ["edit(\"", "extensionAction(\"", "\"method\": \""] {
+            let mut rest = source;
+            while let Some(start) = rest.find(call) {
+                let after = &rest[start + call.len()..];
+                let end = after.find('"').expect("a closing quote");
+                let method = after[..end].to_string();
+                // The worker's doc comments show a host command
+                // (`plugin.<id>.status`); those are not edits a surface fires.
+                let edit = ["tag.", "tags.", "token.", "extension."]
+                    .iter()
+                    .any(|prefix| method.starts_with(prefix));
+                if !edit {
+                    rest = &after[end..];
+                    continue;
+                }
+                if !fired.contains(&method) {
+                    fired.push(method);
+                }
+                rest = &after[end..];
+            }
         }
     }
-    assert!(!fired.is_empty(), "the page fires no worker method");
+    assert!(!fired.is_empty(), "the surfaces fire no worker method");
     for method in &fired {
         assert!(
             llm_tags::worker::EDITS.contains(&method.as_str()),
-            "the page fires {method:?}, which the worker does not dispatch on {:?}",
+            "a surface fires {method:?}, which the worker does not dispatch on {:?}",
             llm_tags::worker::EDITS
         );
     }
@@ -234,7 +253,7 @@ fn the_page_fires_the_methods_the_worker_dispatches_on() {
     for method in llm_tags::worker::EDITS {
         assert!(
             fired.contains(&method.to_string()),
-            "the worker dispatches {method:?} but the page never fires it"
+            "the worker dispatches {method:?} but no surface fires it"
         );
     }
 }

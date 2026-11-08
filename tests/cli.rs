@@ -698,6 +698,83 @@ fn static_tags_come_first_and_rules_add_to_them() {
 }
 
 #[test]
+fn a_project_level_edit_lands_in_the_plugin_file_and_reaches_the_hook() {
+    // The settings' `tags` are the base; a project's entries replace same-key
+    // ones and a hide drops one, all without the settings' file being rewritten.
+    let sandbox = Sandbox::new();
+    sandbox.write_config(&settings_config(
+        "tags = [\"team:config\", \"cost:=1\"]\n\n[[plugins.\"dev.oozut.llm-tags\".settings.targets]]\nname = \"X-AoE-Tags\"\ntemplate = \"{tags}\"\n",
+        "",
+    ));
+    let project = sandbox.project().display().to_string();
+    let run = sandbox.run(&[
+        "tag",
+        "--level",
+        "project",
+        "--project-path",
+        &project,
+        "--set",
+        "team:core",
+    ]);
+    run.assert_ok();
+    assert_eq!(run.stderr, "");
+
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(run.lines(), vec!["AOE_HDR_X_AOE_TAGS=team:core,cost:1"]);
+
+    // A hide at the project level is a hide, not a deletion: `--restore` brings
+    // the settings' value back.
+    let run = sandbox.run(&[
+        "tag",
+        "--level",
+        "project",
+        "--project-path",
+        &project,
+        "--unset",
+        "cost",
+    ]);
+    run.assert_ok();
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(run.lines(), vec!["AOE_HDR_X_AOE_TAGS=team:core"]);
+    let run = sandbox.run(&[
+        "tag",
+        "--level",
+        "project",
+        "--project-path",
+        &project,
+        "--restore",
+        "cost",
+    ]);
+    run.assert_ok();
+    let run = sandbox.run(&["hook"]);
+    run.assert_ok();
+    assert_eq!(run.lines(), vec!["AOE_HDR_X_AOE_TAGS=team:core,cost:1"]);
+
+    // The entries live in the plugin's own file, and `--show` reports them.
+    let file = sandbox.path("config/agent-of-empires/tags.toml");
+    let text = std::fs::read_to_string(&file).expect("tags.toml");
+    assert!(text.contains("[[project]]"), "{text}");
+    let settings = std::fs::read_to_string(sandbox.config_path("")).expect("settings");
+    assert!(!settings.contains("team:core"), "{settings}");
+    let run = sandbox.run(&[
+        "tag",
+        "--level",
+        "project",
+        "--project-path",
+        &project,
+        "--show",
+        "--json",
+    ]);
+    run.assert_ok();
+    let value: serde_json::Value = serde_json::from_str(&run.stdout).expect("json");
+    assert_eq!(value["level"], serde_json::json!("project"));
+    assert_eq!(value["tags"], serde_json::json!(["team:core"]));
+    assert_eq!(value["unset"], serde_json::json!([]));
+}
+
+#[test]
 fn a_query_target_carries_the_tag_set_as_a_parameter() {
     let sandbox = Sandbox::new();
     sandbox.write_config(&settings_config(
