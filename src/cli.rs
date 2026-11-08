@@ -41,7 +41,7 @@ enum Command {
     #[command(
         about = "Mint the header variables for this launch. Used by both [host_hooks] keys."
     )]
-    Hook(FlagArgs),
+    Hook(HookArgs),
     /// print one header's value
     #[command(about = "Print a single header's value, for harnesses that take a command.")]
     Value {
@@ -78,6 +78,15 @@ enum Command {
         /// machine-readable output
         #[arg(long)]
         json: bool,
+        /// which launch this run is for: host writes the session copy, sandbox
+        /// writes variables only (the container cannot see the app dir)
+        #[arg(
+            long,
+            value_name = "host|sandbox",
+            default_value = "host",
+            value_parser = parse_substrate
+        )]
+        substrate: setup::Substrate,
         #[command(flatten)]
         flags: FlagArgs,
     },
@@ -189,6 +198,25 @@ enum Command {
     },
 }
 
+#[derive(Args, Debug)]
+struct HookArgs {
+    /// which substrate this launch runs in; the [host_hooks] key decides, so the
+    /// line `setup --print` emits carries it
+    #[arg(
+        long,
+        value_name = "host|sandbox",
+        default_value = "host",
+        value_parser = parse_substrate
+    )]
+    substrate: setup::Substrate,
+    #[command(flatten)]
+    flags: FlagArgs,
+}
+
+fn parse_substrate(value: &str) -> Result<setup::Substrate, String> {
+    setup::Substrate::parse(value).ok_or_else(|| format!("expected host or sandbox, got {value:?}"))
+}
+
 #[derive(Args, Debug, Default)]
 struct FlagArgs {
     /// session id fallback (default: $AOE_SESSION_ID); the session row wins
@@ -284,7 +312,7 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
     };
 
     match cli.command {
-        Command::Hook(flags) => hook(&flags, env),
+        Command::Hook(args) => hook(&args, env),
         Command::Value { header, flags } => value(&header, &flags, env),
         Command::Setup {
             print,
@@ -294,8 +322,11 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
             undo,
             all,
             json,
+            substrate,
             flags,
-        } => setup_cmd(print, dry_run, apply, yes, undo, all, json, &flags, env),
+        } => setup_cmd(
+            print, dry_run, apply, yes, undo, all, json, substrate, &flags, env,
+        ),
         Command::Classify { json, flags } => classify_cmd(json, &flags, env),
         Command::Tag {
             set,
@@ -332,18 +363,27 @@ pub fn run(argv: Vec<String>, env: &Env) -> i32 {
     }
 }
 
-fn hook(args: &FlagArgs, env: &Env) -> i32 {
+fn hook(args: &HookArgs, env: &Env) -> i32 {
     // The hook must never abort a session start: any failure is a stderr warning
     // and exit 0, including a panic in a code path we did not anticipate.
+    let substrate = args.substrate;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let snap = resolver::snapshot(&args.flags(env), env, None);
+        let snap = resolver::snapshot(&args.flags.flags(env), env, None);
         let mut lines = resolver::hook_lines(&snap.resolved);
         let mut warnings = snap.warnings.clone();
         // Per-session harness config (`docs/harness-adapters.md`): the values are
         // baked into a copy this session owns, and the harness is pointed at it.
-        // A failure here costs the file delivery, never the session.
-        match setup::overlay_for(&snap, env) {
-            Ok(Some((overlay, overlay_warnings))) => {
+        // A failure here costs the file delivery, never the session. A sandboxed
+        // launch gets no copy at all — the container cannot see the app dir — so
+        // it warns about what its own config cannot carry instead
+        // (`Substrate`, `setup::delivery_for`).
+        match setup::delivery_for(
+            &snap,
+            env,
+            substrate,
+            args.flags.adapter.as_deref().unwrap_or_default(),
+        ) {
+            Ok((setup::Delivery::Copy(overlay), overlay_warnings)) => {
                 warnings.extend(overlay_warnings);
                 for (name, why) in &overlay.skipped {
                     warnings.push(format!(
@@ -352,7 +392,9 @@ fn hook(args: &FlagArgs, env: &Env) -> i32 {
                 }
                 lines.extend(overlay.env_lines());
             }
-            Ok(None) => {}
+            Ok((setup::Delivery::Variables, overlay_warnings)) => {
+                warnings.extend(overlay_warnings);
+            }
             Err(err) => warnings.push(err),
         }
         (lines, warnings)
@@ -774,6 +816,7 @@ fn setup_cmd(
     undo: bool,
     all: bool,
     json: bool,
+    substrate: setup::Substrate,
     args: &FlagArgs,
     env: &Env,
 ) -> i32 {
@@ -798,7 +841,7 @@ fn setup_cmd(
                 }
             }
         }
-        return setup::apply_cmd(&args.flags(env), env);
+        return setup::apply_cmd(&args.flags(env), env, substrate);
     }
     if !(print || dry_run || json) {
         warn("`setup` only reads unless --apply/--undo; pass --print (or --json)");

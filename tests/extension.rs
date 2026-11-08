@@ -12,7 +12,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use common::{settings_config, Sandbox};
+use common::{approve_any, settings_config, Sandbox};
 use llm_tags::harness_extension::DISCLOSURE_VERSION;
 
 /// The digest pinned for the bundle this build ships to `pi`: the hook, the
@@ -43,21 +43,6 @@ fn user_scope_row() -> llm_tags::adapters::Adapter {
         })
         .cloned()
         .expect("a row whose carriers live in the user's own config")
-}
-
-/// Approve any harness by name, with the digest its disclosure printed.
-fn approve_any(sandbox: &Sandbox, harness: &str) -> common::Run {
-    let printed = sandbox.run(&["extension", "enable", harness, "--print"]);
-    printed.assert_ok();
-    let digest = printed
-        .stdout
-        .lines()
-        .find_map(|line| line.split("--accept ").nth(1))
-        .map(str::trim)
-        .expect("the printed approve command");
-    let run = sandbox.run(&["extension", "enable", harness, "--accept", digest]);
-    run.assert_ok();
-    run
 }
 
 fn emitted<'a>(lines: &'a [&'a str], name: &str) -> Option<&'a str> {

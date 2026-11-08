@@ -325,7 +325,7 @@ Where the value comes from, per row, is one of three shapes:
 
 | Session scope | Rows | What the user has to do |
 |---|---|---|
-| `overlay_dir` / `overlay_file` | `pi`, `opencode`, `vibe` | nothing — the hook writes this session's copy and exports the override variable |
+| `overlay_dir` / `overlay_file` | `pi`, `opencode`, `vibe` | nothing — the hook writes this session's copy and exports the override variable (host launches; a sandboxed launch gets the variables only, so the row must interpolate — §Sandboxed sessions) |
 | `env_only` | `claude`, `gemini` | nothing — the hook exports the harness's own variable |
 | reference in the user's own config | `codex`, `hermes`, `qwen`, `droid`, `openclaw` | paste the one line `setup --print` shows (it names a *variable*, never a value); aoe installs its hooks into `codex`/`hermes`/`qwen`/`droid`, so the file cannot be scoped per session |
 | none | `cline`, `kiro` | nothing until the harness grows a scoping channel; `setup --apply` refuses and `classify` says `unsupported` |
@@ -461,7 +461,8 @@ same `lifecycle_env_vars` — `AOE_SESSION_ID`, `AOE_SESSION_TITLE`, `AOE_PROJEC
 `AOE_PROFILE`, `AOE_TOOL`, `AOE_GROUP_PATH`, plus `AOE_SESSION_BRANCH` (worktrees) and
 `AOE_REPO_SLUG` (parseable origin). So one command, installed once per key, mints the same
 values in either substrate; a hook installed in one key only tags one substrate and silently
-skips the other.
+skips the other. Which substrate is being served is not in that environment — the key is the
+only signal — so the installed line repeats it as `--substrate` (see §Sandboxed sessions).
 
 Where the minted value ends up:
 
@@ -607,6 +608,55 @@ The portable mechanism is therefore the hook minting the variables in both keys,
 harness config holding exactly one indirection per header: one header name to one variable.
 Renaming a header or changing a value format is a plugin-side change, never a user-side config
 edit.
+
+## Sandboxed sessions
+
+A sandboxed launch cannot use the per-session copy. The copy lives in the app dir on the host,
+and aoe mounts only the project and a projection of the agent's own config root into the
+container, so a hook that exported `PI_CODING_AGENT_DIR=<app dir>/sessions/<id>/pi` pointed the
+harness at a path that does not exist there: pi came up with **no models at all**, not merely an
+untagged request. `tools/probe-sandbox.sh` measures this against the real sandbox image and
+writes `docs/harness-evidence/sandbox-pi.json`; the same run shows the export *overriding* the
+value aoe sets for a sandboxed pi (`PI_CODING_AGENT_DIR=/root/.pi/agent`, the store aoe seeds
+from the host config).
+
+Delivery therefore depends on the substrate, and the hook is told which one it serves. aoe passes
+no sandbox flag and runs the two `[host_hooks]` keys for disjoint launches, so the key is the
+signal, and the line repeats it:
+
+| Key | Fires for | `--substrate` | Writes | Exports |
+|---|---|---|---|---|
+| `before_session` | a host launch | `host` | this session's copy | the tag variables **and** the copy's override variable |
+| `before_start` | a sandboxed launch | `sandbox` | nothing | the tag variables only |
+
+The sandboxed line still delivers, because `before_start` output becomes inherited container
+environment and the header's static mapping is in the store aoe seeds. That holds for every row
+that reaches its channel by reading a variable at request time — `pi` (`!v="${AOE_LLM_TAGS-}"`;
+`command_headers`), `opencode` (`{env:VAR}`), and the `env_only` rows (`claude`, `gemini`), which
+never needed a copy. It does **not** hold where the harness needs the literal in its file:
+
+- **vibe** (`config_headers`, `overlay_dir`, nothing expanded) can only be tagged from a copy, so
+  a sandboxed vibe session sends no tag until the app dir is mounted into the container. That is
+  one documented cell, not a silent failure: the hook says so on stderr and still exports the
+  variables, and `setup --apply` refuses nothing.
+- An adapter row added later inherits the same rule: the hook warns when an enabled target's kind
+  is not in the row's `interpolates`, naming this section.
+
+The extension carriers follow the same split, for the same reason (§Two carrier scopes). A
+`session`-scope row's skill and reminder are files in that unmounted copy, so a sandboxed launch
+gets neither: the tag still travels, but the agent cannot read its activity skill and has no
+reminder, and the per-request hook is not installed either, so the value is the one the launch
+minted. The hook says so on stderr — only when an approval actually exists, because an
+unapproved row is missing nothing it promised — and `doctor` says it on the `extension <agent>`
+line. A `user`-scope row is the other way round: its carriers are written into the harness's own
+config, which is what aoe seeds a sandbox *from*, so they arrive in the container with no extra
+work (subject to the seeding limits above: `droid` and `opencode` get no skill directory).
+
+`doctor` keeps the two substrates apart. It reads the `--substrate` off each installed line and
+fails a `before_start` line that declares none (an install from before this existed points a
+container at an unmounted app dir) or the wrong one, and it warns when a row that interpolates
+has no static mapping in the user's file — the copy would carry it for host launches, but a
+sandboxed launch reads that file and would send nothing.
 
 ## Auto-discovery
 

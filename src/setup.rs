@@ -19,6 +19,68 @@ use crate::settings;
 
 pub const HOOK_KEYS: [&str; 2] = ["before_session", "before_start"];
 
+/// Which launch a hook line serves.
+///
+/// aoe runs the `[host_hooks]` keys for disjoint substrates — `before_session`
+/// only for a host launch (`Instance::mint_host_session_env` returns early when
+/// the session is sandboxed) and `before_start` only from the container paths —
+/// so the *line itself* is how a plugin learns where it is running. The hook
+/// cannot ask: aoe passes no sandbox flag in `lifecycle_env_vars`, and a
+/// sandboxed harness cannot see the plugin's app dir to be recognised by it.
+///
+/// That matters because the two substrates receive the values differently. Both
+/// get the minted variables in the launch environment; only a host launch can
+/// also be pointed at a per-session copy of its config, because the copy lives
+/// under the app dir and aoe does not mount the app dir into a container. So
+/// `before_start` says `sandbox`, and the hook then writes variables only
+/// (`docs/harness-adapters.md` §Sandboxed sessions).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Substrate {
+    Host,
+    Sandbox,
+}
+
+impl Substrate {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Substrate::Host => SUBSTRATE_HOST,
+            Substrate::Sandbox => SUBSTRATE_SANDBOX,
+        }
+    }
+
+    /// `None` for anything but the two names, so a typo is a usage error rather
+    /// than a silent fallback to the wrong delivery.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            SUBSTRATE_HOST => Some(Substrate::Host),
+            SUBSTRATE_SANDBOX => Some(Substrate::Sandbox),
+            _ => None,
+        }
+    }
+
+    /// The substrate a `[host_hooks]` key implies.
+    pub fn for_key(key: &str) -> Self {
+        if key == "before_start" {
+            Substrate::Sandbox
+        } else {
+            Substrate::Host
+        }
+    }
+}
+
+impl std::str::FromStr for Substrate {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::parse(value).ok_or_else(|| {
+            format!("expected {SUBSTRATE_HOST} or {SUBSTRATE_SANDBOX}, got {value:?}")
+        })
+    }
+}
+
+pub const SUBSTRATE_HOST: &str = "host";
+pub const SUBSTRATE_SANDBOX: &str = "sandbox";
+
 /// The CLI file name inside the plugin tree.
 pub const CLI_NAME: &str = "aoe-llm-tags";
 
@@ -85,11 +147,13 @@ pub fn cli_path(root: Option<&Path>) -> PathBuf {
     std::fs::canonicalize(&path).unwrap_or(path)
 }
 
-/// The one command installed under both `[host_hooks]` keys.
+/// The command installed under one `[host_hooks]` key.
 ///
 /// Every `AOE_*` value the hook reads is passed explicitly, so the command works
 /// in the reduced environment structured host sessions get, and `AOE_BIN` pins
 /// the binary the plugin resolved instead of whatever `PATH` happens to hold.
+/// `--substrate` is spelled out rather than inferred at run time: it is the one
+/// thing the two keys know and a launched hook cannot (`Substrate`).
 ///
 /// The trailing `|| true` is what makes an uninstall safe. `aoe plugin uninstall`
 /// removes the payload and the `[plugins]` record, but it cannot remove the
@@ -98,7 +162,7 @@ pub fn cli_path(root: Option<&Path>) -> PathBuf {
 /// every launch with 127 (the shell cannot find the binary). The hook itself
 /// already exits 0 on every failure; this covers the case where it is not there
 /// to run at all. Diagnostics still go to stderr.
-pub fn hook_command(cli: &Path, aoe: &str) -> String {
+pub fn hook_command(cli: &Path, aoe: &str, substrate: Substrate) -> String {
     format!(
         "AOE_BIN=\"{aoe}\" \"{}\" hook \
          --session \"$AOE_SESSION_ID\" \
@@ -106,9 +170,35 @@ pub fn hook_command(cli: &Path, aoe: &str) -> String {
          --tool \"$AOE_TOOL\" \
          --project \"$AOE_PROJECT_PATH\" \
          --group \"$AOE_GROUP_PATH\" \
-         --title \"$AOE_SESSION_TITLE\" || true",
-        cli.display()
+         --title \"$AOE_SESSION_TITLE\" \
+         --substrate {} || true",
+        cli.display(),
+        substrate.as_str()
     )
+}
+
+/// The `--substrate` a pasted hook line declares, if it declares one.
+///
+/// `None` is not an error by itself: the flag defaults to `host`, so a line
+/// written before this flag existed still does the right thing for the key it
+/// belongs under — except `before_start`, which `doctor` refuses without it.
+pub fn substrate_in(command: &str) -> Option<String> {
+    let mut words = command.split_whitespace();
+    while let Some(word) = words.next() {
+        let word = word.trim_matches(|c| c == '\'' || c == '"');
+        if let Some(value) = word.strip_prefix("--substrate=") {
+            return Some(value.trim_matches(|c| c == '\'' || c == '"').to_string());
+        }
+        if word == "--substrate" {
+            let value = words.next()?;
+            return Some(
+                value
+                    .trim_matches(|c| c == '\'' || c == '"' || c == ';')
+                    .to_string(),
+            );
+        }
+    }
+    None
 }
 
 /// Resolve everything `--print` needs, or return the reason it cannot be honest.
@@ -235,15 +325,15 @@ pub fn build(
         });
     }
 
-    let command = hook_command(&cli, &aoe);
+    let hooks = HOOK_KEYS
+        .iter()
+        .map(|key| (*key, hook_command(&cli, &aoe, Substrate::for_key(key))))
+        .collect();
     Ok(Plan {
         adapter: Some(adapter.clone()),
         cli,
         aoe,
-        hooks: HOOK_KEYS
-            .iter()
-            .map(|key| (*key, command.clone()))
-            .collect(),
+        hooks,
         mapping,
         unmappable,
         warnings,
@@ -300,11 +390,23 @@ fn adapter_for<'a>(tool: &str, flags: &Flags, adapters: &'a [Adapter]) -> Option
 /// Nothing here touches the user's config: `docs/harness-adapters.md`
 /// §Per-session config. Called by `hook` (every launch) and by
 /// `setup --apply` (a one-off rebuild for debugging).
-pub fn apply_cmd(flags: &Flags, env: &Env) -> i32 {
+pub fn apply_cmd(flags: &Flags, env: &Env, substrate: Substrate) -> i32 {
     let snap = resolver::snapshot(flags, env, None);
     let (rows, adapter_warnings) = adapters::load(None);
     let mut warnings = snap.warnings.clone();
     warnings.extend(adapter_warnings);
+
+    if substrate == Substrate::Sandbox {
+        // Nothing to build: a container cannot read the copy. Say so instead of
+        // writing a file no harness will open.
+        crate::cli::warn_all(&warnings);
+        println!(
+            "a sandboxed session writes no session config: the container cannot see this \
+             plugin's app dir. The values ride the launch environment, and the harness reads \
+             its own config (see docs/harness-adapters.md §Sandboxed sessions)."
+        );
+        return crate::cli::EXIT_OK;
+    }
 
     let Some(adapter) = adapters::match_tool(&rows, &snap.facts.tool)
         .or_else(|| adapters::find(&rows, &flags.adapter))
@@ -359,31 +461,118 @@ pub fn apply_cmd(flags: &Flags, env: &Env) -> i32 {
     }
 }
 
-/// The session artifact for a resolved snapshot, if this harness has one.
+/// What a launch does about the harness's own config.
+#[derive(Debug)]
+pub enum Delivery {
+    /// Only the variables travel: no adapter, a harness with no per-session
+    /// config, or a sandboxed launch (the container cannot see the copy).
+    Variables,
+    /// Point the harness at the copy this session owns.
+    Copy(Box<crate::overlay::Overlay>),
+}
+
+/// The session artifact for a resolved snapshot, and what this substrate cannot
+/// carry.
 ///
-/// `Ok(None)` means "nothing to do": no adapter for this tool, or a harness with
-/// no per-session config (claude rides the launch environment). Any real failure
-/// is `Err`, so the hook can warn without aborting the launch.
-pub fn overlay_for(
+/// A host launch may be pointed at a copy under the app dir; a sandboxed one may
+/// not, because aoe mounts the project and its own stores into the container but
+/// not this plugin's app dir (`tools/probe-sandbox.sh`, evidence in
+/// `docs/harness-evidence/sandbox-pi.json`: pointing pi there leaves it with no
+/// models at all). A sandboxed launch therefore writes nothing and the harness
+/// keeps reading its own config, which can only carry a value it resolves from
+/// the variable — so a target whose adapter cannot interpolate that kind is
+/// named in a warning instead of vanishing.
+///
+/// Any real failure is `Err`, so the hook can warn without aborting the launch.
+pub fn delivery_for(
     snap: &resolver::Snapshot,
     env: &Env,
-) -> Result<Option<(crate::overlay::Overlay, Vec<String>)>, String> {
+    substrate: Substrate,
+    requested: &str,
+) -> Result<(Delivery, Vec<String>), String> {
     let (rows, mut warnings) = adapters::load(None);
-    let Some(adapter) = adapters::match_tool(&rows, &snap.facts.tool).cloned() else {
-        return Ok(None);
+    // The session's own tool is authoritative; `--adapter` is the debugging aid
+    // `setup --apply` already honours for a harness the row does not name.
+    let Some(adapter) = adapters::match_tool(&rows, &snap.facts.tool)
+        .or_else(|| adapters::find(&rows, requested))
+        .cloned()
+    else {
+        return Ok((Delivery::Variables, Vec::new()));
     };
+    warnings.clear();
+    if substrate == Substrate::Sandbox {
+        let mut gaps = sandbox_gaps(&adapter, snap);
+        gaps.extend(sandbox_carrier_gaps(&adapter, env));
+        return Ok((Delivery::Variables, gaps));
+    }
     if !crate::overlay::can_write(&adapter) {
-        return Ok(None);
+        return Ok((Delivery::Variables, Vec::new()));
     }
     if adapter.write_mode == crate::overlay::MODE_ENV_ONLY && adapter.native_env.is_empty() {
         // Nothing beyond the tag variables is needed for this harness.
-        return Ok(None);
+        return Ok((Delivery::Variables, Vec::new()));
     }
-    warnings.clear();
-    Ok(Some((
-        crate::overlay::materialise(&adapter, snap, env)?,
+    Ok((
+        Delivery::Copy(Box::new(crate::overlay::materialise(&adapter, snap, env)?)),
         warnings,
-    )))
+    ))
+}
+
+/// Targets a sandboxed launch cannot deliver, with the reason.
+///
+/// The test is `interpolates`: a harness that expands `$NAME` / a command in its
+/// own config reads whatever the hook exported, while one that needs the literal
+/// in the file (`vibe`) has nowhere to get it from inside a container.
+fn sandbox_gaps(adapter: &Adapter, snap: &resolver::Snapshot) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for item in snap.settings.targets.iter().filter(|row| row.enabled) {
+        if !adapters::supports(adapter, &item.kind) {
+            // Already reported by the resolver/`setup`; a sandbox changes nothing.
+            continue;
+        }
+        if adapters::interpolates(adapter, &item.kind) {
+            continue;
+        }
+        gaps.push(format!(
+            "{} is not sent for a sandboxed session: adapter {} needs the value written \
+             into its own config, and aoe does not mount this session's copy into the \
+             container (docs/harness-adapters.md §Sandboxed sessions)",
+            item.name, adapter.agent
+        ));
+    }
+    gaps
+}
+
+/// The extension a sandboxed launch does not get, with the reason.
+///
+/// A `session`-scope carrier lives in the copy this plugin builds under the app
+/// dir, and aoe mounts nothing from there into the container: on such a row an
+/// approval reaches host launches only, so the sandbox keeps the launch-time
+/// value and nothing else. A `user`-scope carrier is written into the user's own
+/// config — which is what aoe seeds a sandbox *from* — so there is nothing to
+/// report there, and this says nothing.
+fn sandbox_carrier_gaps(adapter: &Adapter, env: &Env) -> Vec<String> {
+    use crate::harness_extension::{bundle, carrier, receipts, Carrier};
+    if carrier(adapter) != Some(Carrier::Session) {
+        return Vec::new();
+    }
+    let Ok(app_dir) = settings::app_dir(env) else {
+        return Vec::new();
+    };
+    let (approved, _) = receipts(&app_dir);
+    if !approved.contains_key(&adapter.agent) {
+        return Vec::new();
+    }
+    let parts = bundle(adapter, Carrier::Session);
+    if parts.hook.is_none() && parts.skill.is_none() && parts.instructions.is_none() {
+        return Vec::new();
+    }
+    vec![format!(
+        "the extension approved for {} is not installed for a sandboxed session: it lives in this \
+         session's config copy, which aoe does not mount into the container, so only the \
+         launch-time value travels (docs/harness-adapters.md, Sandboxed sessions)",
+        adapter.agent
+    )]
 }
 
 /// Remove this session's artifact (or every session's with `--all`).
@@ -557,10 +746,15 @@ mod tests {
 
     #[test]
     fn hook_command_pins_aoe_and_passes_every_variable() {
-        let command = hook_command(Path::new("/p/bin/aoe-llm-tags"), "/usr/local/bin/aoe");
+        let command = hook_command(
+            Path::new("/p/bin/aoe-llm-tags"),
+            "/usr/local/bin/aoe",
+            Substrate::Host,
+        );
         assert!(command.starts_with("AOE_BIN=\"/usr/local/bin/aoe\" \"/p/bin/aoe-llm-tags\" hook"));
         // An unremoved hook line must be inert once the payload is gone.
         assert!(command.ends_with(" || true"), "{command}");
+        assert!(command.contains("--substrate host"), "{command}");
         for variable in [
             "AOE_SESSION_ID",
             "AOE_PROFILE",

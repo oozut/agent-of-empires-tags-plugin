@@ -163,7 +163,7 @@ Notes:
 |---|---|
 | aoe app dir | `/var/lib/aoe/.config/agent-of-empires` |
 | Effective config | profile `profiles/main/config.toml` (absent) → global `config.toml` |
-| `[host_hooks]` today | both keys set to the plugin's `hook` command (installed 2026-10-29) |
+| `[host_hooks]` today | both keys set to the plugin's `hook` command (installed 2026-10-29; the lines predate `--substrate`, so `doctor` fails `before_start` until they are re-pasted) |
 | Plugin install dir | `/var/lib/aoe/.config/agent-of-empires/plugins/dev.oozut.llm-tags/` |
 | `aoe` binary | `/usr/local/bin/aoe` |
 | pi agent dir | `/var/lib/aoe/.pi/agent` — `models.json` present, provider `litellm` carries `X-AoE-Tags` |

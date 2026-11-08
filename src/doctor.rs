@@ -102,6 +102,48 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
             .find(|entry| entry.contains("aoe-llm-tags"))
             .map(|entry| entry.to_string());
         if let Some(ours) = ours {
+            let expected = setup::Substrate::for_key(key);
+            let declared = setup::substrate_in(&ours);
+            // A line without the flag defaults to `host`, which is right for
+            // `before_session` and wrong for `before_start`: there the hook would
+            // build a copy under the app dir and point the container at a path it
+            // cannot see (probe: docs/harness-evidence/sandbox-pi.json).
+            let missing = declared.is_none() && expected == setup::Substrate::Sandbox;
+            let wrong = declared
+                .as_deref()
+                .is_some_and(|value| value != expected.as_str());
+            let other_key = if key == "before_session" {
+                "before_start"
+            } else {
+                "before_session"
+            };
+            if missing || wrong {
+                checks.push(Check {
+                    name: format!("{key} hook"),
+                    status: FAIL.to_string(),
+                    detail: if missing {
+                        format!(
+                            "{} predates sandbox delivery: it declares no --substrate, so a \
+                             sandboxed launch would point the harness at this plugin's app dir, \
+                             which aoe does not mount into the container. Re-run \
+                             `aoe-llm-tags setup --print` and replace the line",
+                            abbreviate(&ours)
+                        )
+                    } else {
+                        format!(
+                            "{} declares --substrate {}; {key} runs for {} launches only, so \
+                             `{}` needs the {} line. Re-run `aoe-llm-tags setup --print`",
+                            abbreviate(&ours),
+                            declared.clone().unwrap_or_default(),
+                            expected.as_str(),
+                            other_key,
+                            setup::Substrate::for_key(other_key).as_str()
+                        )
+                    },
+                });
+                hooks.insert(key, ours);
+                continue;
+            }
             checks.push(Check {
                 name: format!("{key} hook"),
                 status: OK.to_string(),
@@ -653,7 +695,11 @@ fn check_harness_extensions(adapters: &[Adapter], snap: &Snapshot, app_dir: &Pat
                 };
                 let scope = match plan.carrier {
                     crate::harness_extension::Carrier::Session => {
-                        format!("; live file {}", abbreviate(&plan.live.to_string_lossy()))
+                        format!(
+                            "; live file {} — a sandboxed launch reads none of this, because aoe \
+                             mounts nothing from the app dir into the container",
+                            abbreviate(&plan.live.to_string_lossy())
+                        )
                     }
                     crate::harness_extension::Carrier::User => {
                         let paths: Vec<String> = plan
@@ -853,6 +899,44 @@ fn check_mapping(adapter: Option<&Adapter>, item: &ResolvedHeader, env: &Env) ->
                             crate::overlay::verdict(adapter),
                             path.display(),
                             adapter.agent
+                        ),
+                    };
+                }
+                // A sandboxed session reads this file instead of a copy, so the
+                // mapping has to be here for that substrate to send anything.
+                if found && adapters::interpolates(adapter, resolver::DEFAULT_KIND) {
+                    return Check {
+                        name,
+                        status: OK.to_string(),
+                        detail: format!(
+                            "{}{}, and {} carries it here too — the only place a sandboxed \
+                             session can read it",
+                            crate::overlay::verdict(adapter),
+                            known
+                                .as_slice()
+                                .first()
+                                .map(|provider| format!(
+                                    ": the session copy carries it for provider {provider}"
+                                ))
+                                .unwrap_or_else(|| format!(
+                                    ": {} names a provider the writer can use",
+                                    path.display()
+                                )),
+                            path.display()
+                        ),
+                    };
+                }
+                if adapters::interpolates(adapter, resolver::DEFAULT_KIND) && !found {
+                    return Check {
+                        name,
+                        status: WARN.to_string(),
+                        detail: format!(
+                            "the session copy carries it, but {} is not mapped in {}: a \
+                             sandboxed session reads that file and sends no {} there. Add the \
+                             line from `aoe-llm-tags setup --print` to cover both substrates",
+                            item.header,
+                            path.display(),
+                            item.header
                         ),
                     };
                 }

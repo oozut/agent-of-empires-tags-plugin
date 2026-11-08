@@ -35,6 +35,26 @@ present in the launched process's environment, and the reference their own confi
 (`ANTHROPIC_CUSTOM_HEADERS` for claude, `env_http_headers` for codex) is what turns it into a
 header.
 
+## `sandbox-pi.json` — does the payload reach a *sandboxed* session?
+
+Written by `tools/probe-sandbox.sh`: the same question one substrate further out, because a
+sandboxed launch runs the hook key `before_start` and its container mounts neither the app dir nor
+the host's `$HOME`. The probe starts one fresh container per candidate mechanism, each with its
+own sink inside the container (a sandbox has no route to a sink on the host on every host), and
+then creates one real `aoe add --sandbox` session to record what its container actually received.
+
+| Field | What it says |
+|---|---|
+| `variants[]` | one mechanism per row: the overlay path aoe does not mount (`host_overlay`, no request), the guarded mapping plus the variable (`env_only`), an overlay under the project, a relative overlay dir, and a mounted overlay dir |
+| `host_leg` | the same value serving the host and the container from one hook |
+| `real_session.overlay_env` | the copy's path *and* whether it exists inside the container (`absent`) — the defect, measured |
+| `real_session.models_without_overlay` / `with_overlay` | the harness still lists its models without the export, and lists **none** with it |
+| `real_session.plugin_sandbox_hook` | the shipped `--substrate sandbox` line: the same payload, `writes_an_overlay_env_line: false`, and it needs no app dir (`HOME` unset) |
+
+`real_session` reflects the `before_start` line installed on the host at probe time. A line from
+before the substrate flag keeps the defect visible; with the shipped line the container exports
+the tag and leaves the harness's own config dir alone.
+
 ## What the values are
 
 Both files carry the JSON payload, not a comma list:

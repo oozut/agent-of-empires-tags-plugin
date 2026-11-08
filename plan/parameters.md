@@ -31,7 +31,7 @@ default, changeable until the milestone ships; `open`: named in `milestones.md` 
 
 | Parameter | Value | Status |
 |---|---|---|
-| Keys | `[host_hooks].before_session` **and** `.before_start`, same command string | decided |
+| Keys | `[host_hooks].before_session` **and** `.before_start`, same command differing only in `--substrate` (`host` / `sandbox`) | decided |
 | Placement | global `<app_dir>/config.toml` (recommended); per profile `<app_dir>/profiles/<name>/config.toml`. Profile arrays replace global arrays | decided |
 | `AOE_BIN` | `AOE_BIN` → `PATH` lookup → `/usr/local/bin/aoe` | proposed |
 | Contract with aoe | stdout `KEY=VALUE` per line, later wins, no trailing whitespace, exit 0 always, 2 s bound on any subprocess | decided |
