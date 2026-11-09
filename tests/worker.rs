@@ -232,15 +232,22 @@ impl Wire {
         })
     }
 
-    /// The last pane payload pushed for a session.
+    /// The last session-tab payload pushed for a session.
     fn pane(&self, session: &str) -> &Value {
+        self.pane_with(session, "llm_tags_session")
+    }
+
+    /// The last payload for one of the three tabs.
+    fn pane_with(&self, session: &str, id: &str) -> &Value {
         self.pushes
             .iter()
             .rev()
             .find(|params| {
-                params["slot"] == json!("pane") && params["session_id"] == json!(session)
+                params["slot"] == json!("pane")
+                    && params["session_id"] == json!(session)
+                    && params["id"] == json!(id)
             })
-            .unwrap_or_else(|| panic!("no pane was pushed for {session}"))
+            .unwrap_or_else(|| panic!("no {id} pane was pushed for {session}"))
     }
 
     /// Every payload pushed so far, as one string: a value that must not leave the
@@ -308,18 +315,28 @@ fn tag<'a>(tags: &'a [Value], key: &str) -> &'a Value {
         .unwrap_or(&Value::Null)
 }
 
-/// The rows of one titled section in a pane payload.
-fn section_rows(pane: &Value, title: &str) -> Vec<Value> {
+/// Every row in a pane, whether it sits at the top level or inside a section.
+fn pane_rows(pane: &Value) -> Vec<Value> {
     pane["payload"]["blocks"]
         .as_array()
         .expect("pane blocks")
         .iter()
-        .find(|block| block["title"] == json!(title))
-        .unwrap_or_else(|| panic!("no {title:?} section in {pane}"))
-        .get("children")
-        .and_then(Value::as_array)
-        .cloned()
-        .expect("section children")
+        .flat_map(|block| {
+            let mut rows = Vec::new();
+            if block["kind"] == json!("row") {
+                rows.push(block.clone());
+            }
+            if let Some(children) = block["children"].as_array() {
+                rows.extend(
+                    children
+                        .iter()
+                        .filter(|row| row["kind"] == json!("row"))
+                        .cloned(),
+                );
+            }
+            rows
+        })
+        .collect()
 }
 
 fn pane_row(rows: &[Value], label: &str) -> Value {
@@ -363,12 +380,7 @@ fn ticking_the_git_box_writes_the_sample_and_the_page_matches_the_verb() {
     assert_eq!(session["targets"][0]["value"], json!(branch));
 
     let pane = wire.pane(SESSION);
-    let blocks = pane["payload"]["blocks"].as_array().expect("pane blocks");
-    let rows: Vec<Value> = blocks
-        .iter()
-        .flat_map(|block| block["children"].as_array().cloned().unwrap_or_default())
-        .filter(|row| row["kind"] == json!("row"))
-        .collect();
+    let rows = pane_rows(pane);
     let pane_tag = |key: &str| -> Value {
         rows.iter()
             .find(|row| row["label"] == json!(key))
@@ -463,6 +475,53 @@ fn unticking_the_box_brings_the_configured_value_back() {
         !overrides_path(&sandbox, SESSION).exists(),
         "nothing is left to hide"
     );
+}
+
+/// The switch is a declaration, not a copy: a session can hide a sample that a
+/// level above it includes, and turning it back on makes the entries its own.
+#[test]
+fn the_git_switch_can_hide_an_inherited_sample() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("", ""));
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+
+    wire.notify(
+        "tag.level.git",
+        json!({"level": "aoe", "enabled": true, "session_id": SESSION}),
+    );
+    let page = wire.wait_page();
+    let tags = tags_of(&page["sessions"][0]);
+    assert_eq!(tag(&tags, "git.branch")["origin"], json!("aoe"));
+    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
+    assert_eq!(
+        pane_row(&pane_rows(&aoe), "Standard git information")["selected"],
+        json!(true)
+    );
+
+    // Hiding it here must win over the AoE default, which a per-key `tag.remove`
+    // could not do: the level that set it would still carry it.
+    wire.notify("tag.git", json!({"enabled": false, "session_id": SESSION}));
+    let page = wire.wait_page();
+    let tags = tags_of(&page["sessions"][0]);
+    assert!(tag(&tags, "git.branch").is_null(), "{tags:?}");
+    let session = wire.pane(SESSION).clone();
+    let switch = pane_row(&pane_rows(&session), "Standard git information");
+    assert_eq!(switch["value"], json!("off here"));
+    assert_eq!(switch["method"], json!("tag.git"));
+    assert_eq!(switch["params"]["enabled"], json!(true));
+    let file = overrides_path(&sandbox, SESSION);
+    let text = std::fs::read_to_string(&file).expect("overrides.toml");
+    assert!(text.contains("git_tags = false"), "{text}");
+
+    // Turning it back on materialises the sample for this session, so the pane
+    // can label it as this session's own again.
+    wire.notify("tag.git", json!({"enabled": true, "session_id": SESSION}));
+    let page = wire.wait_page();
+    let tags = tags_of(&page["sessions"][0]);
+    assert_eq!(tag(&tags, "git.branch")["origin"], json!("session"));
+    let text = std::fs::read_to_string(&file).expect("overrides.toml");
+    assert!(text.contains("git_tags = true"), "{text}");
 }
 
 #[test]
@@ -783,11 +842,10 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
 }
 
-/// The activity is the thing a row should show at a glance, so it leads the badge
-/// with its own icon; the other tags follow with the generic one, and the icon is
-/// presentation — the text is what a terminal renders.
+/// The row is a narrow glance, so it carries only the activity: a tag list there
+/// is noise. The icon is presentation — the text is what a terminal renders.
 #[test]
-fn the_row_badge_leads_with_the_activity_and_its_icon() {
+fn the_row_badge_shows_only_the_activity() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config(
@@ -806,16 +864,38 @@ fn the_row_badge_leads_with_the_activity_and_its_icon() {
         .find(|params| params["slot"] == json!("row-badge"))
         .unwrap_or_else(|| panic!("no badge was pushed: {:?}", wire.pushes));
     let items = badge["payload"]["items"].as_array().expect("items");
+    assert_eq!(items.len(), 1, "only the activity belongs here: {badge}");
     assert_eq!(items[0]["text"], json!("testing"), "{badge}");
     assert_eq!(items[0]["icon"], json!("flask-conical"), "{badge}");
     assert_eq!(items[0]["tone"], json!("warn"), "{badge}");
     // The raw tag is still what travels; the icon never does.
     assert!(!badge.to_string().contains("activity:test"), "{badge}");
-    let team = items
+    assert!(
+        items.iter().all(|item| item["text"] != json!("team")),
+        "ordinary tags stay out of the row: {badge}"
+    );
+}
+
+#[test]
+fn a_session_without_an_activity_has_no_row_badge() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+    let badge = wire
+        .pushes
         .iter()
-        .find(|item| item["text"] == json!("team"))
-        .unwrap_or_else(|| panic!("no team item in {badge}"));
-    assert_eq!(team["icon"], json!("tag"));
+        .rev()
+        .find(|params| params["slot"] == json!("row-badge"))
+        .expect("a badge");
+    assert_eq!(
+        badge["payload"]["items"].as_array().map(Vec::len),
+        Some(0),
+        "{badge}"
+    );
 }
 
 #[test]
@@ -841,19 +921,8 @@ fn a_typo_in_the_activity_is_reported_not_iconified() {
         .as_array()
         .unwrap_or_else(|| panic!("no items in {badge}"));
     assert!(
-        items
-            .iter()
-            .all(|item| item["icon"] != json!("flask-conical")),
-        "a typo must not borrow the icon of the word it nearly is: {badge}"
-    );
-    let activity = items
-        .iter()
-        .find(|item| item["text"] == json!("activity"))
-        .unwrap_or_else(|| panic!("the activity tag is still shown: {badge}"));
-    assert_eq!(
-        activity["icon"],
-        json!("tag"),
-        "an unknown value is a tag, not an icon"
+        items.is_empty(),
+        "a typo is not an activity, so the row stays empty: {badge}"
     );
 }
 
@@ -870,12 +939,7 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
 
-    let pane = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("pane"))
-        .expect("a pane");
+    let pane = wire.pane(SESSION);
     let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
     let section = blocks
         .iter()
@@ -887,17 +951,33 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
         .iter()
         .filter(|child| child["kind"] == json!("row"))
         .collect();
-    assert_eq!(rows.len(), 9, "the whole vocabulary is offered: {section}");
+    let candidates: Vec<&serde_json::Value> = rows
+        .iter()
+        .copied()
+        .filter(|row| row["method"] == json!("tag.set"))
+        .collect();
+    assert_eq!(
+        candidates.len(),
+        9,
+        "the whole vocabulary is offered: {section}"
+    );
     let selected: Vec<&str> = rows
         .iter()
         .filter(|row| row["selected"] == json!(true))
         .map(|row| row["label"].as_str().unwrap_or_default())
         .collect();
     assert_eq!(selected, vec!["debugging"], "{section}");
-    for row in rows {
-        assert_eq!(row["method"], json!("tag.set"), "{row}");
+    for row in candidates {
         assert_eq!(row["params"]["key"], json!("activity"), "{row}");
     }
+    assert!(
+        rows.iter().any(|row| row["method"] == json!("tag.restore")),
+        "{section}"
+    );
+    assert!(
+        rows.iter().any(|row| row["method"] == json!("tag.remove")),
+        "{section}"
+    );
     // The pane is text-and-tone first: every row has a label, and the icon is
     // decoration the web renders and the terminal ignores.
     assert!(children
@@ -934,12 +1014,7 @@ fn the_project_family_is_what_the_pane_offers() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
 
-    let pane = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("pane"))
-        .expect("a pane");
+    let pane = wire.pane(SESSION);
     let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
     // Exactly one: the activity is offered once, in the session's own section,
     // and a level above it does not repeat the picker.
@@ -956,6 +1031,7 @@ fn the_project_family_is_what_the_pane_offers() {
         .collect();
     let labels: Vec<&str> = rows
         .iter()
+        .filter(|row| row["method"] == json!("tag.set"))
         .filter_map(|row| row["label"].as_str())
         .collect();
     assert_eq!(labels, vec!["writing", "measuring"], "{section}");
@@ -1019,7 +1095,41 @@ fn the_page_names_the_users_own_config_for_a_user_scope_row() {
 }
 
 #[test]
-fn the_pane_has_three_levels_and_a_project_edit_stays_in_its_project() {
+fn a_session_without_a_project_has_no_project_tab() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    let mut session = row(SESSION, &repo);
+    session["project_path"] = json!("");
+    sandbox.write_config(&settings_config("", ""));
+    let mut wire = Wire::open(&sandbox, &[session], &[]);
+    wire.notify("session.state", json!({}));
+    wire.wait_page();
+
+    assert!(
+        !wire
+            .pushes
+            .iter()
+            .any(|params| params["id"] == json!("llm_tags_project")),
+        "no project tab was pushed: {:?}",
+        wire.pushes
+    );
+    assert!(wire
+        .calls
+        .iter()
+        .any(|(method, params)| method == "ui.state.remove"
+            && params["id"] == json!("llm_tags_project")));
+    let session = wire.pane(SESSION);
+    let titles: Vec<&str> = session["payload"]["blocks"]
+        .as_array()
+        .expect("blocks")
+        .iter()
+        .filter_map(|block| block["title"].as_str())
+        .collect();
+    assert_eq!(titles, vec!["Activity"], "{session}");
+}
+
+#[test]
+fn the_three_tabs_split_session_project_and_aoe() {
     let sandbox = Sandbox::new();
     let one = repository(&sandbox, "one");
     let two = repository(&sandbox, "two");
@@ -1032,23 +1142,26 @@ fn the_pane_has_three_levels_and_a_project_edit_stays_in_its_project() {
     wire.notify("session.status.changed", json!({"session_id": SESSION}));
     wire.wait_page();
 
-    // The pane opens on the session and still offers the two levels above it.
-    let pane = wire.pane(SESSION).clone();
-    let titles: Vec<&str> = pane["payload"]["blocks"]
+    // Three tabs, not four sections: the session pane is the session, and the
+    // project and AoE panes are their own dock entries.
+    let session = wire.pane(SESSION).clone();
+    assert_eq!(session["id"], json!("llm_tags_session"));
+    assert_eq!(session["payload"]["title"], json!("LLM Tags · Session"));
+    assert!(session["payload"].get("icon").is_none(), "{session}");
+    let titles: Vec<&str> = session["payload"]["blocks"]
         .as_array()
         .expect("blocks")
         .iter()
         .filter_map(|block| block["title"].as_str())
         .collect();
-    assert_eq!(
-        titles,
-        vec![
-            "This session",
-            "Activity",
-            "This project",
-            "AoE — every session"
-        ]
-    );
+    assert_eq!(titles, vec!["Activity"], "{session}");
+
+    let project = wire.pane_with(SESSION, "llm_tags_project").clone();
+    assert_eq!(project["payload"]["title"], json!("LLM Tags · Project"));
+    assert!(project["payload"].get("icon").is_none(), "{project}");
+    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
+    assert_eq!(aoe["payload"]["title"], json!("LLM Tags · AoE"));
+    assert!(aoe["payload"].get("icon").is_none(), "{aoe}");
 
     // A project default for one checkout: the session in it picks it up, the
     // session in the other checkout keeps the settings' value.
@@ -1078,18 +1191,24 @@ fn the_pane_has_three_levels_and_a_project_edit_stays_in_its_project() {
         json!("billing")
     );
     assert_eq!(tag(&tags_of(two_page), "team")["value"], json!("config"));
+    assert_eq!(tag(&tags_of(one_page), "team")["origin"], json!("project"));
+    assert_eq!(
+        one_page["levels"]["project"]["values"]["team"],
+        json!("core"),
+        "{one_page}"
+    );
 
     // The row says where it came from, so a project default is not mistaken for
     // something this session wrote.
-    let pane = wire.pane(SESSION).clone();
-    let rows = section_rows(&pane, "This session");
+    let session = wire.pane(SESSION).clone();
+    let rows = pane_rows(&session);
     assert_eq!(
         pane_row(&rows, "team")["badges"][0]["text"],
         json!("project")
     );
 
     // A hide at the project level drops the settings' `cost`, and the project
-    // section says how many entries and hides it owns.
+    // tab says how many entries and hides it owns.
     wire.notify(
         "tag.level.unset",
         json!({
@@ -1106,14 +1225,22 @@ fn the_pane_has_three_levels_and_a_project_edit_stays_in_its_project() {
         .find(|session| session["id"] == json!(SESSION))
         .expect("this session");
     assert_eq!(tag(&tags_of(one_page), "cost"), &Value::Null);
-    let pane = wire.pane(SESSION).clone();
-    let project = pane["payload"]["blocks"]
-        .as_array()
-        .expect("blocks")
-        .iter()
-        .find(|block| block["title"] == json!("This project"))
-        .expect("project section");
-    assert_eq!(project["value"], json!("2 override(s), 1 hidden"));
+    assert_eq!(
+        one_page["levels"]["project"]["values"]["cost"],
+        Value::Null,
+        "{one_page}"
+    );
+    let project = wire.pane_with(SESSION, "llm_tags_project").clone();
+    assert_eq!(
+        project["payload"]["footer"]["value"],
+        json!("2 override(s), 1 hidden")
+    );
+    let project_rows = pane_rows(&project);
+    assert_eq!(pane_row(&project_rows, "cost")["value"], json!("(hidden)"));
+    assert_eq!(
+        pane_row(&project_rows, "cost")["method"],
+        json!("tag.level.restore")
+    );
 
     // AoE entries reach both sessions, including the other project.
     wire.notify(
@@ -1137,6 +1264,15 @@ fn the_pane_has_three_levels_and_a_project_edit_stays_in_its_project() {
             "{id}"
         );
     }
+    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
+    assert_eq!(
+        aoe["payload"]["footer"]["value"],
+        json!("1 override(s), 0 hidden")
+    );
+    assert_eq!(
+        pane_row(&pane_rows(&aoe), "owner")["badges"][0]["text"],
+        json!("AoE")
+    );
 
     // Both levels live in the plugin's own file, and the settings are untouched.
     let env = llm_tags::env::Env::new(sandbox.env.clone());

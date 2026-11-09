@@ -42,20 +42,40 @@ pub struct Overrides {
     pub unset: Vec<String>,
     /// A literal value standing in for what the targets would render.
     pub token: String,
+    /// Whether this session includes the standard git sample: `Some(true)` adds
+    /// it, `Some(false)` hides it even when a project or AoE default carries it,
+    /// and `None` inherits.
+    pub git_tags: Option<bool>,
 }
 
 impl Overrides {
     pub fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.unset.is_empty() && self.token.is_empty()
+        self.tags.is_empty()
+            && self.unset.is_empty()
+            && self.token.is_empty()
+            && self.git_tags.is_none()
     }
 
-    /// The payload fields this session sets, in the order they were added.
+    /// The payload fields this session sets, in the order they were added. A
+    /// `git_tags` switch is materialised here too, so a surface can label the
+    /// four entries as this session's own.
     pub fn entries(&self) -> Vec<(String, serde_json::Value)> {
-        self.tags
+        let mut entries: Vec<(String, serde_json::Value)> = self
+            .tags
             .iter()
             .filter_map(|raw| Tag::parse(raw).ok())
             .map(|tag| (tag.key, tag.value))
-            .collect()
+            .collect();
+        if self.git_tags == Some(true) {
+            for entry in crate::resolver::GIT_PRESET {
+                if let Ok(tag) = Tag::parse(entry) {
+                    if !entries.iter().any(|(key, _)| key == &tag.key) {
+                        entries.push((tag.key, tag.value));
+                    }
+                }
+            }
+        }
+        entries
     }
 }
 
@@ -98,6 +118,32 @@ pub fn remove_preset(app_dir: &Path, session_id: &str, id: &str) -> Result<Overr
         }
     }
     Ok(load(app_dir, session_id).0)
+}
+
+/// Include or hide the standard git sample for this session.
+///
+/// Unlike [`apply_preset`], `false` is an explicit declaration: it hides the
+/// sample even when a project or AoE default carries it. The switch owns the
+/// four keys, so any hand-written copy of them is dropped either way.
+pub fn set_git(app_dir: &Path, session_id: &str, enabled: bool) -> Result<Overrides, String> {
+    let (mut overrides, _) = load(app_dir, session_id);
+    let keys: Vec<String> = crate::resolver::GIT_PRESET
+        .iter()
+        .filter_map(|entry| Tag::parse(entry).ok())
+        .map(|tag| tag.key)
+        .collect();
+    overrides.tags.retain(|raw| match Tag::parse(raw) {
+        Ok(tag) => !keys.iter().any(|key| key == &tag.key),
+        Err(_) => true,
+    });
+    if enabled {
+        overrides
+            .unset
+            .retain(|key| !keys.iter().any(|wanted| wanted == key));
+    }
+    overrides.git_tags = Some(enabled);
+    save(app_dir, session_id, &overrides)?;
+    Ok(overrides)
 }
 
 /// `<app dir>/sessions/<session id>/overrides.toml`.
@@ -155,6 +201,7 @@ pub fn load(app_dir: &Path, session_id: &str) -> (Overrides, Vec<String>) {
             .and_then(toml::Value::as_str)
             .unwrap_or_default()
             .to_string(),
+        git_tags: table.get("git_tags").and_then(toml::Value::as_bool),
     };
     // A tag that does not parse would be dropped later with a message about
     // "settings", which is the wrong file; report it here instead.
@@ -207,6 +254,9 @@ pub fn save(app_dir: &Path, session_id: &str, overrides: &Overrides) -> Result<(
     }
     if !overrides.token.is_empty() {
         text.push_str(&format!("token = {:?}\n", overrides.token));
+    }
+    if let Some(enabled) = overrides.git_tags {
+        text.push_str(&format!("git_tags = {enabled}\n"));
     }
     crate::private::write_atomic(&path, &text)
         .map_err(|err| format!("cannot write {}: {err}", path.display()))?;
@@ -321,6 +371,26 @@ pub fn apply(settings: &mut Settings, app_dir: &Path, session_id: &str) {
     settings.manual_tag_count = overrides.tags.len();
     if !overrides.token.is_empty() {
         settings.token = overrides.token.clone();
+    }
+    if let Some(enabled) = overrides.git_tags {
+        let keys: Vec<String> = crate::resolver::GIT_PRESET
+            .iter()
+            .filter_map(|entry| Tag::parse(entry).ok())
+            .map(|tag| tag.key)
+            .collect();
+        settings.tags.retain(|raw| match Tag::parse(raw) {
+            Ok(tag) => !keys.iter().any(|key| key == &tag.key),
+            Err(_) => true,
+        });
+        if enabled {
+            let mut merged: Vec<String> = crate::resolver::GIT_PRESET
+                .iter()
+                .map(|entry| (*entry).to_string())
+                .collect();
+            merged.append(&mut settings.tags);
+            settings.tags = merged;
+            settings.manual_tag_count += crate::resolver::GIT_PRESET.len();
+        }
     }
 }
 
