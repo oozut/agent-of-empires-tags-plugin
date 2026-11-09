@@ -271,15 +271,13 @@ const labels = options.map((option) => option.textContent);
 if (!labels.some((label) => label.includes("Lithuanians"))) {
   fail(`the session select was not filled: ${JSON.stringify(labels)}`);
 }
-const tagRows = (selectors.get("#tags tbody")?.children || []).map((row) =>
-  row.children.map(flatText).join(" | "),
-);
-if (!tagRows.some((row) => row.includes("team") && row.includes("this session"))) {
-  fail(`the tag table is missing the session's own entry: ${JSON.stringify(tagRows)}`);
+
+// The tag editor moved to the dashboard panel; the page must no longer carry a
+// tag table, an add form, a reference picker or the git preset switch.
+for (const id of ["tags", "add", "key", "value", "reference", "gitpreset", "activities"]) {
+  if (html.includes(`id="${id}"`)) fail(`the page still carries the old #${id} control`);
 }
-if (!tagRows.some((row) => row.includes("cost") && row.includes("settings"))) {
-  fail(`the tag table is missing the settings entry: ${JSON.stringify(tagRows)}`);
-}
+
 const targetRows = (selectors.get("#targets tbody")?.children || []).map((row) =>
   row.children.map(flatText).join(" | "),
 );
@@ -288,53 +286,27 @@ if (!targetRows.some((row) => row.includes("X-AoE-Tags") && row.includes("AOE_HD
 }
 if (banner && banner.textContent) fail(`the page left a banner up: ${banner.textContent}`);
 
-// The reference dropdown comes from the pushed catalogue: a Git group with the
-// dotted reference in it, not a hard-coded list in the page.
-const referenceOptions = (byId.get("reference")?.children || []).flatMap((node) =>
-  node.children?.length ? node.children : [node],
-);
-if (!referenceOptions.some((option) => option.value === "{git.branch}")) {
-  fail(
-    `the reference dropdown is missing {git.branch}: ${JSON.stringify(
-      referenceOptions.map((option) => option.value),
-    )}`,
-  );
-}
-const valueInput = document.getElementById("value");
-valueInput.value = "git.branch:";
-valueInput.selectionStart = valueInput.value.length;
-valueInput.selectionEnd = valueInput.value.length;
-byId.get("reference").onchange({ target: { value: "{git.branch}" } });
-if (valueInput.value !== "git.branch:{git.branch}") {
-  fail(`inserting a reference produced ${JSON.stringify(valueInput.value)}`);
-}
-// Inserting is a local edit: it must not have asked the worker for anything.
-if (replies.some((reply) => reply.method === "action")) {
-  fail("inserting a reference sent an action; it should only fill the field");
-}
-
-// The sample tick is a per-session write of the whole preset, fired once.
-if (!byId.get("presetsub")?.textContent?.includes("git.branch:{git.branch}")) {
-  fail(`the preset note does not name what it writes: ${byId.get("presetsub")?.textContent}`);
-}
-byId.get("gitpreset").onchange({ target: { checked: true } });
+// The token is the one value a pane row cannot hold, so the page must still
+// write it — and only when the button is pressed.
+byId.get("token").value = '{"team":"platform"}';
+byId.get("savetoken").onclick();
 await new Promise((done) => setTimeout(done, 50));
 const writes = replies
   .filter((reply) => reply.method === "action")
   .map((reply) => reply.params?.method);
-if (!writes.includes("tag.preset")) {
-  fail(`ticking the preset fired ${JSON.stringify(writes)}, not tag.preset`);
+if (!writes.includes("token.set")) {
+  fail(`saving the token fired ${JSON.stringify(writes)}, not token.set`);
 }
-const presetWrite = replies.find(
-  (reply) => reply.method === "action" && reply.params?.method === "tag.preset",
+const tokenWrite = replies.find(
+  (reply) => reply.method === "action" && reply.params?.method === "token.set",
 );
-if (presetWrite?.params?.params?.preset !== "git" || presetWrite?.params?.params?.applied !== true) {
-  fail(`the preset write carried ${JSON.stringify(presetWrite?.params)}`);
+if (tokenWrite?.params?.params?.token !== '{"team":"platform"}') {
+  fail(`the token write carried ${JSON.stringify(tokenWrite?.params)}`);
 }
 
 console.log(`OK ${file}`);
 console.log(
-  `   opened the bridge, asked for ${asked.join(", ")}, rendered ${tagRows.length} tag row(s), ` +
-    `${targetRows.length} target row(s), ${referenceOptions.length} reference(s); ` +
-    `the git preset write carries ${JSON.stringify(presetWrite.params.params)}`,
+  `   opened the bridge, asked for ${asked.join(", ")}, rendered ` +
+    `${targetRows.length} target row(s); no tag editor on the page; ` +
+    `the token write carries ${JSON.stringify(tokenWrite.params.params)}`,
 );

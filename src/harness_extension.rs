@@ -52,7 +52,7 @@ pub const RECEIPT_FILE: &str = "harness-extension.toml";
 /// [`disclosure`] changes in a way a user should see again — every receipt with
 /// an older number stops being enough, and the file the user approves is the
 /// same file.
-pub const DISCLOSURE_VERSION: u32 = 4;
+pub const DISCLOSURE_VERSION: u32 = 5;
 
 /// The default file name inside the harness's extension directory. A row may
 /// override it; the name is ours so it can be recognised and removed.

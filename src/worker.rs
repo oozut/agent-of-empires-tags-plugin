@@ -223,6 +223,13 @@ impl Host {
             self.apply_extension_edit(command, params);
             return;
         }
+        // A level edit is not tied to one session; the pane names the level and,
+        // for a project, the path. The host still merges a `session_id` into the
+        // action, so the path can be recovered from it when the pane omitted it.
+        if command.starts_with("tag.level.") {
+            self.apply_level_edit(command, params);
+            return;
+        }
         let Some(session) = params.get("session_id").and_then(serde_json::Value::as_str) else {
             eprintln!("{command}: the host sent no session_id; refusing to guess one");
             return;
@@ -242,6 +249,12 @@ impl Host {
             "tag.remove" => match params.get("key").and_then(serde_json::Value::as_str) {
                 Some(key) => crate::session_tags::unset_tag(&app_dir, session, key),
                 None => Err("dropping a tag needs its `key`".to_string()),
+            },
+            // Undo a hide (or drop an entry this session wrote): whichever way the
+            // key was suppressed, the inherited value shows again.
+            "tag.restore" => match params.get("key").and_then(serde_json::Value::as_str) {
+                Some(key) => crate::session_tags::drop_tag(&app_dir, session, key),
+                None => Err("restoring a tag needs its `key`".to_string()),
             },
             "token.set" => {
                 let token = params
@@ -273,6 +286,95 @@ impl Host {
         if let Err(err) = result {
             eprintln!("{command} for session {session}: {err}");
         }
+    }
+
+    /// A write to a level above one session: the project's defaults or the
+    /// AoE-wide ones. The settings' file is still never opened for writing; the
+    /// entries land in `<app dir>/tags.toml` and the resolver folds them in.
+    fn apply_level_edit(&mut self, command: &str, params: &serde_json::Value) {
+        let level = params
+            .get("level")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !crate::levels::is_level(level) {
+            eprintln!("{command}: {level:?} is not a tag level");
+            return;
+        }
+        let project = if level == crate::levels::PROJECT {
+            match self.project_path_for(params) {
+                Some(path) => path,
+                None => {
+                    eprintln!("{command}: a project level edit needs a project path");
+                    return;
+                }
+            }
+        } else {
+            String::new()
+        };
+        let app_dir = match crate::settings::app_dir(&self.env) {
+            Ok(dir) => dir,
+            Err(message) => {
+                eprintln!("{command} for level {level}: {message}");
+                return;
+            }
+        };
+        let key = params.get("key").and_then(serde_json::Value::as_str);
+        let result = match command {
+            "tag.level.unset" => match key {
+                Some(key) => crate::levels::unset_tag(&app_dir, level, &project, key),
+                None => Err("hiding a tag needs its `key`".to_string()),
+            },
+            "tag.level.restore" => match key {
+                Some(key) => crate::levels::restore(&app_dir, level, &project, key),
+                None => Err("restoring a tag needs its `key`".to_string()),
+            },
+            "tag.level.replace" => {
+                let entries: Vec<String> = params
+                    .get("entries")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|rows| {
+                        rows.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                crate::levels::replace(&app_dir, level, &project, &entries)
+            }
+            "tag.level.reset" => crate::levels::reset(&app_dir, level, &project),
+            other => Err(format!("{other} is not a tag level command")),
+        };
+        if let Err(err) = result {
+            eprintln!("{command} for level {level}: {err}");
+        }
+    }
+
+    /// The project path a level action is about: the one the pane sent, else the
+    /// session's own, looked up because the host gives an action a session id but
+    /// not a path.
+    fn project_path_for(&mut self, params: &serde_json::Value) -> Option<String> {
+        if let Some(path) = params
+            .get("project_path")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+        {
+            return Some(path.to_string());
+        }
+        let session = params
+            .get("session_id")
+            .and_then(serde_json::Value::as_str)?;
+        let listed = self
+            .call_host("sessions.list", serde_json::json!({}))
+            .ok()?;
+        listed
+            .get("sessions")
+            .and_then(serde_json::Value::as_array)?
+            .iter()
+            .find(|row| row.get("id").and_then(serde_json::Value::as_str) == Some(session))
+            .and_then(|row| row.get("project_path"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
     }
 
     fn call_host(
@@ -368,8 +470,13 @@ impl Host {
         let rules_val = setting(self, "rules");
         let session_tagging_val = setting(self, "session_tagging");
         let harness_extension_val = setting(self, "harness_extension");
-        // feature_tag is per_project; fetch the global value once as a fallback.
-        let feature_tag_global = setting(self, "feature_tag");
+        // These are per_project; fetch the global value once as a fallback for a
+        // session with no project, or for a key the project did not set.
+        let per_project_global = [
+            ("feature_tag", setting(self, "feature_tag")),
+            ("activity_family", setting(self, "activity_family")),
+            ("activity_families", setting(self, "activity_families")),
+        ];
 
         let mut table = toml::Table::new();
         for (key, value) in [
@@ -381,7 +488,7 @@ impl Host {
             ("harness_extension", harness_extension_val.clone()),
         ] {
             if let Some(value) = value {
-                if let Some(converted) = json_to_toml(&value) {
+                if let Some(converted) = crate::settings::json_to_toml(&value) {
                     table.insert(key.to_string(), converted);
                 }
             }
@@ -389,6 +496,19 @@ impl Host {
 
         let flags = Flags::from_given(&Given::default(), &self.env);
         let app_dir = crate::settings::app_dir(&self.env);
+        // The two overlays above a session, read once per publish: the pane shows
+        // their entries and the resolver folds them in per session, so both use
+        // this one copy.
+        let levels = match &app_dir {
+            Ok(dir) => {
+                let (levels, warnings) = crate::levels::load(dir);
+                for warning in warnings {
+                    eprintln!("{warning}");
+                }
+                Some(levels)
+            }
+            Err(_) => None,
+        };
         // The adapter rows are how a session's tool becomes a delivery and an
         // extension decision; loaded once, because every session needs them.
         let adapters = crate::adapters::load(None).0;
@@ -429,7 +549,7 @@ impl Host {
                 id: id.clone(),
                 title: title.clone(),
                 tool: tool.clone(),
-                path,
+                path: path.clone(),
                 profile,
                 group: String::new(),
                 branch: String::new(),
@@ -441,21 +561,26 @@ impl Host {
             // a bare word, or a stored `{key, value}` pair, and all three mean
             // the same entry.
             let mut session_table = table.clone();
-            let mut params = serde_json::json!({"key": "feature_tag"});
-            if let Some(project_path) = session
-                .get("project_path")
-                .and_then(serde_json::Value::as_str)
-            {
-                params["project_path"] = serde_json::Value::String(project_path.to_string());
-            }
-            let feature_tag_value = self
-                .call_host("config.get", params)
-                .ok()
-                .and_then(|v| v.get("value").cloned())
-                .or_else(|| feature_tag_global.clone());
-            if let Some(value) = feature_tag_value {
-                if let Some(converted) = json_to_toml(&value) {
-                    session_table.insert("feature_tag".to_string(), converted);
+            for (key, global) in &per_project_global {
+                let mut params = serde_json::json!({"key": key});
+                if let Some(project_path) = session
+                    .get("project_path")
+                    .and_then(serde_json::Value::as_str)
+                {
+                    if !project_path.is_empty() {
+                        params["project_path"] =
+                            serde_json::Value::String(project_path.to_string());
+                    }
+                }
+                let value = self
+                    .call_host("config.get", params)
+                    .ok()
+                    .and_then(|v| v.get("value").cloned())
+                    .or_else(|| global.clone());
+                if let Some(value) = value {
+                    if let Some(converted) = crate::settings::json_to_toml(&value) {
+                        session_table.insert((*key).to_string(), converted);
+                    }
                 }
             }
 
@@ -505,30 +630,54 @@ impl Host {
             }
             let session_keys: Vec<String> =
                 edits.entries().into_iter().map(|(key, _)| key).collect();
+            // The two overlays live in the plugin's own file. Reading them here is
+            // what lets a row say *where* a tag came from, and what gives the
+            // project and AoE sections the entries they own (as opposed to the
+            // ones they merely inherit).
+            let project_edits = levels
+                .as_ref()
+                .map(|levels| levels.project(&path).clone())
+                .unwrap_or_default();
+            let aoe_edits = levels
+                .as_ref()
+                .map(|levels| levels.aoe.clone())
+                .unwrap_or_default();
+            let project_keys = project_edits.keys();
+            let aoe_keys = aoe_edits.keys();
             let mut tag_rows: Vec<serde_json::Value> = Vec::new();
             // The pane answers "what is this session sending", so it shows the
             // rendered tag set — `git.branch = git-tags`, not the reference it was
             // written as. The editor page below shows the stored entry instead,
             // because that is what a user edits.
-            let activity = crate::activity::of(&snap.tags);
-            for value in crate::activity::unknown(&snap.tags) {
-                // A closed vocabulary, so a typo is reported rather than given a
-                // guessed icon: "testing" is not "test".
+            // The family this session was launched with, not the one the settings
+            // hold now: an edited family applies to the next session, and the pane
+            // must not relabel a running one.
+            let (families, family_warnings) = match &app_dir {
+                Ok(app_dir) => crate::activity::for_session(app_dir, &id, &snap.families),
+                Err(_) => (snap.families.clone(), Vec::new()),
+            };
+            for warning in family_warnings {
+                eprintln!("{id}: {warning}");
+            }
+            let activity = crate::activity::of(&families, &snap.tags);
+            for value in crate::activity::unknown(&families, &snap.tags) {
+                // A family is closed too: a typo is reported rather than given a
+                // guessed icon: "testing" is not "test" unless the family says so.
                 eprintln!(
                     "{id}: `{KEY}:{value}` is not an activity ({})",
-                    crate::activity::ALL
-                        .iter()
-                        .map(|activity| activity.key)
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    families.names_in_use(),
                     KEY = crate::activity::KEY
                 );
             }
             for tag in &snap.tags {
-                let origin = if session_keys.contains(&tag.key) {
-                    "session"
+                let (origin, origin_text, origin_tone) = if session_keys.contains(&tag.key) {
+                    ("session", "this session", "info")
+                } else if project_keys.contains(&tag.key) {
+                    ("project", "project", "success")
+                } else if aoe_keys.contains(&tag.key) {
+                    ("aoe", "AoE", "warn")
                 } else {
-                    "config"
+                    ("config", "settings", "neutral")
                 };
                 // The activity row names what the session is doing instead of
                 // repeating the key, and carries the vocabulary's own icon.
@@ -536,8 +685,14 @@ impl Host {
                     .then(|| {
                         tag.value
                             .as_str()
-                            .and_then(crate::activity::find)
-                            .map(|found| (found.label.to_string(), found.icon, found.tone))
+                            .and_then(|value| families.find(value))
+                            .map(|found| {
+                                (
+                                    found.label.to_string(),
+                                    found.icon.clone(),
+                                    found.tone.clone(),
+                                )
+                            })
                     })
                     .flatten();
                 let mut row = serde_json::json!({
@@ -551,10 +706,13 @@ impl Host {
                         other => other.to_string(),
                     },
                     "mono": true,
-                    "badges": [{"text": origin, "tone": if origin == "session" { "info" } else { "neutral" }}],
-                    "tooltip": "click to drop this tag for this session",
+                    "badges": [{"text": origin_text, "tone": origin_tone}],
+                    // Hiding is a per-session action even when the entry came from
+                    // above: the project and AoE sections are the ones that edit
+                    // those levels, and a click on a row here must not do that.
+                    "tooltip": "hide this tag for this session (the level that set it keeps it)",
                     "method": "tag.remove",
-                    "params": {"key": tag.key},
+                    "params": {"key": tag.key, "origin": origin},
                 });
                 if let Some((_, icon, tone)) = &named {
                     // Only a recognised activity carries an icon; `null` would
@@ -565,6 +723,58 @@ impl Host {
                 }
                 tag_rows.push(row);
             }
+            // A key this session hid is not gone: offer the way back, so the
+            // panel can undo a drop without a terminal.
+            for key in &edits.unset {
+                tag_rows.push(serde_json::json!({
+                    "kind": "row",
+                    "label": key,
+                    "value": "(hidden)",
+                    "mono": true,
+                    "badges": [{"text": "hidden here", "tone": "warn"}],
+                    "tooltip": "let the inherited value show again for this session",
+                    "method": "tag.restore",
+                    "params": {"key": key},
+                }));
+            }
+            let mut session_rows = tag_rows;
+            // The sample set as one switch: the same write the CLI's `--git` and
+            // the page's old tick box made, kept where the session is edited.
+            let git_entries = crate::session_tags::preset("git").unwrap_or(&[]);
+            let git_keys: Vec<&str> = git_entries
+                .iter()
+                .filter_map(|entry| entry.split(':').next())
+                .collect();
+            let git_applied = !git_keys.is_empty()
+                && git_keys
+                    .iter()
+                    .all(|key| snap.tags.iter().any(|tag| tag.key == *key));
+            session_rows.push(serde_json::json!({
+                "kind": "row",
+                "label": "Standard git information",
+                "icon": "git-branch",
+                "value": if git_applied { "on" } else { "off" },
+                "mono": true,
+                "selected": git_applied,
+                "badges": [{"text": "preset", "tone": "neutral"}],
+                "tooltip": if git_applied {
+                    "remove the sample git entries from this session"
+                } else {
+                    "write vcs:git, git.branch, git.commit and git.tag for this session"
+                },
+                "method": "tag.preset",
+                "params": {"preset": "git", "applied": !git_applied},
+            }));
+            session_rows.push(serde_json::json!({
+                "kind": "row",
+                "label": "Reset this session's edits",
+                "icon": "rotate-ccw",
+                "tone": "danger",
+                "tooltip": "forget every entry and every hide this session has",
+                "method": "tags.reset",
+                "params": {},
+            }));
+
             let mut target_rows: Vec<serde_json::Value> = snap
                 .resolved
                 .iter()
@@ -578,18 +788,47 @@ impl Host {
                 })
                 .collect();
 
+            // The entries a session carries, minus the dynamic activity key: a
+            // default that says "this session is coding" would be wrong the
+            // moment it is copied.
+            let default_entries: Vec<String> = snap
+                .settings
+                .tags
+                .iter()
+                .filter(|raw| {
+                    resolver::Tag::parse(raw)
+                        .map(|tag| tag.key != crate::activity::KEY)
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect();
+
             let mut blocks: Vec<serde_json::Value> = vec![serde_json::json!({
                 "kind": "heading",
                 "text": "LLM Tags",
             })];
             blocks.append(&mut target_rows);
             blocks.push(serde_json::json!({"kind": "divider"}));
+            // Three levels, most specific first. The session section is open
+            // because that is what a pane is about; the two above it are one
+            // click away and say how many overrides they own.
+            blocks.push(level_section(
+                "This session",
+                None,
+                "",
+                &crate::levels::EditSet::default(),
+                0,
+                &[],
+                session_rows,
+            ));
             // Changing the activity from inside the session, not only from the
             // dashboard page: each row is a `tag.set`, and the current one is
             // marked so a human can see what the agent last declared. A terminal
             // UI renders these as text and tone, so the label carries the meaning
             // and the icon is decoration.
-            let activity_rows: Vec<serde_json::Value> = crate::activity::ALL
+            let activity_rows: Vec<serde_json::Value> = families
+                .chosen()
+                .activities
                 .iter()
                 .map(|candidate| {
                     let current = activity.is_some_and(|now| now.key == candidate.key);
@@ -611,20 +850,60 @@ impl Host {
                     })
                 })
                 .collect();
+            // Where the words come from, and what else this machine defines. The
+            // page no longer renders an activity card, so this row is the only
+            // place a person sees the family a session is pinned to without
+            // opening the project form or the terminal.
+            let others = families
+                .names()
+                .into_iter()
+                .filter(|name| *name != families.chosen)
+                .collect::<Vec<_>>();
+            let mut activity_children = activity_rows;
+            activity_children.push(serde_json::json!({
+                "kind": "note",
+                "text": if others.is_empty() {
+                    format!("family {} ({})", families.chosen, families.source)
+                } else {
+                    format!(
+                        "family {} ({}) — also defined here: {}",
+                        families.chosen,
+                        families.source,
+                        others.join(", ")
+                    )
+                },
+                "tone": "neutral",
+            }));
             blocks.push(serde_json::json!({
                 "kind": "section",
                 "title": "Activity",
-                "value": activity.map(|now| now.label).unwrap_or("not set"),
+                "value": activity.map(|now| now.label.clone()).unwrap_or_else(|| "not set".to_string()),
                 "collapsible": true,
                 "collapsed": true,
-                "children": activity_rows,
+                "children": activity_children,
             }));
-            blocks.push(serde_json::json!({
-                "kind": "section",
-                "title": "Tags",
-                "value": format!("{} tag(s)", tag_rows.len()),
-                "children": tag_rows,
-            }));
+            // A project section edits `<app dir>/tags.toml` for this repository;
+            // an AoE section edits the same file for every session. Neither
+            // touches the plugin's settings, so the host's config keeps what the
+            // user wrote there.
+            blocks.push(level_section(
+                "This project",
+                Some(crate::levels::PROJECT),
+                &path,
+                &project_edits,
+                snap.settings.tags.len(),
+                &default_entries,
+                Vec::new(),
+            ));
+            blocks.push(level_section(
+                "AoE — every session",
+                Some(crate::levels::AOE),
+                "",
+                &aoe_edits,
+                snap.settings.tags.len(),
+                &default_entries,
+                Vec::new(),
+            ));
             if !edits.token.is_empty() {
                 // The value never reaches a surface: `ui.state.set` payloads are
                 // kept by the host and rendered for anyone who can see the
@@ -635,18 +914,15 @@ impl Host {
                     "tone": "info",
                 }));
             }
-            if !edits.unset.is_empty() {
-                blocks.push(serde_json::json!({
-                    "kind": "note",
-                    "text": format!("dropped for this session: {}", edits.unset.join(", ")),
-                    "tone": "warn",
-                }));
-            }
+            blocks.push(serde_json::json!({
+                "kind": "note",
+                "text": "Tag definitions stay in the plugin settings or the repository's tags file; \
+                         these panels choose where each one applies.",
+            }));
             blocks.push(serde_json::json!({
                 "kind": "action",
-                "label": "Edit this session's tags",
+                "label": "Session details (token, harness)",
                 "href": EDITOR_PAGE,
-                "variant": "primary",
             }));
 
             // The row badge is where the activity is visible at a glance: one item
@@ -698,7 +974,7 @@ impl Host {
                 serde_json::json!({
                     "text": text,
                     "icon": "tags",
-                    "tooltip": "open the LLM Tags editor",
+                    "tooltip": "open the LLM Tags panel",
                     "href": EDITOR_PAGE,
                 })
             } else {
@@ -725,7 +1001,7 @@ impl Host {
                         "default_location": "right",
                         "blocks": blocks,
                         "footer": {
-                            "text": "click a tag to drop it for this session",
+                            "text": "a row's badge says where the tag comes from",
                             "value": format!("{} target(s)", snap.resolved.len()),
                         },
                     }
@@ -755,15 +1031,8 @@ impl Host {
                 // value the host keeps, so it learns that one is set and nothing
                 // about what it says. The CLI (`tag --show`) is where it is read.
                 "token_set": !edits.token.is_empty(),
-                // The activity, resolved through the vocabulary so the page never
-                // spells an icon name of its own; `null` means the session has not
-                // said what it is doing.
-                "activity": activity.map(|activity| serde_json::json!({
-                    "key": activity.key,
-                    "label": activity.label,
-                    "icon": activity.icon,
-                    "tone": activity.tone,
-                })),
+                // The activity is edited in the pane (the page holds session
+                // details only), so the page is not told the vocabulary.
                 "path": match &app_dir {
                     Ok(app_dir) => crate::session_tags::path(app_dir, &id)
                         .display()
@@ -821,7 +1090,6 @@ impl Host {
                     "references": references,
                     "presets": presets,
                     "extensions": extensions,
-                    "activities": crate::activity::legend(),
                     "page": EDITOR_PAGE,
                 }
             }),
@@ -832,10 +1100,15 @@ impl Host {
 /// The worker methods a pane or page may fire. The host forwards a block's
 /// `method` verbatim, so these are whole names — not the trailing segment that
 /// names a host command (`plugin.<id>.status`).
-pub const EDITS: [&str; 8] = [
+pub const EDITS: [&str; 13] = [
     "tag.set",
     "tag.remove",
+    "tag.restore",
     "tag.preset",
+    "tag.level.unset",
+    "tag.level.restore",
+    "tag.level.replace",
+    "tag.level.reset",
     "token.set",
     "token.clear",
     "tags.reset",
@@ -845,6 +1118,126 @@ pub const EDITS: [&str; 8] = [
     "extension.enable",
     "extension.disable",
 ];
+
+/// One level's section in the pane. The session level passes its rows in; the
+/// project and AoE levels have no rows of their own until this function turns
+/// their file entries into them.
+///
+/// A level's own entry is hidden with `tag.level.unset`, which keeps the entry in
+/// the file so `tag.level.restore` can bring it back. Nothing here writes the
+/// plugin's settings: an entry is an overlay, and "clear" removes the overlay.
+fn level_section(
+    title: &str,
+    level: Option<&str>,
+    project_path: &str,
+    edits: &crate::levels::EditSet,
+    inherited: usize,
+    default_entries: &[String],
+    children: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    let Some(level) = level else {
+        return serde_json::json!({
+            "kind": "section",
+            "title": title,
+            "value": format!("{} row(s)", children.len()),
+            "children": children,
+        });
+    };
+    let mut rows = children;
+    let write = |method: &str, params: serde_json::Value| serde_json::json!({"method": method, "params": params});
+    for entry in &edits.tags {
+        let (key, value) = match entry.split_once(':') {
+            Some((key, value)) => (key, value.trim_start_matches('=')),
+            None => (entry.as_str(), "true"),
+        };
+        let mut row = serde_json::json!({
+            "kind": "row",
+            "label": key,
+            "value": value,
+            "mono": true,
+            "badges": [{"text": if level == crate::levels::PROJECT { "project" } else { "AoE" }, "tone": "info"}],
+            "tooltip": "hide this entry here; it stays in the file and can be restored",
+            "method": "tag.level.unset",
+            "params": {"level": level, "key": key},
+        });
+        if level == crate::levels::PROJECT {
+            row["params"]["project_path"] = serde_json::json!(project_path);
+        }
+        rows.push(row);
+    }
+    for key in &edits.unset {
+        let mut row = serde_json::json!({
+            "kind": "row",
+            "label": key,
+            "value": "(hidden)",
+            "mono": true,
+            "badges": [{"text": "hidden", "tone": "warn"}],
+            "tooltip": "let the inherited value show again here",
+            "method": "tag.level.restore",
+            "params": {"level": level, "key": key},
+        });
+        if level == crate::levels::PROJECT {
+            row["params"]["project_path"] = serde_json::json!(project_path);
+        }
+        rows.push(row);
+    }
+    if edits.is_empty() {
+        rows.push(serde_json::json!({
+            "kind": "row",
+            "label": "No overrides here: everything is inherited",
+            "mono": true,
+        }));
+    }
+    let entries: Vec<String> = default_entries.iter().take(20).cloned().collect();
+    let mut replace = serde_json::json!({
+        "kind": "row",
+        "label": if level == crate::levels::PROJECT {
+            "Use this session's tags as this project's default"
+        } else {
+            "Use this session's tags for every session"
+        },
+        "icon": "copy",
+        "tooltip": "copy this session's current entries into this level",
+        "method": "tag.level.replace",
+        "params": {"level": level, "entries": entries},
+    });
+    if level == crate::levels::PROJECT {
+        replace["params"]["project_path"] = serde_json::json!(project_path);
+    }
+    rows.push(replace);
+    let mut clear = serde_json::json!({
+        "kind": "row",
+        "label": if level == crate::levels::PROJECT {
+            "Clear this project's overrides"
+        } else {
+            "Clear the AoE overrides"
+        },
+        "icon": "rotate-ccw",
+        "tone": "danger",
+        "tooltip": "remove this level's entries and hides; the settings are untouched",
+        "method": "tag.level.reset",
+        "params": {"level": level},
+    });
+    if level == crate::levels::PROJECT {
+        clear["params"]["project_path"] = serde_json::json!(project_path);
+    }
+    rows.push(clear);
+    let _ = write;
+    serde_json::json!({
+        "kind": "section",
+        "title": title,
+        "value": if edits.is_empty() {
+            format!("inherits {inherited} tag(s)")
+        } else {
+            format!("{} override(s), {} hidden", edits.tags.len(), edits.unset.len())
+        },
+        "collapsible": true,
+        // The session is what the pane is about, so the level nearest to it is
+        // open; the AoE default starts folded away.
+        "collapsed": level == crate::levels::AOE,
+        "children": rows,
+    })
+}
 
 /// The editor page's route: the dashboard serves it from the manifest's
 /// `entry`, so a relative link is the only portable spelling.
@@ -896,37 +1289,6 @@ fn tag_entry(params: &serde_json::Value) -> Option<String> {
             serde_json::Value::String(text.clone())
         )),
         Some(other) => Some(format!("{key}:={other}")),
-    }
-}
-
-fn json_to_toml(value: &serde_json::Value) -> Option<toml::Value> {
-    match value {
-        serde_json::Value::Null => None,
-        serde_json::Value::Bool(v) => Some(toml::Value::Boolean(*v)),
-        serde_json::Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Some(toml::Value::Integer(i))
-            } else {
-                n.as_f64().map(toml::Value::Float)
-            }
-        }
-        serde_json::Value::String(s) => Some(toml::Value::String(s.clone())),
-        serde_json::Value::Array(items) => {
-            let mut out = Vec::new();
-            for item in items {
-                out.push(json_to_toml(item)?);
-            }
-            Some(toml::Value::Array(out))
-        }
-        serde_json::Value::Object(map) => {
-            let mut table = toml::Table::new();
-            for (key, val) in map {
-                if let Some(converted) = json_to_toml(val) {
-                    table.insert(key.clone(), converted);
-                }
-            }
-            Some(toml::Value::Table(table))
-        }
     }
 }
 

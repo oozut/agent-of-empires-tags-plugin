@@ -5,22 +5,29 @@ parameters, or request-body fields — to every LLM request it sends, so any sys
 path — a gateway, an egress proxy, a log pipeline, a session-control plane — can attribute,
 route, or validate that request.
 
-Status: M0 and M1 done, M2 delivering per session. M0's proof (two independent headers reaching a
+Status: M0 and M1 done, M2 delivering per session, with project and AoE defaults in the panel. M0's proof (two independent headers reaching a
 request, including a sandboxed leg via podman) still holds; M2 changed *what* travels and *where*.
 
-Editing a tag is a **per-session** operation, in the UI and on the command line: the session pane
-and the **LLM Tags** page list every tag with where it came from, let you add, replace or drop one,
-and let you write a literal token for that session (never read back into the page: the surfaces say
-*that* one is set, not what it says) — and every write lands in
-`<app dir>/sessions/<session id>/overrides.toml`. The global settings are read by the plugin and
-never rewritten, so two sessions can carry different tags at the same time with no rule and no
-config edit between them. The same edit from a shell:
+Tags are edited from the **LLM Tags panel** on the right of the dashboard, in three sections that
+open on the current session: **this session**, **this project**, and **AoE — every session**. Each
+row says where its tag came from (`this session`, `project`, `AoE`, `settings`) and the two upper
+sections can add, hide, restore, copy the session's set upward, or clear that level. Panels are the
+only place tags are edited; the session's detail page holds only the literal token and the harness
+extension approvals.
+
+Every write stays in the plugin's own files: a session's edits in
+`<app dir>/sessions/<session id>/overrides.toml`, the project and AoE defaults in
+`<app dir>/tags.toml`. The global settings are read and never rewritten, so two sessions can carry
+different tags at the same time with no rule and no config edit between them. The same edits from a
+shell:
 
 ```sh
 aoe-llm-tags tag --set team:platform        # this session only (AOE_SESSION_ID)
 aoe-llm-tags tag --session <id> --unset cost --token '{"hand":true}'
 aoe-llm-tags tag --reset                    # back to the settings
 aoe-llm-tags tag --git                      # the standard git entries, as a sample
+aoe-llm-tags tag --level project --set team:core   # this project's default (project path inferred)
+aoe-llm-tags tag --level aoe --unset cost          # hide a tag for every session
 aoe-llm-tags references                     # every {reference}, with this session's value
 ```
 
@@ -35,8 +42,9 @@ only when a template or a tag names one.
 A repository can declare its own tags in a JSON file: with `tags_file = ".aoe-tags.json"`, every
 top-level pair in `<project>/.aoe-tags.json` becomes a tag, with JSON types preserved
 (`{"cost": 1.5}` → `"cost": 1.5`). The file's keys win over a same-key `tags` entry, and a
-per-session edit still wins over both. From most to least specific the order is **session edit →
-`tags_file` → `tags` → rule hit**. The inherited tags spend the five-tag budget in that order,
+per-session edit still wins over both, and a project panel entry sits between the checkout and the
+session. From most to least specific the order is **session edit → project → `tags_file` → AoE →
+`tags` → rule hit**. The inherited tags spend the five-tag budget in that order,
 while a session's own edits are exempt and added on top — a tag typed for one session always
 travels. A rule adds a key rather than rewriting one that is already set. Unlike the other
 settings this file lives with the code, so a checkout carries its own attribution; a missing or
@@ -161,17 +169,30 @@ The deliverable is the header set itself: which system consumes it is the operat
 the plugin must work the same whichever one it is. The plugin never sees a prompt.
 
 A tag says what a session *is* (`feature:billing`, `team:core`). The reserved
-`activity` key says what it is *doing* — `explore`, `plan`, `code`, `test`, `debug`, `review`,
-`docs`, `ops`, `idle` — a closed vocabulary so the row badge, the pane and the page all show the
-same lucide icon and tone, with the word ("testing") as the fallback where an icon cannot render.
+`activity` key says what it is *doing* — `code`, `test`, `review`, whatever this session's
+**family** defines. A family is a named set of activities, each with a label, a lucide icon, a
+tone, and a sentence saying when to move into it ("when starting to implement the feature, move
+the activity to coding"); the built-in one is the nine phases `explore`, `plan`, `code`, `test`,
+`debug`, `review`, `docs`, `ops`, `idle`. A family is closed, so the badge and the panel always
+show the same icon and tone, with the word ("testing") as the fallback where an icon cannot
+render — but which words exist is yours to choose, per project: define a family in the plugin's
+settings or in the repository's own `.aoe/activity.toml`, and pick it with the per-project
+`activity_family` setting. A session pins its family at launch, so editing one applies to the next
+session and never relabels a running one.
+
 Because an activity changes while a session runs, a launch-time value is not enough: a harness
 that loads an extension from its config can set the header on *each* request, which is why the
 plugin ships one, per harness, behind an approval that names the exact file (`docs/install.md` §6).
 
 Whichever side sets it, the edit is one command — `aoe-llm-tags activity test`, or `--clear`,
-or `--show` to read the current one and the vocabulary — and the dashboard's pane offers every
-value as a row, so the session view and the terminal UI can change it without a page. Last writer
-wins: a person may override what the agent declared, and the agent may move on when the task does.
+or `--show` to read the current one, the family it belongs to and the words that family allows —
+and the dashboard's pane offers every value as a row, so the session view and the terminal UI can
+change it without a page. Last writer wins: a person may override what the agent declared, and the
+agent may move on when the task does.
+
+The `when` sentences are guidance today: nothing moves the activity automatically, because a
+guess about the work would be a claim sent downstream. They are stored in the shape a future
+release can act on, so a machine-readable trigger can join them without changing the file.
 
 The agent side is a shipped skill (`aoe-activity`) plus the same one-line reminder in the harness's
 always-loaded instructions: a skill is advertised and loaded on demand, which is not enough on its
@@ -195,7 +216,7 @@ Plan (what ships when, and with which values):
 |---|---|
 | `plan/README.md` | Plan index, priority legend (P0/P1/P2), P0-only subset per milestone, status |
 | `plan/milestones.md` | The ladder: constraints, M0–M4, acceptance criteria, open decisions |
-| `plan/m0.md` … `plan/m4.md` | One file per milestone: preconditions, priority-tagged tasks, parameters introduced, evidence |
+| `plan/m0.md` … `plan/m6.md` | One file per milestone: preconditions, priority-tagged tasks, parameters introduced, evidence |
 | `plan/parameters.md` | Every parameter in one place: name, type, default, allowed values, scope, milestone, where it is read |
 | `plan/roadmap.md` | Work deliberately deferred, with what has to be decided before it comes back — notably consumer read-back (`verify`, M3 usage views) |
 
@@ -206,9 +227,12 @@ Plan (what ships when, and with which values):
 | `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read"]` (no `net`: the plugin hands the harness a header and never opens a connection itself), one `status` command, `[runtime]` + source-install build step |
 | `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
 | `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `classify` / `tag` / `verify` (stub) |
-| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the badge, pane and editor page, and applies the pane's per-session edits) |
+| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the badge, the three-level pane and the detail page, and applies the pane's session and level edits) |
 | `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
-| `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the page that writes them; the only writer, and it never touches the settings |
+| `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the detail page that writes the token; no tag editor lives on the page |
+| `src/levels.rs` | The two levels above a session, in `<app dir>/tags.toml`: a project's defaults and the AoE-wide ones, each an overlay of entries and hides; the settings are never rewritten |
+| `src/activity.rs` | The activity vocabulary as data: a *family* of activities (label, lucide icon, tone, `when` sentence), the built-in `default` of nine phases, the precedence built-in → settings → repository file, and the family a session pins at launch |
+| `src/registry.rs` | A launch's read of the host's `projects.json` (global, then the profile's): `activity_family` and `activity_families` are `per_project`, and a launch hook has no host RPC |
 | `src/settings.rs` | Where the settings live and how a profile overrides them (arrays replace, objects recurse) |
 | `src/private.rs` | What the plugin writes is the user's alone: `0700` directories and `0600` files, because a session copy and a session file can each carry a secret |
 | `src/adapters.rs`, `adapters.toml` | Per-harness header mechanism, as data; the file is embedded, so an install without it still works |

@@ -184,6 +184,24 @@ Acceptance:
 5. Harnesses without an in-process hook stay launch-scope in `doctor` and in the support matrix.
    No proxy: `net` stays undeclared.
 
+## M6: activity families → `m6.md`
+
+M5 made the activity real but kept the vocabulary compiled in. M6 makes the words data: a *family*
+of activities — label, icon, tone and a `when` sentence — defined in the plugin settings or in the
+repository's own `.aoe/activity.toml`, chosen per project, and pinned per session at launch so an
+edit applies to the next session and never relabels a running one.
+
+Acceptance:
+
+1. A user replaces the vocabulary from the settings UI or a repository file, with no patch, and a
+   word outside the family is refused by name rather than guessed.
+2. Precedence is one rule: built-in → settings → repository, a same-named family replaced whole,
+   the repository winning a conflict.
+3. `when` is stored, rendered and quoted to the agent, and nothing infers a transition from it yet.
+4. A running session keeps the family it launched with; only the current activity changes
+   mid-session.
+5. A missing repository file is silent, and nothing a repository declares can fail a launch.
+
 ## Upstream
 
 Recorded for a future host release, not work this plugin can do:

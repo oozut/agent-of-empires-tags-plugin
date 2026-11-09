@@ -201,6 +201,7 @@ pub fn run(flags: &Flags, env: &Env, root: Option<&Path>) -> Report {
         }
     }
     checks.push(check_values(&snap));
+    checks.push(check_activity(&snap));
     checks.push(check_git(&snap, env));
 
     // What is actually on this machine, not what the row would do: the five
@@ -1058,6 +1059,43 @@ fn check_values(snap: &Snapshot) -> Check {
         name: "value rendering".to_string(),
         status: OK.to_string(),
         detail: rendered,
+    }
+}
+
+/// The vocabulary this session may use, and where it came from. The family is
+/// data now — the built-in nine are only the default — so "which words does this
+/// session allow, and why those?" is a question `doctor` should answer without
+/// opening the pane.
+fn check_activity(snap: &Snapshot) -> Check {
+    let families = &snap.families;
+    let chosen = families.chosen();
+    let words = chosen
+        .activities
+        .iter()
+        .map(|activity| activity.key.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let detail = format!(
+        "family {} ({}) allows: {words}",
+        families.chosen, families.source
+    );
+    // A file this build cannot read is reported by the reader, in the settings
+    // warnings; a family it could not use is reported by the resolution itself.
+    let file = snap.settings.activity_file.as_str();
+    let unreadable = (!file.is_empty())
+        .then(|| snap.warnings.iter().find(|warning| warning.contains(file)))
+        .flatten();
+    match families.warnings.first().or(unreadable) {
+        Some(warning) => Check {
+            name: "activity family".to_string(),
+            status: WARN.to_string(),
+            detail: format!("{detail} — {warning}"),
+        },
+        None => Check {
+            name: "activity family".to_string(),
+            status: OK.to_string(),
+            detail,
+        },
     }
 }
 

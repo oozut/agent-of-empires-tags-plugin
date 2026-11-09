@@ -64,22 +64,37 @@ mod tests {
     }
 
     /// The two carriers say the same thing: one in the always-loaded slot, one
-    /// as a skill. Whichever the agent reads, it has the command and the fact
-    /// that the vocabulary is closed.
+    /// as a skill. Whichever the agent reads, it has the command, it is told to
+    /// ask the session for its vocabulary instead of assuming the built-in nine,
+    /// and it knows that vocabulary is closed.
     #[test]
-    fn both_activity_carriers_name_the_command_and_the_reserved_key() {
+    fn both_activity_carriers_name_the_command_and_ask_for_the_family() {
         for source in [ACTIVITY_SKILL, ACTIVITY_APPEND] {
             assert!(source.contains("activity"), "no `activity` in {source}");
             assert!(source.contains("aoe-llm-tags"), "no command in {source}");
-            for word in ["explore", "plan", "test", "idle"] {
-                assert!(source.contains(word), "{word} missing from {source}");
-            }
+            // A session's words are its family, so the carrier sends the agent to
+            // the command rather than to a list of nine it cannot know.
+            assert!(
+                source.contains("activity --show"),
+                "no discovery step in {source}"
+            );
+            assert!(source.contains("family"), "no family in {source}");
+            assert!(
+                source.contains("AOE_LLM_TAGS_BIN"),
+                "the command must degrade where AoE exports nothing: {source}"
+            );
+        }
+        // The skill still spells out the built-in family, because most sessions
+        // have it and a worked example is what makes the mapping usable.
+        for word in ["explore", "plan", "test", "idle"] {
+            assert!(
+                ACTIVITY_SKILL.contains(word),
+                "{word} missing from the skill"
+            );
         }
         // A skill is only loaded if the harness can parse its frontmatter.
         assert!(ACTIVITY_SKILL.starts_with("---\nname: "));
         assert!(ACTIVITY_SKILL.contains("\ndescription: "));
-        // It must degrade where the variable is not exported.
-        assert!(ACTIVITY_APPEND.contains("AOE_LLM_TAGS_BIN"));
     }
 
     #[test]

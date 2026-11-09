@@ -5,26 +5,41 @@ description: Keep this session's Agent of Empires activity current. Use when the
 
 # Keep the session's activity current
 
-Agent of Empires shows one word for what a session is doing: **exploring, planning, coding,
-testing, debugging, reviewing, writing docs, ops, idle**. It is a tag, not a log, so it is cheap
-to change and it is meant to be changed — several times in a session, whenever the work moves on.
+Agent of Empires shows one word for what a session is doing. It is a tag, not a log, so it is
+cheap to change and it is meant to be changed — several times in a session, whenever the work
+moves on.
+
+The words are a **family**, defined for this session (and often for the whole repository), so do
+not assume a particular set:
+
+```sh
+"${AOE_LLM_TAGS_BIN:-aoe-llm-tags}" activity --show
+```
+
+That prints the family's name and every word it allows, with where the definition came from. Run
+it once, early, before you announce anything — the family may be the built-in nine, or a
+vocabulary this project invented, and both are equally valid.
 
 ## How to set it
 
 ```sh
-"${AOE_LLM_TAGS_BIN:-aoe-llm-tags}" activity testing
+"${AOE_LLM_TAGS_BIN:-aoe-llm-tags}" activity <word>
 ```
 
-`AOE_LLM_TAGS_BIN` is exported for you when the session runs under AoE. The argument is one of
-`explore plan code test debug review docs ops idle` (bare, as above) or `activity:test`.
+`AOE_LLM_TAGS_BIN` is exported for you when the session runs under AoE. `<word>` is one of the
+words `--show` printed, bare (`activity test`) or prefixed (`activity:test`). The label is
+accepted too if it reads better off the badge (`activity testing`), but it is stored as the
+family's own word.
 
-- `activity --show` prints the current value and the vocabulary.
+- `activity --show` prints the current value, the family and what it allows.
 - `activity --clear` removes it; a session with no activity shows its ordinary tags.
-- An unknown word exits non-zero and says nothing after that: do not retry with a guess.
+- An unknown word exits non-zero and names the words that exist: do not retry with a guess.
 
 ## When to change it
 
-Change it when the *work* changes phase, not on every tool call:
+Change it when the *work* changes phase, not on every tool call. The family says when each word
+is due — `activity --show --json` carries a `vocabulary` array whose entries have a `when`
+sentence, and that sentence is the rule you follow. The built-in family reads like this:
 
 | Situation | Activity |
 | --- | --- |
@@ -39,13 +54,17 @@ Change it when the *work* changes phase, not on every tool call:
 | waiting on the user, or nothing in flight | `idle` |
 
 Do it **early** in a phase — before the long part, not after — because the value is what the
-person watching the session sees while they wait. If a phase has no name in the list, pick the
-closest one rather than inventing a value: the list is closed on purpose.
+person watching the session sees while they wait. If the work has no word of its own, pick the
+closest one rather than inventing a value: the family is closed on purpose, and a word it does
+not define gets no icon and is reported as unknown.
+
+Nothing moves the activity for you. A future release can act on these sentences automatically;
+until then the change is yours to make.
 
 ## What it is not
 
-- Not a status report, not a summary, not free text. One word from the list.
-- Not a promise: if you announced `testing` and then went back to editing, set `code` again.
+- Not a status report, not a summary, not free text. One word from the family.
+- Not a promise: if you announced `test` and then went back to editing, set `code` again.
 - The person on the dashboard has the last word. If your activity looks wrong to them they will
   set it, and your next change simply overwrites theirs — that is expected, so read `--show`
   before writing if you have been running a while.
