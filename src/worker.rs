@@ -1061,20 +1061,20 @@ impl Host {
                 edits.tags.len(),
                 edits.unset.len()
             );
-            let mut pane_blocks = tab_blocks(
+            let mut pane_blocks = vec![tab_blocks(
                 &active,
                 has_project,
                 &[
-                    ("session", "This session", "user", session_summary.as_str()),
+                    ("session", "Session", "user", session_summary.as_str()),
                     (
                         "project",
-                        "This project",
+                        "Project",
                         "folder-git-2",
                         project_summary.as_str(),
                     ),
-                    ("aoe", "AoE — every session", "globe", aoe_summary.as_str()),
+                    ("aoe", "AoE", "globe", aoe_summary.as_str()),
                 ],
-            );
+            )];
             pane_blocks.push(serde_json::json!({"kind": "divider"}));
             let footer = match active.as_str() {
                 "project" => (
@@ -1301,37 +1301,56 @@ fn level_params(level: &str, project_path: &str, extra: serde_json::Value) -> se
     params
 }
 
-/// The tab strip at the top of the pane.
+/// The tab strip at the top of the pane, laid out left to right.
 ///
-/// The host's pane vocabulary has no tab kind, so a tab is a `row` carrying a
-/// `method`: the host's own `selected` accent marks the open one, and the row
-/// states what that level currently holds — the summary the separate panes used
-/// to put in their footer. A session with no project has no project tab, so that
-/// row is left out rather than shown as a dead end.
+/// The host's pane vocabulary has no tab kind, so a tab is a button carrying a
+/// `method`: an `action` block, with the open one drawn in the host's `primary`
+/// variant. A `row` per tab would stack them down the pane, and a tab strip is
+/// the one thing that must not be a list.
+///
+/// `columns` is the only horizontal kind, and the host draws it as a grid of at
+/// most two, so three tabs are a two-wide grid holding a two-wide grid: the
+/// buttons land at the left edge, a quarter and a half of the pane. Buttons are
+/// as wide as their label, not their cell, so the third one is not stretched to
+/// the half the grid gives it.
+///
+/// Each button's tooltip carries what that level holds, so a closed tab still
+/// answers "what have I set here"; the footer repeats it for the open one. A
+/// session with no project has no project tab, so the button is left out rather
+/// than shown as a dead end.
 fn tab_blocks(
     active: &str,
     has_project: bool,
     tabs: &[(&str, &str, &str, &str)],
-) -> Vec<serde_json::Value> {
-    tabs.iter()
+) -> serde_json::Value {
+    let buttons: Vec<serde_json::Value> = tabs
+        .iter()
         .filter(|(tab, ..)| *tab != crate::levels::PROJECT || has_project)
         .map(|(tab, label, icon, summary)| {
-            serde_json::json!({
-                "kind": "row",
+            let open = *tab == active;
+            let mut button = serde_json::json!({
+                "kind": "action",
                 "label": label,
                 "icon": icon,
-                "value": summary,
-                "selected": *tab == active,
-                "tooltip": if *tab == active {
-                    "this is the tab this pane is showing"
-                } else {
-                    "switch this pane to this level"
-                },
                 "method": "pane.tab",
                 "params": {"tab": tab},
-            })
+                "tooltip": if open {
+                    format!("showing now \u{00b7} {summary}")
+                } else {
+                    format!("show this level \u{00b7} {summary}")
+                },
+            });
+            if open {
+                button["variant"] = serde_json::json!("primary");
+            }
+            button
         })
-        .collect()
+        .collect();
+    let cells: Vec<serde_json::Value> = buttons
+        .chunks(2)
+        .map(|pair| serde_json::json!({"kind": "columns", "children": pair}))
+        .collect();
+    serde_json::json!({"kind": "columns", "children": cells})
 }
 
 /// One level's whole tab. The session level has its own rows; a project or AoE

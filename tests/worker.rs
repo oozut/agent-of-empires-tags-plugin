@@ -339,50 +339,55 @@ fn tag<'a>(tags: &'a [Value], key: &str) -> &'a Value {
         .unwrap_or(&Value::Null)
 }
 
-/// Every row in a pane, whether it sits at the top level or inside a section.
+/// Every block in a pane, in render order, however deeply nested — the tab strip
+/// is a `columns` inside a `columns`, and its buttons are two levels down.
+fn pane_blocks(pane: &Value) -> Vec<Value> {
+    fn walk(block: &Value, out: &mut Vec<Value>) {
+        out.push(block.clone());
+        for child in block["children"].as_array().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for block in pane["blocks"].as_array().expect("pane blocks") {
+        walk(block, &mut out);
+    }
+    out
+}
+
+/// Every row in a pane, whether it sits at the top level, inside a section or in
+/// one of the tab strip's columns.
 fn pane_rows(pane: &Value) -> Vec<Value> {
-    pane["blocks"]
-        .as_array()
-        .expect("pane blocks")
-        .iter()
-        .flat_map(|block| {
-            let mut rows = Vec::new();
-            if block["kind"] == json!("row") {
-                rows.push(block.clone());
-            }
-            if let Some(children) = block["children"].as_array() {
-                rows.extend(
-                    children
-                        .iter()
-                        .filter(|row| row["kind"] == json!("row"))
-                        .cloned(),
-                );
-            }
-            rows
-        })
+    pane_blocks(pane)
+        .into_iter()
+        .filter(|block| block["kind"] == json!("row"))
         .collect()
 }
 
-/// The labels of the pane's tab strip, left to right, and which one is open.
+/// The labels of the pane's tab strip, left to right, and which one is open. The
+/// open tab is the host's `primary` action, since an action has no `selected`.
 fn tab_labels(pane: &Value) -> Vec<String> {
-    pane["blocks"]
-        .as_array()
-        .expect("pane blocks")
-        .iter()
+    pane_blocks(pane)
+        .into_iter()
         .filter(|block| block["method"] == json!("pane.tab"))
         .map(|block| block["label"].as_str().unwrap_or_default().to_string())
         .collect()
 }
 
+/// One tab button, by its label — the strip's buttons are actions, not rows.
+fn tab_button(pane: &Value, label: &str) -> Value {
+    pane_blocks(pane)
+        .into_iter()
+        .find(|block| block["method"] == json!("pane.tab") && block["label"] == json!(label))
+        .unwrap_or_else(|| panic!("no {label:?} tab button in {pane}"))
+}
+
 fn open_tab(pane: &Value) -> String {
-    pane["blocks"]
-        .as_array()
-        .expect("pane blocks")
-        .iter()
-        .find(|block| block["selected"] == json!(true))
-        .and_then(|block| block["label"].as_str())
+    pane_blocks(pane)
+        .into_iter()
+        .find(|block| block["method"] == json!("pane.tab") && block["variant"] == json!("primary"))
+        .and_then(|block| block["label"].as_str().map(str::to_string))
         .unwrap_or_default()
-        .to_string()
 }
 
 fn pane_row(rows: &[Value], label: &str) -> Value {
@@ -1155,14 +1160,11 @@ fn a_session_without_a_project_has_no_project_tab() {
     // project default to edit, so the strip leaves the row out instead of
     // offering a dead end.
     let session = wire.pane(SESSION).clone();
-    assert_eq!(
-        tab_labels(&session),
-        vec!["This session", "AoE — every session"]
-    );
+    assert_eq!(tab_labels(&session), vec!["Session", "AoE"]);
     // Asking for it anyway (a stale click, a dashboard left open) stays on the
     // session rather than showing an empty half.
     let after = wire.pane_tab(SESSION, "project");
-    assert_eq!(open_tab(&after), "This session");
+    assert_eq!(open_tab(&after), "Session");
     let titles: Vec<&str> = after["blocks"]
         .as_array()
         .expect("blocks")
@@ -1198,27 +1200,34 @@ fn the_three_tabs_split_session_project_and_aoe() {
     );
     let session = wire.pane(SESSION).clone();
     assert_eq!(session["title"], json!("LLM Tags"));
-    assert_eq!(
-        tab_labels(&session),
-        vec!["This session", "This project", "AoE — every session"]
+    assert_eq!(tab_labels(&session), vec!["Session", "Project", "AoE"]);
+    assert_eq!(open_tab(&session), "Session");
+    // The strip is one row of buttons, not a list: three tabs side by side at the
+    // top, each a `columns` cell, and the open one is the host's primary action.
+    let strip = pane_blocks(&session);
+    let buttons: Vec<&Value> = strip
+        .iter()
+        .filter(|block| block["method"] == json!("pane.tab"))
+        .collect();
+    assert_eq!(buttons.len(), 3, "{session}");
+    assert!(
+        buttons.iter().all(|block| block["kind"] == json!("action")),
+        "a tab is a button: {buttons:?}"
     );
-    assert_eq!(open_tab(&session), "This session");
-    // Every tab row says what its own level holds, in the same words, so the
+    // Every button's tooltip says what its level holds, in the same words, so the
     // strip answers "what have I set here" without opening the tab.
-    let strip = pane_rows(&session);
-    assert_eq!(
-        pane_row(&strip, "This session")["value"],
-        json!("0 override(s), 0 hidden"),
-        "{session}"
-    );
-    assert_eq!(
-        pane_row(&strip, "This project")["value"],
-        json!("0 override(s), 0 hidden")
-    );
-    assert_eq!(
-        pane_row(&strip, "AoE — every session")["value"],
-        json!("0 override(s), 0 hidden")
-    );
+    for label in ["Session", "Project", "AoE"] {
+        let tooltip = buttons
+            .iter()
+            .find(|block| block["label"] == json!(label))
+            .and_then(|block| block["tooltip"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            tooltip.contains("0 override(s), 0 hidden"),
+            "{label}: {tooltip}"
+        );
+    }
     let titles: Vec<&str> = session["blocks"]
         .as_array()
         .expect("blocks")
@@ -1228,12 +1237,12 @@ fn the_three_tabs_split_session_project_and_aoe() {
     assert_eq!(titles, vec!["Activity"], "{session}");
 
     let project = wire.pane_tab(SESSION, "project");
-    assert_eq!(open_tab(&project), "This project");
+    assert_eq!(open_tab(&project), "Project");
     let aoe = wire.pane_tab(SESSION, "aoe");
-    assert_eq!(open_tab(&aoe), "AoE — every session");
+    assert_eq!(open_tab(&aoe), "AoE");
     // Back to the session tab: that is where a tag's origin is read.
     let session = wire.pane_tab(SESSION, "session");
-    assert_eq!(open_tab(&session), "This session");
+    assert_eq!(open_tab(&session), "Session");
 
     // A project default for one checkout: the session in it picks it up, the
     // session in the other checkout keeps the settings' value.
@@ -1306,10 +1315,10 @@ fn the_three_tabs_split_session_project_and_aoe() {
     assert_eq!(project["footer"]["value"], json!("2 override(s), 1 hidden"));
     // The strip says the same thing the footer does, one row up: a closed tab is
     // not a question mark.
-    assert_eq!(
-        pane_row(&pane_rows(&project), "This project")["value"],
-        json!("2 override(s), 1 hidden")
-    );
+    assert!(tab_button(&project, "Project")["tooltip"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("2 override(s), 1 hidden"));
     let project_rows = pane_rows(&project);
     assert_eq!(pane_row(&project_rows, "cost")["value"], json!("(hidden)"));
     assert_eq!(
@@ -1341,10 +1350,10 @@ fn the_three_tabs_split_session_project_and_aoe() {
     }
     let aoe = wire.pane_tab(SESSION, "aoe");
     assert_eq!(aoe["footer"]["value"], json!("1 override(s), 0 hidden"));
-    assert_eq!(
-        pane_row(&pane_rows(&aoe), "AoE — every session")["value"],
-        json!("1 override(s), 0 hidden")
-    );
+    assert!(tab_button(&aoe, "AoE")["tooltip"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("1 override(s), 0 hidden"));
     assert_eq!(
         pane_row(&pane_rows(&aoe), "owner")["badges"][0]["text"],
         json!("AoE")

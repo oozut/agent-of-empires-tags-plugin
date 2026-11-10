@@ -273,13 +273,18 @@ would let a checked-out repository ship the file that configures it.
 | Project tab (`llm_tags`, tab `project`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
 | AoE tab (`llm_tags`, tab `aoe`) | The same rows for every session, with the same operations as the project tab. |
 
-The three tabs are one dock entry, not three: the pane `llm_tags` renders a tab strip of three
-`row` blocks (each with `method: "pane.tab"` and `params: {tab}`) and then the open tab's blocks.
-The host's pane vocabulary has no tab kind, so the open tab is the worker's own per-session state —
-the `selected` row is the one showing, and every row's `value` says what its level holds of its own
-(`N override(s), N hidden`), so a closed tab is not a question mark. The footer repeats the open
-tab's summary. A session with no project path has no project row, and a click naming it is refused
-rather than rendered.
+The three tabs are one dock entry, not three: the pane `llm_tags` renders a tab strip across the
+top and then the open tab's blocks. The host's pane vocabulary has no tab kind, so the strip is
+three `action` blocks (each with `method: "pane.tab"` and `params: {tab}`), the open one drawn in
+the host's `primary` variant — a `row` per tab would stack them down the pane, and a tab strip is
+the one thing that must not be a list. `columns` is the only horizontal kind and the host draws it
+as a grid of at most two, so the three buttons are a two-wide grid holding a two-wide grid: they
+land at the left edge, a quarter and a half of the pane, and each is as wide as its label rather
+than its cell. Each button's tooltip says what its level holds of its own (`N override(s), N
+hidden`), so a closed tab is not a question mark; the footer repeats it for the open one.
+
+The open tab is the worker's own per-session state. A session with no project path has no project
+button, and a click naming it is refused rather than rendered.
 | Session details page (`ui/tags.html`) | The literal token and the harness extension approvals, plus a JSON viewer/editor: the rendered values read-only, and the stored form editable at the session, project or AoE level. `null` hides a key there; removing a key hides the inherited value. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 

@@ -9,11 +9,11 @@ Status: M0 and M1 done, M2 delivering per session, with project and AoE defaults
 request, including a sandboxed leg via podman) still holds; M2 changed *what* travels and *where*.
 
 Tags are edited from the **LLM Tags panel** — one entry on the right of the dashboard, with three
-tabs inside it: **This session**, **This project** (only when the session has a project path), and
-**AoE — every session**. Switching tabs is a click on the row at the top of the pane; each row also
-says what that level currently holds. A tag row names where its value came from (`this session`,
-`project`, `AoE`, `settings`), and the two upper tabs can add, hide, restore, copy the session's set
-upward, or clear that level. The session's detail page adds a JSON viewer/editor for the same
+tabs across the top of the pane: **Session**, **Project** (only when the session has a project
+path), and **AoE**. Clicking a tab switches the pane to that level; each tab's tooltip says what
+that level currently holds, and the footer repeats it for the open one. A tag row names where its
+value came from (`this session`, `project`, `AoE`, `settings`), and the two upper tabs can add,
+hide, restore, copy the session's set upward, or clear that level. The session's detail page adds a JSON viewer/editor for the same
 values, so a whole object can be changed in place without writing one row at a time.
 
 Every write stays in the plugin's own files: a session's edits in
