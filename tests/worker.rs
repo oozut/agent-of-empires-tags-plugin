@@ -893,10 +893,11 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
 }
 
-/// The row is a narrow glance, so it carries only the activity: a tag list there
-/// is noise. The icon is presentation — the text is what a terminal renders.
+/// A tag has one home: the pane. The session header used to carry an activity
+/// badge — a second copy of a fact the pane already states, and one more place to
+/// keep in step — so nothing but the pane renders tag state now.
 #[test]
-fn the_row_badge_shows_only_the_activity() {
+fn the_pane_is_the_only_place_a_tag_shows() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config(
@@ -908,27 +909,34 @@ fn the_row_badge_shows_only_the_activity() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
 
-    let badge = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("row-badge"))
-        .unwrap_or_else(|| panic!("no badge was pushed: {:?}", wire.pushes));
-    let items = badge["payload"]["items"].as_array().expect("items");
-    assert_eq!(items.len(), 1, "only the activity belongs here: {badge}");
-    assert_eq!(items[0]["text"], json!("testing"), "{badge}");
-    assert_eq!(items[0]["icon"], json!("flask-conical"), "{badge}");
-    assert_eq!(items[0]["tone"], json!("warn"), "{badge}");
-    // The raw tag is still what travels; the icon never does.
-    assert!(!badge.to_string().contains("activity:test"), "{badge}");
     assert!(
-        items.iter().all(|item| item["text"] != json!("team")),
-        "ordinary tags stay out of the row: {badge}"
+        wire.pushes
+            .iter()
+            .all(|params| params["slot"] == json!("pane") || params["slot"] == json!("page")),
+        "no row badge is pushed: {:?}",
+        wire.pushes
     );
+    let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("the manifest");
+    assert!(
+        !manifest.contains("row-badge"),
+        "the manifest declares no row badge"
+    );
+
+    // The pane still names what the session is doing, with the family's own icon
+    // and tone, so dropping the badge lost no information.
+    let pane = wire.pane(SESSION).clone();
+    let section = pane_blocks(&pane)
+        .into_iter()
+        .find(|block| block["title"] == json!("Activity"))
+        .unwrap_or_else(|| panic!("no activity section in {pane}"));
+    assert_eq!(section["value"], json!("testing (inherited)"), "{section}");
+    let row = pane_row(&pane_rows(&pane), "testing");
+    assert_eq!(row["icon"], json!("flask-conical"), "{row}");
+    assert_eq!(row["tone"], json!("warn"), "{row}");
 }
 
 #[test]
-fn a_session_without_an_activity_has_no_row_badge() {
+fn a_session_without_an_activity_shows_none_in_the_pane() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
@@ -936,17 +944,12 @@ fn a_session_without_an_activity_has_no_row_badge() {
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
     wire.notify("session.state", json!({}));
     wire.wait_page();
-    let badge = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("row-badge"))
-        .expect("a badge");
-    assert_eq!(
-        badge["payload"]["items"].as_array().map(Vec::len),
-        Some(0),
-        "{badge}"
-    );
+    let pane = wire.pane(SESSION).clone();
+    let section = pane_blocks(&pane)
+        .into_iter()
+        .find(|block| block["title"] == json!("Activity"))
+        .expect("an activity section");
+    assert_eq!(section["value"], json!("not set"), "{section}");
 }
 
 #[test]
@@ -962,19 +965,14 @@ fn a_typo_in_the_activity_is_reported_not_iconified() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
     assert!(wire.log().contains("is not an activity"), "{}", wire.log());
-    let badge = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("row-badge"))
-        .expect("a badge");
-    let items = badge["payload"]["items"]
-        .as_array()
-        .unwrap_or_else(|| panic!("no items in {badge}"));
-    assert!(
-        items.is_empty(),
-        "a typo is not an activity, so the row stays empty: {badge}"
-    );
+    // A typo is not an activity, so the pane leaves the section unset rather than
+    // dressing the misspelling up as one.
+    let pane = wire.pane(SESSION).clone();
+    let section = pane_blocks(&pane)
+        .into_iter()
+        .find(|block| block["title"] == json!("Activity"))
+        .expect("an activity section");
+    assert_eq!(section["value"], json!("not set"), "{section}");
 }
 
 /// The activity has to be changeable from inside the session, not only from the

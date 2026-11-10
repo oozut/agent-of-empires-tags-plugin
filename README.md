@@ -174,9 +174,9 @@ A tag says what a session *is* (`feature:billing`, `team:core`). The reserved
 **family** defines. A family is a named set of activities, each with a label, a lucide icon, a
 tone, and a sentence saying when to move into it ("when starting to implement the feature, move
 the activity to coding"); the built-in one is the nine phases `explore`, `plan`, `code`, `test`,
-`debug`, `review`, `docs`, `ops`, `idle`. A family is closed, so the badge and the panel always
-show the same icon and tone, with the word ("testing") as the fallback where an icon cannot
-render — but which words exist is yours to choose, per project: define a family in the plugin's
+`debug`, `review`, `docs`, `ops`, `idle`. A family is closed, so every surface that shows an
+activity shows the same icon and tone, with the word ("testing") as the fallback where an icon
+cannot render — but which words exist is yours to choose, per project: define a family in the plugin's
 settings or in the repository's own `.aoe/activity.toml`, and pick it with the per-project
 `activity_family` setting. A session pins its family at launch, so editing one applies to the next
 session and never relabels a running one.
@@ -228,7 +228,7 @@ Plan (what ships when, and with which values):
 | `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read"]` (no `net`: the plugin hands the harness a header and never opens a connection itself), one `status` command, `[runtime]` + source-install build step |
 | `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
 | `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `classify` / `tag` / `verify` (stub) |
-| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the badge, the one LLM Tags pane with its session/project/AoE tabs and the detail page, and applies the tabs' session and level edits) |
+| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the one LLM Tags pane with its session/project/AoE tabs and the detail page, and applies the tabs' session and level edits) |
 | `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
 | `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the detail page that writes the token and edits the stored values as JSON at the chosen level |
 | `src/levels.rs` | The two levels above a session, in `<app dir>/tags.toml`: a project's defaults and the AoE-wide ones, each an overlay of entries and hides; the settings are never rewritten |

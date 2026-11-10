@@ -289,7 +289,7 @@ button, and a click naming it is refused rather than rendered.
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 
 The token is written but never read back into the UI. A surface is told that one is set, and the
-target row, the pane and the session badge say *that* it stands in for the value rather than what
+target row and the pane say *that* it stands in for the value rather than what
 it says: `ui.state.set` payloads are kept by the host and rendered to anyone who can see the
 session, so a secret there would be a secret in a dashboard. `aoe-llm-tags tag --show` prints it in
 the user's own terminal, and the session file that holds it is `0600` in a `0700` directory.

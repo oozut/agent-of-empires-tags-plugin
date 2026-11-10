@@ -14,10 +14,6 @@ id = "status"
 title = "LLM Tags: status"
 description = "Report the header set this install would send, without starting a session."
 
-[[ui]]
-slot = "row-badge"
-id = "llm_tags_badge"
-
 # One pane, not three: this session, its project's defaults and the AoE-wide
 # ones are tabs inside it, so the right panel carries a single LLM Tags entry.
 

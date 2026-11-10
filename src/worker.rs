@@ -479,8 +479,9 @@ impl Host {
         }
     }
 
-    /// Push every surface the plugin renders: the row badge, the session pane
-    /// and the editor page.
+    /// Push every surface the plugin renders: the one pane and the editor page.
+    /// The session header carries no badge — a tag's own home is the pane, and a
+    /// second copy in the row would be one more place to keep in step.
     ///
     /// Called on every host event and after every edit, so a click never leaves a
     /// stale pane behind. Everything a surface shows is derived from the same
@@ -1011,32 +1012,6 @@ impl Host {
                 "text": "The session tab overrides this one session. The project and AoE tabs set defaults for everything below them.",
                 "tone": "neutral",
             }));
-
-            // The row badge is only the activity: a tag list at a glance is noise
-            // in a narrow column, while "what is this session doing" is the one
-            // thing worth reading there. A typo is not an activity, so it does not
-            // get a badge; the pane still reports it.
-            let badge_payload = match activity {
-                Some(activity) => serde_json::json!({
-                    "items": [{
-                        "text": activity.label,
-                        "icon": activity.icon,
-                        "tone": activity.tone,
-                        "tooltip": format!("activity: {}", activity.key),
-                        "href": EDITOR_PAGE,
-                    }]
-                }),
-                None => serde_json::json!({"items": []}),
-            };
-            let _ = self.call_host(
-                "ui.state.set",
-                serde_json::json!({
-                    "slot": "row-badge",
-                    "id": "llm_tags_badge",
-                    "session_id": id,
-                    "payload": badge_payload,
-                }),
-            );
 
             // One pane, three tabs. The host's pane vocabulary has no tab kind,
             // so a tab is a `row` carrying a method: the open one is drawn with

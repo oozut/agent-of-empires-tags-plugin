@@ -50,7 +50,7 @@ def parse_args():
     )
     parser.add_argument(
         "--slot",
-        choices=["row-badge", "pane", "page"],
+        choices=["pane", "page"],
         help="print only this slot",
     )
     parser.add_argument("--limit", type=int, default=4000, help="bytes per payload")
