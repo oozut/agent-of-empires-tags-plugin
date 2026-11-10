@@ -232,22 +232,46 @@ impl Wire {
         })
     }
 
-    /// The last session-tab payload pushed for a session.
+    /// The last payload of the one pane, as that session's open tab has it.
     fn pane(&self, session: &str) -> &Value {
-        self.pane_with(session, "llm_tags_session")
-    }
-
-    /// The last payload for one of the three tabs.
-    fn pane_with(&self, session: &str, id: &str) -> &Value {
         self.pushes
             .iter()
             .rev()
             .find(|params| {
                 params["slot"] == json!("pane")
                     && params["session_id"] == json!(session)
-                    && params["id"] == json!(id)
+                    && params["id"] == json!("llm_tags")
             })
-            .unwrap_or_else(|| panic!("no {id} pane was pushed for {session}"))
+            .map(|params| &params["payload"])
+            .unwrap_or_else(|| panic!("no llm_tags pane was pushed for {session}"))
+    }
+
+    /// Click a tab and read what the pane renders for it. The click is a worker
+    /// method like any other, and the republish after it is the answer — read to
+    /// the page, the last push of one publish, so the next call starts on empty.
+    fn pane_tab(&mut self, session: &str, tab: &str) -> Value {
+        self.notify("pane.tab", json!({"tab": tab, "session_id": session}));
+        let mut rendered: Option<Value> = None;
+        for _ in 0..400 {
+            let line = self.next_line();
+            if line["method"] == json!("ui.state.set")
+                && line["params"]["slot"] == json!("pane")
+                && line["params"]["id"] == json!("llm_tags")
+                && line["params"]["session_id"] == json!(session)
+            {
+                rendered = Some(line["params"]["payload"].clone());
+            } else if line["method"] == json!("ui.state.set")
+                && line["params"]["slot"] == json!("page")
+            {
+                if let Some(payload) = rendered {
+                    return payload;
+                }
+            }
+        }
+        panic!(
+            "the pane never re-rendered for tab {tab}; stderr:\n{}",
+            self.log()
+        );
     }
 
     /// Every payload pushed so far, as one string: a value that must not leave the
@@ -317,7 +341,7 @@ fn tag<'a>(tags: &'a [Value], key: &str) -> &'a Value {
 
 /// Every row in a pane, whether it sits at the top level or inside a section.
 fn pane_rows(pane: &Value) -> Vec<Value> {
-    pane["payload"]["blocks"]
+    pane["blocks"]
         .as_array()
         .expect("pane blocks")
         .iter()
@@ -337,6 +361,28 @@ fn pane_rows(pane: &Value) -> Vec<Value> {
             rows
         })
         .collect()
+}
+
+/// The labels of the pane's tab strip, left to right, and which one is open.
+fn tab_labels(pane: &Value) -> Vec<String> {
+    pane["blocks"]
+        .as_array()
+        .expect("pane blocks")
+        .iter()
+        .filter(|block| block["method"] == json!("pane.tab"))
+        .map(|block| block["label"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn open_tab(pane: &Value) -> String {
+    pane["blocks"]
+        .as_array()
+        .expect("pane blocks")
+        .iter()
+        .find(|block| block["selected"] == json!(true))
+        .and_then(|block| block["label"].as_str())
+        .unwrap_or_default()
+        .to_string()
 }
 
 fn pane_row(rows: &[Value], label: &str) -> Value {
@@ -493,7 +539,7 @@ fn the_git_switch_can_hide_an_inherited_sample() {
     let page = wire.wait_page();
     let tags = tags_of(&page["sessions"][0]);
     assert_eq!(tag(&tags, "git.branch")["origin"], json!("aoe"));
-    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
+    let aoe = wire.pane_tab(SESSION, "aoe");
     assert_eq!(
         pane_row(&pane_rows(&aoe), "Standard git information")["selected"],
         json!(true)
@@ -505,7 +551,7 @@ fn the_git_switch_can_hide_an_inherited_sample() {
     let page = wire.wait_page();
     let tags = tags_of(&page["sessions"][0]);
     assert!(tag(&tags, "git.branch").is_null(), "{tags:?}");
-    let session = wire.pane(SESSION).clone();
+    let session = wire.pane_tab(SESSION, "session");
     let switch = pane_row(&pane_rows(&session), "Standard git information");
     assert_eq!(switch["value"], json!("off here"));
     assert_eq!(switch["method"], json!("tag.git"));
@@ -940,7 +986,7 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
     wire.wait_page();
 
     let pane = wire.pane(SESSION);
-    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let blocks = pane["blocks"].as_array().expect("blocks");
     let section = blocks
         .iter()
         .find(|block| block["kind"] == json!("section") && block["title"] == json!("Activity"))
@@ -1015,7 +1061,7 @@ fn the_project_family_is_what_the_pane_offers() {
     wire.wait_page();
 
     let pane = wire.pane(SESSION);
-    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let blocks = pane["blocks"].as_array().expect("blocks");
     // Exactly one: the activity is offered once, in the session's own section,
     // and a level above it does not repeat the picker.
     let sections: Vec<&serde_json::Value> = blocks
@@ -1105,27 +1151,25 @@ fn a_session_without_a_project_has_no_project_tab() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
 
-    assert!(
-        !wire
-            .pushes
-            .iter()
-            .any(|params| params["id"] == json!("llm_tags_project")),
-        "no project tab was pushed: {:?}",
-        wire.pushes
+    // One pane with two tabs, not three: a session with no project has no
+    // project default to edit, so the strip leaves the row out instead of
+    // offering a dead end.
+    let session = wire.pane(SESSION).clone();
+    assert_eq!(
+        tab_labels(&session),
+        vec!["This session", "AoE — every session"]
     );
-    assert!(wire
-        .calls
-        .iter()
-        .any(|(method, params)| method == "ui.state.remove"
-            && params["id"] == json!("llm_tags_project")));
-    let session = wire.pane(SESSION);
-    let titles: Vec<&str> = session["payload"]["blocks"]
+    // Asking for it anyway (a stale click, a dashboard left open) stays on the
+    // session rather than showing an empty half.
+    let after = wire.pane_tab(SESSION, "project");
+    assert_eq!(open_tab(&after), "This session");
+    let titles: Vec<&str> = after["blocks"]
         .as_array()
         .expect("blocks")
         .iter()
         .filter_map(|block| block["title"].as_str())
         .collect();
-    assert_eq!(titles, vec!["Activity"], "{session}");
+    assert_eq!(titles, vec!["Activity"], "{after}");
 }
 
 #[test]
@@ -1142,13 +1186,40 @@ fn the_three_tabs_split_session_project_and_aoe() {
     wire.notify("session.status.changed", json!({"session_id": SESSION}));
     wire.wait_page();
 
-    // Three tabs, not four sections: the session pane is the session, and the
-    // project and AoE panes are their own dock entries.
+    // One dock entry, three tabs: the right panel carries a single LLM Tags
+    // pane, and the strip inside it names the levels from the session outwards.
+    assert!(
+        wire.pushes
+            .iter()
+            .filter(|params| params["slot"] == json!("pane"))
+            .all(|params| params["id"] == json!("llm_tags")),
+        "only one pane is pushed: {:?}",
+        wire.pushes
+    );
     let session = wire.pane(SESSION).clone();
-    assert_eq!(session["id"], json!("llm_tags_session"));
-    assert_eq!(session["payload"]["title"], json!("LLM Tags · Session"));
-    assert!(session["payload"].get("icon").is_none(), "{session}");
-    let titles: Vec<&str> = session["payload"]["blocks"]
+    assert_eq!(session["title"], json!("LLM Tags"));
+    assert_eq!(
+        tab_labels(&session),
+        vec!["This session", "This project", "AoE — every session"]
+    );
+    assert_eq!(open_tab(&session), "This session");
+    // Every tab row says what its own level holds, in the same words, so the
+    // strip answers "what have I set here" without opening the tab.
+    let strip = pane_rows(&session);
+    assert_eq!(
+        pane_row(&strip, "This session")["value"],
+        json!("0 override(s), 0 hidden"),
+        "{session}"
+    );
+    assert_eq!(
+        pane_row(&strip, "This project")["value"],
+        json!("0 override(s), 0 hidden")
+    );
+    assert_eq!(
+        pane_row(&strip, "AoE — every session")["value"],
+        json!("0 override(s), 0 hidden")
+    );
+    let titles: Vec<&str> = session["blocks"]
         .as_array()
         .expect("blocks")
         .iter()
@@ -1156,12 +1227,13 @@ fn the_three_tabs_split_session_project_and_aoe() {
         .collect();
     assert_eq!(titles, vec!["Activity"], "{session}");
 
-    let project = wire.pane_with(SESSION, "llm_tags_project").clone();
-    assert_eq!(project["payload"]["title"], json!("LLM Tags · Project"));
-    assert!(project["payload"].get("icon").is_none(), "{project}");
-    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
-    assert_eq!(aoe["payload"]["title"], json!("LLM Tags · AoE"));
-    assert!(aoe["payload"].get("icon").is_none(), "{aoe}");
+    let project = wire.pane_tab(SESSION, "project");
+    assert_eq!(open_tab(&project), "This project");
+    let aoe = wire.pane_tab(SESSION, "aoe");
+    assert_eq!(open_tab(&aoe), "AoE — every session");
+    // Back to the session tab: that is where a tag's origin is read.
+    let session = wire.pane_tab(SESSION, "session");
+    assert_eq!(open_tab(&session), "This session");
 
     // A project default for one checkout: the session in it picks it up, the
     // session in the other checkout keeps the settings' value.
@@ -1230,9 +1302,12 @@ fn the_three_tabs_split_session_project_and_aoe() {
         Value::Null,
         "{one_page}"
     );
-    let project = wire.pane_with(SESSION, "llm_tags_project").clone();
+    let project = wire.pane_tab(SESSION, "project");
+    assert_eq!(project["footer"]["value"], json!("2 override(s), 1 hidden"));
+    // The strip says the same thing the footer does, one row up: a closed tab is
+    // not a question mark.
     assert_eq!(
-        project["payload"]["footer"]["value"],
+        pane_row(&pane_rows(&project), "This project")["value"],
         json!("2 override(s), 1 hidden")
     );
     let project_rows = pane_rows(&project);
@@ -1264,9 +1339,10 @@ fn the_three_tabs_split_session_project_and_aoe() {
             "{id}"
         );
     }
-    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
+    let aoe = wire.pane_tab(SESSION, "aoe");
+    assert_eq!(aoe["footer"]["value"], json!("1 override(s), 0 hidden"));
     assert_eq!(
-        aoe["payload"]["footer"]["value"],
+        pane_row(&pane_rows(&aoe), "AoE — every session")["value"],
         json!("1 override(s), 0 hidden")
     );
     assert_eq!(

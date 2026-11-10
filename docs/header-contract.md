@@ -269,9 +269,17 @@ would let a checked-out repository ship the file that configures it.
 
 | Surface | What it does |
 |---|---|
-| Session tab (`llm_tags_session`) | This session's tags, each with its origin and the values it would send. A row hides a tag for this session; the git preset and reset sit here too. An **Activity** section offers one row per word in the family this session is pinned to, and names that family, its source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so editing a family changes the next launch, never a running session. |
-| Project tab (`llm_tags_project`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
-| AoE tab (`llm_tags_aoe`) | The same rows for every session, with the same operations as the project tab. |
+| Session tab (`llm_tags`, tab `session`) | This session's tags, each with its origin and the values it would send. A row hides a tag for this session; the git preset and reset sit here too. An **Activity** section offers one row per word in the family this session is pinned to, and names that family, its source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so editing a family changes the next launch, never a running session. |
+| Project tab (`llm_tags`, tab `project`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
+| AoE tab (`llm_tags`, tab `aoe`) | The same rows for every session, with the same operations as the project tab. |
+
+The three tabs are one dock entry, not three: the pane `llm_tags` renders a tab strip of three
+`row` blocks (each with `method: "pane.tab"` and `params: {tab}`) and then the open tab's blocks.
+The host's pane vocabulary has no tab kind, so the open tab is the worker's own per-session state —
+the `selected` row is the one showing, and every row's `value` says what its level holds of its own
+(`N override(s), N hidden`), so a closed tab is not a question mark. The footer repeats the open
+tab's summary. A session with no project path has no project row, and a click naming it is refused
+rather than rendered.
 | Session details page (`ui/tags.html`) | The literal token and the harness extension approvals, plus a JSON viewer/editor: the rendered values read-only, and the stored form editable at the session, project or AoE level. `null` hides a key there; removing a key hides the inherited value. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 

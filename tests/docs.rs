@@ -245,7 +245,10 @@ fn the_page_fires_the_methods_the_worker_dispatches_on() {
                 }
                 // The worker's doc comments show a host command
                 // (`plugin.<id>.status`); those are not edits a surface fires.
-                let edit = ["tag.", "tags.", "token.", "extension."]
+                // `pane.` is not an edit either, but it is a worker method a
+                // surface fires (the pane's tab strip), so it is held to the
+                // same rule: it must be one the worker dispatches on.
+                let edit = ["tag.", "tags.", "token.", "extension.", "pane."]
                     .iter()
                     .any(|prefix| method.starts_with(prefix));
                 if !edit {

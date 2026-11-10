@@ -18,17 +18,12 @@ description = "Report the header set this install would send, without starting a
 slot = "row-badge"
 id = "llm_tags_badge"
 
-[[ui]]
-slot = "pane"
-id = "llm_tags_session"
+# One pane, not three: this session, its project's defaults and the AoE-wide
+# ones are tabs inside it, so the right panel carries a single LLM Tags entry.
 
 [[ui]]
 slot = "pane"
-id = "llm_tags_project"
-
-[[ui]]
-slot = "pane"
-id = "llm_tags_aoe"
+id = "llm_tags"
 
 # Session details: the literal token and the harness extension approvals, plus
 # a JSON viewer/editor for the same values the panels show. The page cannot
