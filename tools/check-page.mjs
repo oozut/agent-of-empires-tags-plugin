@@ -48,6 +48,7 @@ function element(tag = "div") {
     className: "",
     value: "",
     title: "",
+    dataset: {},
     disabled: false,
     colSpan: 1,
     selectionStart: 0,
@@ -142,6 +143,12 @@ const STATE = {
             unset: ["epic"],
             token: "",
             activity: { key: "test", label: "testing", icon: "flask-conical", tone: "warn" },
+            effective: { team: "platform", cost: 1.5 },
+            own: { team: "platform" },
+            levels: {
+              aoe: { values: { team: "core" }, git_tags: null },
+              project: { path: "/tmp/repo", values: { cost: 1.5 }, git_tags: null },
+            },
             targets: [
               { name: "X-AoE-Tags", env_var: "AOE_HDR_X_AOE_TAGS", value: '{"team":"platform"}' },
             ],
@@ -272,10 +279,22 @@ if (!labels.some((label) => label.includes("Lithuanians"))) {
   fail(`the session select was not filled: ${JSON.stringify(labels)}`);
 }
 
-// The tag editor moved to the dashboard panel; the page must no longer carry a
-// tag table, an add form, a reference picker or the git preset switch.
+// The row-by-row tag editor moved to the dashboard panel; the page must no
+// longer carry a tag table, an add form, a reference picker or the git preset
+// switch. The JSON editor is the page's replacement for editing values in place.
 for (const id of ["tags", "add", "key", "value", "reference", "gitpreset", "activities"]) {
   if (html.includes(`id="${id}"`)) fail(`the page still carries the old #${id} control`);
+}
+
+const levels = (byId.get("jsonlevel")?.children || []).map((option) => option.value);
+for (const level of ["session", "project", "aoe"]) {
+  if (!levels.includes(level)) fail(`the JSON level picker is missing ${level}: ${levels}`);
+}
+if (!byId.get("jsoneditor")?.value.includes('"team": "platform"')) {
+  fail(`the JSON editor did not load the stored values: ${byId.get("jsoneditor")?.value}`);
+}
+if (!byId.get("jsoneffective")?.innerHTML.includes("platform")) {
+  fail("the read-only effective view did not render");
 }
 
 const targetRows = (selectors.get("#targets tbody")?.children || []).map((row) =>
@@ -285,6 +304,19 @@ if (!targetRows.some((row) => row.includes("X-AoE-Tags") && row.includes("AOE_HD
   fail(`the target table is empty: ${JSON.stringify(targetRows)}`);
 }
 if (banner && banner.textContent) fail(`the page left a banner up: ${banner.textContent}`);
+
+// Saving the JSON editor is a diff against the level's own values, so adding a
+// key must write one `tag.set` and leave the rest alone.
+byId.get("jsoneditor").value = JSON.stringify({ team: "platform", epic: "checkout" });
+byId.get("jsonsave").onclick();
+await new Promise((done) => setTimeout(done, 50));
+const jsonWrite = replies.find(
+  (reply) => reply.method === "action" && reply.params?.method === "tag.set",
+);
+if (jsonWrite?.params?.params?.key !== "epic" || jsonWrite?.params?.params?.value !== "checkout") {
+  fail(`the JSON editor wrote ${JSON.stringify(jsonWrite?.params)}, not tag.set epic`);
+}
+
 
 // The token is the one value a pane row cannot hold, so the page must still
 // write it — and only when the button is pressed.
@@ -307,6 +339,6 @@ if (tokenWrite?.params?.params?.token !== '{"team":"platform"}') {
 console.log(`OK ${file}`);
 console.log(
   `   opened the bridge, asked for ${asked.join(", ")}, rendered ` +
-    `${targetRows.length} target row(s); no tag editor on the page; ` +
+    `${targetRows.length} target row(s); the JSON editor loaded and wrote a value; ` +
     `the token write carries ${JSON.stringify(tokenWrite.params.params)}`,
 );

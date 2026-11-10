@@ -153,7 +153,7 @@ aoe-llm-tags tag --git                      # vcs:git, git.branch, git.commit, g
 aoe-llm-tags references                     # every reference, with this session's value
 ```
 
-The session pane offers the same set as one "Standard git information" row, and the page's old
+The Session tab offers the same set as one "Standard git information" row, and the page's old
 "Insert a reference" dropdown was removed with the tag editor: references still come from the same
 catalogue the `references` verb prints, so the CLI can never offer one the renderer does not know.
 
@@ -192,8 +192,8 @@ rather than text, and the file cap already bounds it.
 The repo file is one rung below a session's own edit and one above a project's panel entry: its
 entries replace a `tags` entry with the same key, while a per-session edit still wins over both.
 From most to least specific, the order is **session edit → project → `tags_file` → AoE → `tags` →
-rule hit**. The project and AoE rungs live in `<app dir>/tags.toml`, written by the pane's sections
-and by `tag --level`, never in the settings' file. The inherited
+rule hit**. The project and AoE rungs live in `<app dir>/tags.toml`, written by the panel's
+Project and AoE tabs and by `tag --level`, never in the settings' file. The inherited
 tags spend the five-tag budget in that order; a session's own edits are exempt and added on top,
 so a tag typed for one session always travels, even when the inherited set already fills the
 header. A rule adds a key the set does not already have; it never rewrites one a session, file
@@ -269,11 +269,10 @@ would let a checked-out repository ship the file that configures it.
 
 | Surface | What it does |
 |---|---|
-| Session pane (`llm_tags_pane`) | Three sections — this session, this project, AoE — each tag with its origin and the values this session would send. A session row hides a tag for this session; a level row hides/restores it at that level, copies the session's set upward, or clears the level. The session section also holds the git preset and reset. An **Activity** section under it
-offers one row per word in the family this session is pinned to, and names that family, its
-source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so
-editing a family changes the next launch, never a running session. |
-| Session details page (`ui/tags.html`) | The literal token for the selected session and the harness extension approvals. It carries no tag editor; tags live in the pane. |
+| Session tab (`llm_tags_session`) | This session's tags, each with its origin and the values it would send. A row hides a tag for this session; the git preset and reset sit here too. An **Activity** section offers one row per word in the family this session is pinned to, and names that family, its source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so editing a family changes the next launch, never a running session. |
+| Project tab (`llm_tags_project`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
+| AoE tab (`llm_tags_aoe`) | The same rows for every session, with the same operations as the project tab. |
+| Session details page (`ui/tags.html`) | The literal token and the harness extension approvals, plus a JSON viewer/editor: the rendered values read-only, and the stored form editable at the session, project or AoE level. `null` hides a key there; removing a key hides the inherited value. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 
 The token is written but never read back into the UI. A surface is told that one is set, and the

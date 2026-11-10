@@ -45,11 +45,16 @@ pub const PROJECT: &str = "project";
 pub struct EditSet {
     pub tags: Vec<String>,
     pub unset: Vec<String>,
+    /// Whether this level includes the standard git sample. `Some(true)` adds
+    /// it here, `Some(false)` drops it even when a lower level carries it, and
+    /// `None` inherits. It is a behaviour, not four hand-written entries, so a
+    /// panel can offer one switch at every level.
+    pub git_tags: Option<bool>,
 }
 
 impl EditSet {
     pub fn is_empty(&self) -> bool {
-        self.tags.is_empty() && self.unset.is_empty()
+        self.tags.is_empty() && self.unset.is_empty() && self.git_tags.is_none()
     }
 
     /// The keys this level adds or replaces, in file order.
@@ -89,9 +94,22 @@ impl EditSet {
         self.unset.retain(|listed| listed != key);
     }
 
+    /// Turn the standard git sample on or off at this level. Explicit preset
+    /// entries are dropped: the switch is the declaration now, so the two can
+    /// never disagree about which keys it owns.
+    fn set_git(&mut self, enabled: bool) {
+        let keys = git_keys();
+        self.tags.retain(|raw| match Tag::parse(raw) {
+            Ok(tag) => !keys.contains(&tag.key),
+            Err(_) => true,
+        });
+        self.git_tags = Some(enabled);
+    }
+
     fn clear(&mut self) {
         self.tags.clear();
         self.unset.clear();
+        self.git_tags = None;
     }
 }
 
@@ -142,6 +160,7 @@ impl Levels {
 static EMPTY: &EditSet = &EditSet {
     tags: Vec::new(),
     unset: Vec::new(),
+    git_tags: None,
 };
 
 pub fn is_level(level: &str) -> bool {
@@ -255,6 +274,14 @@ fn edits_from(table: &toml::Table, where_: &str, warnings: &mut Vec<String>) -> 
             }
         }
     }
+    if let Some(value) = table.get("git_tags") {
+        match value.as_bool() {
+            Some(enabled) => edits.git_tags = Some(enabled),
+            None => warnings.push(format!(
+                "levels: {where_}: `git_tags` is not a boolean; ignoring it"
+            )),
+        }
+    }
     edits
 }
 
@@ -322,6 +349,9 @@ pub fn save(app_dir: &Path, levels: &Levels) -> Result<(), String> {
         if !aoe.unset.is_empty() {
             text.push_str(&format!("unset = [{}]\n", quote(&aoe.unset)));
         }
+        if let Some(enabled) = aoe.git_tags {
+            text.push_str(&format!("git_tags = {enabled}\n"));
+        }
     }
     for project in projects {
         text.push_str("\n[[project]]\n");
@@ -331,6 +361,9 @@ pub fn save(app_dir: &Path, levels: &Levels) -> Result<(), String> {
         }
         if !project.edits.unset.is_empty() {
             text.push_str(&format!("unset = [{}]\n", quote(&project.edits.unset)));
+        }
+        if let Some(enabled) = project.edits.git_tags {
+            text.push_str(&format!("git_tags = {enabled}\n"));
         }
     }
     private::write_atomic(&path, &text)
@@ -365,6 +398,28 @@ pub fn unset_tag(app_dir: &Path, level: &str, project: &str, key: &str) -> Resul
                 return Err("a project level edit needs a project path".to_string());
             }
             levels.project_mut(project).unset(key)?;
+        }
+        other => return Err(format!("unknown tag level {other:?}")),
+    }
+    save(app_dir, &levels)?;
+    Ok(levels)
+}
+
+/// Turn the standard git sample on or off at a level.
+pub fn set_git(
+    app_dir: &Path,
+    level: &str,
+    project: &str,
+    enabled: bool,
+) -> Result<Levels, String> {
+    let (mut levels, _) = load(app_dir);
+    match level {
+        AOE => levels.aoe.set_git(enabled),
+        PROJECT => {
+            if project.trim().is_empty() {
+                return Err("a project level edit needs a project path".to_string());
+            }
+            levels.project_mut(project).set_git(enabled);
         }
         other => return Err(format!("unknown tag level {other:?}")),
     }
@@ -488,6 +543,38 @@ fn apply(settings: &mut Settings, edits: &EditSet) {
             Err(_) => true,
         });
     }
+    // A git switch is a behaviour, applied after the entries so the level that
+    // owns it wins: `true` injects the sample set here, `false` removes the keys
+    // even when a lower level carried them, and `None` changes nothing.
+    if let Some(enabled) = edits.git_tags {
+        let keys = git_keys();
+        settings.tags.retain(|raw| match Tag::parse(raw) {
+            Ok(tag) => !keys.contains(&tag.key),
+            Err(_) => true,
+        });
+        if enabled {
+            let mut merged: Vec<String> = crate::resolver::GIT_PRESET
+                .iter()
+                .map(|entry| (*entry).to_string())
+                .collect();
+            merged.append(&mut settings.tags);
+            settings.tags = merged;
+        }
+    }
+}
+
+fn git_keys() -> Vec<String> {
+    crate::resolver::GIT_PRESET
+        .iter()
+        .filter_map(|entry| Tag::parse(entry).ok())
+        .map(|tag| tag.key)
+        .collect()
+}
+
+/// The keys the standard git sample owns. Exposed so the pane's switch and the
+/// resolver agree about what "on" means.
+pub fn git_tag_keys() -> Vec<String> {
+    git_keys()
 }
 
 #[cfg(test)]
@@ -546,6 +633,7 @@ mod tests {
             &EditSet {
                 tags: vec!["team:core".to_string(), "feature:=42".to_string()],
                 unset: vec!["cost".to_string()],
+                git_tags: None,
             }
         );
         assert!(levels.aoe.is_empty());

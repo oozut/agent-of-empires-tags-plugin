@@ -218,13 +218,31 @@ fn the_page_fires_the_methods_the_worker_dispatches_on() {
     for source in [page.as_str(), worker.as_str()] {
         // `edit` is a session edit; `extensionAction` is the machine-wide pair,
         // which deliberately has no session to send; `"method": "..."` is a pane
-        // row. All three reach the worker the same way.
-        for call in ["edit(\"", "extensionAction(\"", "\"method\": \""] {
+        // row, and a tuple like `("tag.preset", ...)` picks one dynamically. All
+        // of them reach the worker the same way.
+        for call in ["edit(\"", "extensionAction(\"", "\"method\": \"", "("] {
             let mut rest = source;
             while let Some(start) = rest.find(call) {
                 let after = &rest[start + call.len()..];
+                // A tuple can be formatted across lines (`(\n "tag.preset",`),
+                // so whitespace between the paren and the string is allowed.
+                let after = if call == "(" {
+                    let after = after.trim_start();
+                    if !after.starts_with('"') {
+                        rest = &rest[start + call.len()..];
+                        continue;
+                    }
+                    &after[1..]
+                } else {
+                    after
+                };
                 let end = after.find('"').expect("a closing quote");
                 let method = after[..end].to_string();
+                // `starts_with("tag.level.")` is a prefix, not a method.
+                if method.ends_with('.') {
+                    rest = &after[end..];
+                    continue;
+                }
                 // The worker's doc comments show a host command
                 // (`plugin.<id>.status`); those are not edits a surface fires.
                 let edit = ["tag.", "tags.", "token.", "extension."]

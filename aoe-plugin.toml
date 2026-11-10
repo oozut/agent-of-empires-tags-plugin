@@ -20,15 +20,23 @@ id = "llm_tags_badge"
 
 [[ui]]
 slot = "pane"
-id = "llm_tags_pane"
+id = "llm_tags_session"
 
-# Session details: the literal token and the harness extension approvals. The
-# tag editor lives in the pane; this page cannot write the global settings.
+[[ui]]
+slot = "pane"
+id = "llm_tags_project"
+
+[[ui]]
+slot = "pane"
+id = "llm_tags_aoe"
+
+# Session details: the literal token and the harness extension approvals, plus
+# a JSON viewer/editor for the same values the panels show. The page cannot
+# write the global settings.
 [[ui]]
 slot = "page"
 id = "tags"
 title = "LLM Tags"
-icon = "tags"
 entry = "ui/tags.html"
 
 [[settings]]

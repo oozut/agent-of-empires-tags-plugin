@@ -2,12 +2,12 @@
 <!--
   LLM Tags — session details.
 
-  Tags are edited in the dashboard's LLM Tags panel, which opens on the session and
-  has one section for the session, one for its project and one for every session.
-  This page only holds what a row cannot: the session's literal token and the
-  harness extension approvals. Everything it writes lands in
-  `<app dir>/sessions/<session id>/overrides.toml` or in that harness's config;
-  the plugin's settings are never rewritten.
+  The dashboard's LLM Tags panel has three tabs — the session, its project and
+  AoE — and this page adds the two things a row cannot hold: the session's literal
+  token and a JSON viewer/editor for the same values. Everything it writes lands
+  in `<app dir>/sessions/<session id>/overrides.toml`, the plugin's
+  `<app dir>/tags.toml`, or that harness's config; the plugin's settings are never
+  rewritten.
 
   It is served from the manifest's `entry`, so it is one self-contained file: a
   sandboxed document with no network access, whose only data path is the bridge.
@@ -70,15 +70,24 @@
       #banner { display: none; margin-bottom: 14px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); }
       #banner.on { display: block; }
       #banner.err { border-color: var(--danger); color: var(--danger); }
+      .jsonview {
+        background: #0b0e12; border: 1px solid var(--line); border-radius: 8px;
+        padding: 10px; overflow: auto; max-height: 260px; white-space: pre;
+        font-family: ui-monospace, Menlo, monospace; font-size: 12px; line-height: 1.5;
+      }
+      .json-key { color: #8ab4f8; }
+      .json-str { color: #a8d08d; }
+      .json-num { color: #f5c26b; }
+      .json-lit { color: #d7aefb; }
     </style>
   </head>
   <body>
     <h1>LLM Tags</h1>
     <p class="lead">
-      This page is the session's detail view. Tags are chosen in the
-      <strong>LLM Tags panel</strong> on the right: it opens on this session and carries the
-      same controls for the project and for every session. The token below is the one value
-      a row cannot hold, and it stays in this session's file.
+      This page is the session's detail view. The <strong>LLM Tags panel</strong> on the
+      right has three tabs — this session, its project and AoE — and the JSON editor below
+      writes to the level you choose. The token stays in this session's file and is never
+      published.
     </p>
 
     <div id="banner"></div>
@@ -117,6 +126,35 @@
     <div class="card">
       <table id="targets"><tbody></tbody></table>
       <p class="note" id="targetsub"></p>
+    </div>
+
+    <h2>Values (JSON)</h2>
+    <div class="card">
+      <div class="row">
+        <div class="grow">
+          <label for="jsonlevel">Edit level</label>
+          <select id="jsonlevel" style="width: 100%"></select>
+        </div>
+        <div class="grow">
+          <label>&nbsp;</label>
+          <span id="jsonsub" class="note"></span>
+        </div>
+      </div>
+      <label for="jsoneffective" style="margin-top: 12px">Effective values (read-only, rendered)</label>
+      <pre id="jsoneffective" class="jsonview"></pre>
+      <label for="jsoneditor" style="margin-top: 12px">Editable values (stored form)</label>
+      <textarea id="jsoneditor" rows="10" spellcheck="false"></textarea>
+      <p class="note" id="jsonnote">
+        Edit an object, then save. A key set to <span class="mono">null</span> is hidden at
+        the chosen level; deleting a key hides the inherited value. The editor shows this
+        level's own entries, except on the session tab where it starts from the effective
+        stored values so any value can be overridden.
+      </p>
+      <div class="row" style="margin-top: 10px">
+        <button id="jsonformat">Format</button>
+        <button id="jsonsave" class="primary">Save values</button>
+        <button id="jsonreload" class="quiet">Reload</button>
+      </div>
     </div>
 
     <h2>Harness extensions</h2>
@@ -191,6 +229,13 @@
       // One row per harness that could take an extension, as the worker resolves it:
       // the page renders the verdict, it never decides one.
       let extensions = [];
+      // The JSON editor is local state: a background republish must not wipe a
+      // half-typed object, so `jsonDirty` guards it until Save or Reload.
+      let jsonLevel = "session";
+      let jsonBaseline = {};
+      let jsonDirty = false;
+      let jsonSession = null;
+      let jsonLoadedLevel = null;
 
       function banner(text, isError) {
         const el = document.getElementById("banner");
@@ -303,6 +348,199 @@
         }
       }
 
+      function escapeHtml(text) {
+        return String(text).replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]);
+      }
+
+      // Small, dependency-free syntax colouring. The tokens are escaped before
+      // they reach innerHTML, so a tag value can never become markup.
+      function highlightJson(text) {
+        const token = /("(?:\\u[a-fA-F0-9]{4}|\\[^u]|[^\\"])*")(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?/g;
+        let out = "";
+        let last = 0;
+        let match;
+        while ((match = token.exec(text))) {
+          out += escapeHtml(text.slice(last, match.index));
+          const cls = match[1] ? (match[2] ? "json-key" : "json-str") : match[3] ? "json-lit" : "json-num";
+          out += `<span class="${cls}">${escapeHtml(match[0])}</span>`;
+          last = match.index + match[0].length;
+        }
+        return out + escapeHtml(text.slice(last));
+      }
+
+      function levelInfo(session, level) {
+        if (level === "session" || !session || !session.levels) return null;
+        return level === "project" ? session.levels.project : session.levels.aoe;
+      }
+
+      function levelPath(session, level) {
+        const info = levelInfo(session, level);
+        return (info && info.path) || "";
+      }
+
+      // Each level starts from its own file entries, so an edit writes that
+      // level and never freezes a rendered value. The effective map above is
+      // read-only; adding a key here is how a session overrides an inherited one.
+      function levelValues(session, level) {
+        if (level === "session") return session.own || {};
+        const info = levelInfo(session, level);
+        return (info && info.values) || {};
+      }
+
+      function jsonError(text) {
+        try {
+          const value = JSON.parse(text);
+          if (!value || Array.isArray(value) || typeof value !== "object") {
+            return "the editor must contain a JSON object";
+          }
+          return "";
+        } catch (err) {
+          return err.message || String(err);
+        }
+      }
+
+      function updateJsonValidity() {
+        const session = current();
+        const err = jsonError(document.getElementById("jsoneditor").value);
+        const blocked = !session || context.readOnly || context.cityhall;
+        document.getElementById("jsonsave").disabled = blocked || Boolean(err);
+        const note = document.getElementById("jsonnote");
+        if (err) {
+          note.textContent = `Not valid JSON: ${err}`;
+          note.className = "note warn";
+        } else {
+          note.textContent =
+            "Edit an object, then save. A key set to null is hidden at the chosen level; deleting a key hides the inherited value. The session tab starts from this session's own overrides; add a key to override an inherited value.";
+          note.className = "note";
+        }
+      }
+
+      function loadJson() {
+        const session = current();
+        const editor = document.getElementById("jsoneditor");
+        if (!session) {
+          editor.value = "{}";
+          jsonBaseline = {};
+          jsonDirty = false;
+          document.getElementById("jsoneffective").textContent = "{}";
+          updateJsonValidity();
+          return;
+        }
+        const values = levelValues(session, jsonLevel);
+        jsonBaseline = JSON.parse(JSON.stringify(values));
+        editor.value = JSON.stringify(values, null, 2);
+        jsonDirty = false;
+        jsonSession = session.id;
+        jsonLoadedLevel = jsonLevel;
+        const effective = session.effective || {};
+        document.getElementById("jsoneffective").innerHTML = highlightJson(
+          JSON.stringify(effective, null, 2),
+        );
+        document.getElementById("jsonsub").textContent =
+          jsonLevel === "session"
+            ? "this session's own overrides"
+            : levelPath(session, jsonLevel);
+        document.getElementById("jsonsub").className = "note mono";
+        updateJsonValidity();
+      }
+
+      function renderJson(force) {
+        const session = current();
+        const select = document.getElementById("jsonlevel");
+        const projectAvailable = Boolean(session && session.levels && session.levels.project);
+        if (jsonLevel === "project" && !projectAvailable) jsonLevel = "session";
+        const wanted = [["session", "This session"]];
+        if (projectAvailable) wanted.push(["project", "This project"]);
+        wanted.push(["aoe", "AoE — every session"]);
+        const signature = wanted.map(([value]) => value).join(",");
+        if (select.dataset.signature !== signature) {
+          select.innerHTML = "";
+          for (const [value, label] of wanted) {
+            const option = document.createElement("option");
+            option.value = value;
+            option.textContent = label;
+            select.appendChild(option);
+          }
+          select.dataset.signature = signature;
+        }
+        select.value = jsonLevel;
+        if (!session) {
+          loadJson();
+          return;
+        }
+        if (force || session.id !== jsonSession || jsonLevel !== jsonLoadedLevel) {
+          loadJson();
+        } else {
+          // Keep a half-typed editor, but refresh the read-only side.
+          document.getElementById("jsoneffective").innerHTML = highlightJson(
+            JSON.stringify(session.effective || {}, null, 2),
+          );
+          updateJsonValidity();
+        }
+      }
+
+      async function saveJson() {
+        const session = current();
+        if (!session) return;
+        const text = document.getElementById("jsoneditor").value;
+        const err = jsonError(text);
+        if (err) {
+          banner(`Not valid JSON: ${err}`, true);
+          return;
+        }
+        const next = JSON.parse(text);
+        const before = jsonBaseline;
+        const keys = new Set([...Object.keys(before), ...Object.keys(next)]);
+        const ops = [];
+        for (const key of keys) {
+          const had = Object.prototype.hasOwnProperty.call(before, key);
+          const has = Object.prototype.hasOwnProperty.call(next, key);
+          if (!has) {
+            ops.push({ key, remove: true });
+            continue;
+          }
+          if (!had || JSON.stringify(before[key]) !== JSON.stringify(next[key])) {
+            ops.push({ key, value: next[key], remove: next[key] === null });
+          }
+        }
+        if (!ops.length) {
+          banner("Nothing changed.", false);
+          return;
+        }
+        const button = document.getElementById("jsonsave");
+        button.disabled = true;
+        try {
+          for (const op of ops) {
+            if (jsonLevel === "session") {
+              await call("action", {
+                method: op.remove ? "tag.remove" : "tag.set",
+                params: op.remove
+                  ? { key: op.key, session_id: session.id }
+                  : { key: op.key, value: op.value, session_id: session.id },
+                sessionId: session.id,
+              });
+            } else {
+              const params = { level: jsonLevel, key: op.key };
+              if (jsonLevel === "project") params.project_path = levelPath(session, jsonLevel);
+              if (!op.remove) params.value = op.value;
+              await call("action", {
+                method: op.remove ? "tag.level.unset" : "tag.level.set",
+                params: { ...params, session_id: session.id },
+                sessionId: session.id,
+              });
+            }
+          }
+          banner(`Saved ${ops.length} value(s). The pane and the next launch pick it up.`, false);
+          jsonDirty = false;
+          jsonSession = null;
+          setTimeout(refresh, 120);
+          setTimeout(refresh, 600);
+        } catch (err) {
+          banner(String(err.message || err), true);
+          button.disabled = false;
+        }
+      }
+
       function render() {
         const session = current();
         const selectEl = document.getElementById("session");
@@ -367,6 +605,8 @@
         tokenBox.placeholder = session.token_set
           ? "A token is set (not shown). Type a new value to replace it, or Clear."
           : '{"team":"platform"}';
+
+        renderJson(false);
       }
 
       // ---- writes -----------------------------------------------------------
@@ -403,6 +643,30 @@
       }
 
       document.getElementById("session").onchange = (event) => select(event.target.value);
+      document.getElementById("jsonlevel").onchange = (event) => {
+        jsonLevel = event.target.value;
+        loadJson();
+      };
+      document.getElementById("jsoneditor").oninput = () => {
+        jsonDirty = true;
+        updateJsonValidity();
+      };
+      document.getElementById("jsonformat").onclick = () => {
+        const editor = document.getElementById("jsoneditor");
+        const err = jsonError(editor.value);
+        if (err) {
+          banner(`Not valid JSON: ${err}`, true);
+          return;
+        }
+        editor.value = JSON.stringify(JSON.parse(editor.value), null, 2);
+        jsonDirty = true;
+        updateJsonValidity();
+      };
+      document.getElementById("jsonreload").onclick = () => {
+        if (jsonDirty && !confirm("Discard the unsaved JSON changes?")) return;
+        loadJson();
+      };
+      document.getElementById("jsonsave").onclick = saveJson;
       document.getElementById("savetoken").onclick = () => {
         const box = document.getElementById("token");
         const sent = edit("token.set", { token: box.value });
