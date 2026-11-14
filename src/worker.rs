@@ -1090,7 +1090,6 @@ impl Host {
                     "session_id": id,
                     "payload": {
                         "title": "LLM Tags",
-                        "icon": "tags",
                         "default_location": "right",
                         "blocks": pane_blocks,
                         "footer": {
