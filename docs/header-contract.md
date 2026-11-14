@@ -276,7 +276,8 @@ would let a checked-out repository ship the file that configures it.
 The three tabs are one dock entry, not three: the pane `llm_tags` renders a tab strip across the
 top and then the open tab's blocks. The host's pane vocabulary has no tab kind, so the strip is
 three `action` blocks (each with `method: "pane.tab"` and `params: {tab}`), the open one drawn in
-the host's `primary` variant — a `row` per tab would stack them down the pane, and a tab strip is
+the host's `primary` variant. They carry a label and nothing else: three icons abreast read as three
+unrelated buttons, and the word is what says which level a tab is — a `row` per tab would stack them down the pane, and a tab strip is
 the one thing that must not be a list. `columns` is the only horizontal kind and the host draws it
 as a grid of at most two, so the three buttons are a two-wide grid holding a two-wide grid: they
 land at the left edge, a quarter and a half of the pane, and each is as wide as its label rather

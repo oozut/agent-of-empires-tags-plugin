@@ -1046,14 +1046,9 @@ impl Host {
                 &active,
                 has_project,
                 &[
-                    ("session", "Session", "user", session_summary.as_str()),
-                    (
-                        "project",
-                        "Project",
-                        "folder-git-2",
-                        project_summary.as_str(),
-                    ),
-                    ("aoe", "AoE", "globe", aoe_summary.as_str()),
+                    ("session", "Session", session_summary.as_str()),
+                    ("project", "Project", project_summary.as_str()),
+                    ("aoe", "AoE", aoe_summary.as_str()),
                 ],
             )];
             pane_blocks.push(serde_json::json!({"kind": "divider"}));
@@ -1298,20 +1293,15 @@ fn level_params(level: &str, project_path: &str, extra: serde_json::Value) -> se
 /// answers "what have I set here"; the footer repeats it for the open one. A
 /// session with no project has no project tab, so the button is left out rather
 /// than shown as a dead end.
-fn tab_blocks(
-    active: &str,
-    has_project: bool,
-    tabs: &[(&str, &str, &str, &str)],
-) -> serde_json::Value {
+fn tab_blocks(active: &str, has_project: bool, tabs: &[(&str, &str, &str)]) -> serde_json::Value {
     let buttons: Vec<serde_json::Value> = tabs
         .iter()
         .filter(|(tab, ..)| *tab != crate::levels::PROJECT || has_project)
-        .map(|(tab, label, icon, summary)| {
+        .map(|(tab, label, summary)| {
             let open = *tab == active;
             let mut button = serde_json::json!({
                 "kind": "action",
                 "label": label,
-                "icon": icon,
                 "method": "pane.tab",
                 "params": {"tab": tab},
                 "tooltip": if open {
