@@ -1091,6 +1091,10 @@ impl Host {
                     "session_id": id,
                     "payload": {
                         "title": "LLM Tags",
+                        // The dock tab and the header toggle draw this: without it the
+                        // host falls back to its generic puzzle piece, which says
+                        // nothing about what the pane holds.
+                        "icon": "tags",
                         "default_location": "right",
                         "blocks": pane_blocks,
                         "footer": {

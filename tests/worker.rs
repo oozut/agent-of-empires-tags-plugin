@@ -912,6 +912,21 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
 }
 
+/// The pane's dock tab and the header toggle draw the payload icon; with none the
+/// host falls back to a puzzle piece that says nothing about the pane.
+#[test]
+fn the_pane_names_its_own_icon() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    let pane = wire.pane(SESSION).clone();
+    assert_eq!(pane["icon"], json!("tags"), "{pane}");
+    assert_eq!(pane["title"], json!("LLM Tags"), "{pane}");
+}
+
 /// A reloaded worker owns a fresh UI generation, so the host has already dropped
 /// what this plugin showed. Waiting for the next host event to publish leaves the
 /// pane and its header button missing until some session happens to change state —
