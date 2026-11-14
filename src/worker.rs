@@ -43,6 +43,12 @@ pub fn run() -> i32 {
         tabs: std::collections::HashMap::new(),
         next_id: 1_000_000,
     };
+    // Publish before reading anything: a spawned worker owns a fresh UI generation,
+    // so the host has already dropped whatever this plugin showed before the
+    // reload. A worker that waits for the next host event leaves its pane — and
+    // the page button in the header — missing until some session happens to change
+    // state, which for an idle workspace is never.
+    host.publish_state();
     while host.process_one() {}
     0
 }

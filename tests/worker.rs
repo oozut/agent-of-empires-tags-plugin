@@ -142,7 +142,7 @@ impl Wire {
                 }
             }
         });
-        Self {
+        let mut wire = Self {
             child,
             stdin,
             lines,
@@ -153,7 +153,26 @@ impl Wire {
             pushes: Vec::new(),
             log,
             next_id: 900,
+        };
+        wire.drain_startup();
+        wire
+    }
+
+    /// Answer the publish the worker makes before it reads anything: it owns a
+    /// fresh UI generation at spawn, so the host has dropped what it showed before
+    /// the reload. Every test starts from that publish, and `pushes` keeps it, so a
+    /// test can still assert it happened.
+    fn drain_startup(&mut self) {
+        for _ in 0..400 {
+            if self.pushes.iter().any(|p| p["slot"] == json!("page")) {
+                return;
+            }
+            self.next_line();
         }
+        panic!(
+            "the worker never published at startup; stderr:\n{}",
+            self.log()
+        );
     }
 
     /// A `per_project` setting as the host would hand it back for one project.
@@ -891,6 +910,32 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     );
     let page = wire.wait_page();
     assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
+}
+
+/// A reloaded worker owns a fresh UI generation, so the host has already dropped
+/// what this plugin showed. Waiting for the next host event to publish leaves the
+/// pane and its header button missing until some session happens to change state —
+/// which for an idle workspace is never.
+#[test]
+fn the_worker_publishes_before_any_host_event() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    // No `notify`: `open` only answers what the worker asks for itself.
+    let wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    assert!(
+        wire.pushes
+            .iter()
+            .any(|p| p["slot"] == json!("pane") && p["session_id"] == json!(SESSION)),
+        "the pane is published before any event: {:?}",
+        wire.pushes
+    );
+    assert!(
+        wire.pushes.iter().any(|p| p["slot"] == json!("page")),
+        "so is the page button: {:?}",
+        wire.pushes
+    );
 }
 
 /// A tag has one home: the pane. The session header used to carry an activity
