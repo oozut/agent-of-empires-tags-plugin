@@ -543,6 +543,11 @@ impl Host {
             ("feature_tag", setting(self, "feature_tag")),
             ("activity_family", setting(self, "activity_family")),
             ("activity_families", setting(self, "activity_families")),
+            ("request_tag_header", setting(self, "request_tag_header")),
+            (
+                "request_tag_header_name",
+                setting(self, "request_tag_header_name"),
+            ),
         ];
 
         let mut table = toml::Table::new();

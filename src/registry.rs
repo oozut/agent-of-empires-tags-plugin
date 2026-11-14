@@ -24,7 +24,12 @@ use crate::settings::PLUGIN_ID;
 /// The plugin's per-project keys this build consumes. A key not listed here is
 /// not read: the registry holds other plugins' settings too, and this plugin
 /// must not act on a key it does not implement.
-pub const KEYS: [&str; 2] = ["activity_family", "activity_families"];
+pub const KEYS: [&str; 4] = [
+    "activity_family",
+    "activity_families",
+    "request_tag_header",
+    "request_tag_header_name",
+];
 
 /// The registry path for one scope.
 pub fn registry_path(app_dir: &Path, profile: &str) -> Vec<std::path::PathBuf> {
@@ -157,6 +162,27 @@ mod tests {
         assert_eq!(
             values.get("activity_family"),
             Some(&serde_json::json!("profile"))
+        );
+    }
+
+    #[test]
+    fn the_header_choice_is_one_of_the_keys_a_project_can_set() {
+        // The launch hook has no host RPC, so a per-project choice reaches it
+        // through this list or not at all.
+        assert!(KEYS.contains(&"request_tag_header"));
+        assert!(KEYS.contains(&"request_tag_header_name"));
+        let dir = temp();
+        let project = dir.join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        write(
+            &dir.join("projects.json"),
+            project.to_str().unwrap(),
+            r#"{"request_tag_header":"databricks"}"#,
+        );
+        let (values, _warnings) = project_settings(&dir, "", project.to_str().unwrap());
+        assert_eq!(
+            values.get("request_tag_header"),
+            Some(&serde_json::json!("databricks"))
         );
     }
 

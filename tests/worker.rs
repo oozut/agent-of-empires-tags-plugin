@@ -1162,6 +1162,70 @@ fn the_project_family_is_what_the_pane_offers() {
     assert!(text.contains("also defined here: default"), "{text}");
 }
 
+/// The header that carries the tags is a decision per project, so the page's
+/// target list follows the project's own choice while another project keeps the
+/// plugin's header. Nothing about it is per session: a session cannot name it.
+#[test]
+fn the_project_chooses_which_header_carries_its_tags() {
+    let sandbox = Sandbox::new();
+    let tagged = repository(&sandbox, "tagged");
+    let plain = repository(&sandbox, "plain");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &tagged), row(OTHER, &plain)], &[]);
+    wire.set_project(&tagged, "request_tag_header", json!("databricks"));
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+
+    let targets = |id: &str| -> Vec<String> {
+        page["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .find(|session| session["id"] == json!(id))
+            .map(|session| {
+                session["targets"]
+                    .as_array()
+                    .expect("targets")
+                    .iter()
+                    .filter_map(|target| target["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_else(|| panic!("no page row for {id}: {page}"))
+    };
+
+    assert_eq!(
+        targets(SESSION),
+        vec!["Databricks-Ai-Gateway-Request-Tags".to_string()],
+        "the project named the header"
+    );
+    assert_eq!(
+        targets(OTHER),
+        vec!["X-AoE-Tags".to_string()],
+        "another project keeps the plugin's own header"
+    );
+
+    // The switch is per project and per AoE, never per session: no block of the
+    // pane offers a header name to a session.
+    let pane = wire.pane(SESSION);
+    let mut blocks: Vec<&Value> = Vec::new();
+    fn walk<'a>(list: &'a [Value], out: &mut Vec<&'a Value>) {
+        for block in list {
+            out.push(block);
+            if let Some(children) = block["children"].as_array() {
+                walk(children, out);
+            }
+        }
+    }
+    walk(pane["blocks"].as_array().expect("blocks"), &mut blocks);
+    assert!(
+        !blocks
+            .iter()
+            .any(|block| block["label"] == json!("Header that carries the tags")),
+        "a session must not be offered the header choice: {pane}"
+    );
+}
+
 /// A user-scope row on the page says so: the same card, a wider grant, and the
 /// paths it would write named before anything is written.
 #[test]

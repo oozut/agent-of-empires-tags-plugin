@@ -163,24 +163,42 @@ type = "bool"
 default = true
 
 [[settings]]
-key = "databricks_request_tags"
-label = "Send the tags to Databricks as request tags"
-type = "bool"
-default = false
+key = "request_tag_header"
+label = "Header that carries the tags"
+type = "select"
+options = ["aoe", "databricks", "custom"]
+default = "aoe"
+per_project = true
 help = """
-Also send the whole tag set in `Databricks-Ai-Gateway-Request-Tags`, the header Databricks AI
-Gateway reads its request tags from
-(learn.microsoft.com/azure/databricks/ai-gateway/request-tagging). The gateway logs them to the
-`request_tags` column of its usage and inference tables, so a session's tags become the dimension
-cost and usage are grouped by, and a service policy can require one before allowing a request.
+Which header carries the whole tag set. Set it here for every project, or per project on the
+project's own plugin settings page — a project that talks to one gateway can tag for it without
+relabelling every other session.
 
-The header is one JSON object of string keys to string values — the shape the gateway documents —
-so a tag written `cost:=1.5` goes out as `"cost":"1.5"` there while the other targets keep the
-number. Off by default: the header is one vendor's, and a session that talks to another provider
-should not carry it.
+* `aoe` — this plugin's own `X-AoE-Tags`, the default.
+* `databricks` — `Databricks-Ai-Gateway-Request-Tags`, the header Databricks AI Gateway logs to
+  its `request_tags` column, so usage and cost can be grouped by a session's tags
+  (learn.microsoft.com/azure/databricks/ai-gateway/request-tagging). It is sent as a JSON object
+  of string keys to string values, the shape the gateway documents, so a tag written `cost:=1.5`
+  goes out as `"cost":"1.5"` there while any other target keeps the number.
+* `custom` — the name in `request_tag_header_name`, for a monitoring or chargeback header this
+  plugin does not know yet.
 
-This adds a target, it does not replace the set. A row you write yourself in `targets` for the
-same header wins, including a disabled one — an explicit row is a decision.
+The choice replaces the built-in header rather than adding a second one: naming a header is a
+decision about the name, not another destination. Rows you write yourself in `targets` are left
+alone, and a row naming the same header wins — an explicit row is a decision. Changing the name
+means the harness needs the new mapping once: run `aoe-llm-tags setup` again for each harness.
+"""
+
+[[settings]]
+key = "request_tag_header_name"
+label = "Your own header name"
+type = "string"
+default = ""
+per_project = true
+help = """
+The header name used when `request_tag_header` is `custom`, for example `X-Monitoring-Tags`.
+Letters, digits and `-` (an HTTP header name); the environment variable is derived from it the
+same way every other header's is. Ignored for the `aoe` and `databricks` choices.
 """
 
 [[settings]]

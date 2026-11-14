@@ -78,6 +78,14 @@ tag, it cannot take a session field: `feature_tag = "session:mine"` is dropped w
 
 A target chooses **where** the payload travels and **what** of it travels there.
 
+Which header carries the whole payload is itself one setting, `request_tag_header`: `aoe` (this
+plugin's `X-AoE-Tags`, the default), `databricks` (`Databricks-Ai-Gateway-Request-Tags`) or
+`custom` with a name in `request_tag_header_name`. It is `per_project`, so a project that reports
+to one gateway is named there while the AoE-wide value stays the default — the choice replaces the
+built-in payload row rather than adding a second header, because naming a header is a decision
+about the name. A row you write in `targets` is left alone, and a row naming that header wins. It
+is deliberately not per session: a session says what it is *doing*, not where the numbers go.
+
 | Field | Meaning |
 |---|---|
 | `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
@@ -212,7 +220,7 @@ rather than tuned to one:
 | Observability / metadata pipeline | Join keys that match the orchestration system's own records; high cardinality is fine here. | `{session_id}`, `{project_slug}`, `{tool}`; optional discrete headers. |
 | Session validation / management | Assert the request belongs to a live session, and let a control plane act on it (quota, pause, revoke). | A discrete `X-AoE-Session` header carrying the full id, plus an optional signed form: `<id>.<hmac>`, HMAC-SHA256 with a key the consumer is given, truncated to 16 hex. |
 | Policy / routing | Route or restrict by tenant, team or environment. | `{group_slug}`, `{profile}`, or any template the operator writes. |
-| A vendor's own request tags (Databricks AI Gateway) | A JSON object of string keys to string values, in that vendor's header, logged to its own usage tables. | `databricks_request_tags = true` adds `Databricks-Ai-Gateway-Request-Tags` with the whole set as `json_strings`; a row in `targets` for that header wins over the switch. |
+| A vendor's own request tags (Databricks AI Gateway) | A JSON object of string keys to string values, in that vendor's header, logged to its own usage tables. | `request_tag_header = "databricks"` makes `Databricks-Ai-Gateway-Request-Tags` the payload header, rendered as `json_strings`; `custom` takes a name of your own, and a row in `targets` for that header wins over the choice. |
 
 Consequences for the plugin: it must support **several headers, discrete values, and an optional
 signature**, and it must not assume the consumer parses a comma list. That is why the header set
