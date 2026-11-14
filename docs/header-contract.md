@@ -82,7 +82,7 @@ A target chooses **where** the payload travels and **what** of it travels there.
 |---|---|
 | `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
 | `name` | Wire name: a header name, a query parameter, or the body field to set. |
-| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. A field holding a comma, a quote or a line break is quoted (`"team:x,org:evil"`, internal quotes doubled), so a value cannot forge a pair the sender never wrote. |
+| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects; `json_strings` sends that same object with every value spelled as a string, for a consumer whose own schema says `string → string` (Databricks AI Gateway request tags). A field holding a comma, a quote or a line break is quoted (`"team:x,org:evil"`, internal quotes doubled), so a value cannot forge a pair the sender never wrote. |
 | `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, `{tags_b64}`, or one field such as `{feature}`. |
 | `literal` | Used instead of the rendered template, for a harness that does not expand `$NAME` in that position. Not a bypass: it is cleaned like every other value (control characters dropped, surrounding whitespace trimmed) and capped at 800 bytes where the settings are parsed, because a newline written as-is added a `NAME=value` line nobody set and a carriage return broke an `env_only` header list. |
 | `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. A pinned name has to be one — a letter or `_`, then letters, digits or `_` — or the row is refused: the name travels into `NAME=value` lines and into the shell command an `env_only` harness runs, where a `;` is a second command. |
@@ -212,6 +212,7 @@ rather than tuned to one:
 | Observability / metadata pipeline | Join keys that match the orchestration system's own records; high cardinality is fine here. | `{session_id}`, `{project_slug}`, `{tool}`; optional discrete headers. |
 | Session validation / management | Assert the request belongs to a live session, and let a control plane act on it (quota, pause, revoke). | A discrete `X-AoE-Session` header carrying the full id, plus an optional signed form: `<id>.<hmac>`, HMAC-SHA256 with a key the consumer is given, truncated to 16 hex. |
 | Policy / routing | Route or restrict by tenant, team or environment. | `{group_slug}`, `{profile}`, or any template the operator writes. |
+| A vendor's own request tags (Databricks AI Gateway) | A JSON object of string keys to string values, in that vendor's header, logged to its own usage tables. | `databricks_request_tags = true` adds `Databricks-Ai-Gateway-Request-Tags` with the whole set as `json_strings`; a row in `targets` for that header wins over the switch. |
 
 Consequences for the plugin: it must support **several headers, discrete values, and an optional
 signature**, and it must not assume the consumer parses a comma list. That is why the header set

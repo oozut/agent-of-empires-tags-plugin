@@ -111,8 +111,16 @@ pub const DEFAULT_KIND: &str = "header";
 /// a field (`tags["team"]`) instead of splitting a string and guessing where a
 /// value starts. `csv` is the M0 flat form, kept for consumers that already parse
 /// it and for values a JSON object would not carry (a bare header, a shell line).
-pub const FORMATS: [&str; 2] = ["json", "csv"];
+/// `json_strings` is that same object with every value spelled as a string, for a
+/// consumer whose own schema says `string → string` — Databricks AI Gateway's
+/// request tags, which reject a number where a string is required.
+pub const FORMATS: [&str; 3] = ["json", "csv", "json_strings"];
 pub const DEFAULT_FORMAT: &str = "json";
+
+/// The header Databricks AI Gateway reads its request tags from. The value must
+/// be a JSON object of string keys to string values; the gateway logs it to the
+/// `request_tags` column of its usage and inference tables.
+pub const DATABRICKS_HEADER: &str = "Databricks-Ai-Gateway-Request-Tags";
 
 /// One place the tag set is delivered to: a request header, a query parameter on
 /// the provider URL, or a JSON field in the request body.
@@ -219,6 +227,21 @@ pub fn default_targets() -> Vec<Target> {
     ]
 }
 
+/// The Databricks AI Gateway's request-tag header, as a target.
+///
+/// Added by `databricks_request_tags = true` to whatever target set is
+/// configured, rather than shipped in [`default_targets`]: the header is one
+/// vendor's, and a session that talks to another provider should not carry it.
+/// `json_strings` because the gateway reads a `string → string` map.
+pub fn databricks_target() -> Target {
+    Target::new(
+        DATABRICKS_HEADER,
+        "",
+        &derive_env_var_for(DEFAULT_KIND, DATABRICKS_HEADER),
+    )
+    .with_format("json_strings")
+}
+
 /// Validated settings. Malformed rows are dropped with a warning, never fatal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -289,7 +312,21 @@ impl Settings {
         let mut warns = warnings;
         let tags = parse_static_tags(table.get("tags"), &mut warns);
         let tags_file = parse_tags_file(table.get("tags_file"), &mut warns);
-        let targets = parse_targets(table, &mut warns);
+        let mut targets = parse_targets(table, &mut warns);
+        // `databricks_request_tags` is one switch, not a second target list: it
+        // adds the gateway's header to whatever set is delivered. A row the user
+        // already wrote for that header wins, including a disabled one — an
+        // explicit row is a decision, and a switch must not overrule it.
+        if parse_flag(
+            table.get("databricks_request_tags"),
+            "databricks_request_tags",
+            &mut warns,
+        ) && !targets
+            .iter()
+            .any(|target| target.name.eq_ignore_ascii_case(DATABRICKS_HEADER))
+        {
+            targets.push(databricks_target());
+        }
         let rules = parse_rules(table.get("rules"), &mut warns);
 
         let mut tagging = table
@@ -1302,6 +1339,22 @@ pub fn payload_json(payload: &Payload) -> String {
     Value::Object(map).to_string()
 }
 
+/// The payload as a compact JSON object whose values are all strings — what a
+/// consumer that documents a `string → string` map reads. A tag written
+/// `cost:=1.5` is a JSON number in the payload; here it goes out as `"1.5"`, so
+/// the object keeps the shape the consumer promised to accept.
+pub fn payload_json_strings(payload: &Payload) -> String {
+    let mut map = serde_json::Map::new();
+    for (key, value) in payload {
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        map.insert(key.clone(), Value::String(text));
+    }
+    Value::Object(map).to_string()
+}
+
 /// The value one target sends: its own template when it has one, else the
 /// configured format. Unknown fields in a template are returned for reporting.
 pub fn target_value(
@@ -1314,6 +1367,9 @@ pub fn target_value(
     }
     if target.format == "csv" {
         return (fields.get("tags").cloned().unwrap_or_default(), Vec::new());
+    }
+    if target.format == "json_strings" {
+        return (payload_json_strings(payload), Vec::new());
     }
     (payload_json(payload), Vec::new())
 }
@@ -2298,8 +2354,13 @@ pub fn render_headers(
         let (mut value, missing) = target_value(header, &payload, &fields);
         // A literal token is the session's hand-written value: it replaces the
         // payload a template-less target would render, and leaves a target that
-        // names its own field (`{session_id}`) alone.
-        if !configured_token.is_empty() && header.template.trim().is_empty() {
+        // names its own field (`{session_id}`) alone. A `json_strings` target is
+        // the exception — the token is not a `string → string` object, so the
+        // target keeps rendering its own payload.
+        if !configured_token.is_empty()
+            && header.template.trim().is_empty()
+            && header.format != "json_strings"
+        {
             value = configured_token.clone();
         }
         if !missing.is_empty() {
@@ -2538,6 +2599,22 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
         });
     }
     targets
+}
+
+/// A boolean setting: absent is `false`, and a value that is not a boolean is
+/// reported rather than guessed at.
+fn parse_flag(value: Option<&toml::Value>, key: &str, warnings: &mut Vec<String>) -> bool {
+    match value {
+        None => false,
+        Some(toml::Value::Boolean(flag)) => *flag,
+        Some(other) => {
+            warnings.push(format!(
+                "settings: {key}={} is not true or false; treating it as false",
+                render_toml_scalar(other)
+            ));
+            false
+        }
+    }
 }
 
 /// Static tags every session carries, merged in front of the rule matches.
@@ -3606,6 +3683,145 @@ mod tests {
                 .any(|warning| warning.contains("is longer than")),
             "{:?}",
             parsed.warnings
+        );
+    }
+
+    /// Resolves one launch from a settings table, with no aoe and no git: the
+    /// zero timeout keeps every subprocess out of the test.
+    fn headers_for(table: &str) -> (Vec<ResolvedHeader>, Vec<String>) {
+        let parsed = Settings::from_table(&table.parse().unwrap(), Vec::new());
+        let mut facts = facts();
+        let env = Env::new(Vec::<(&str, &str)>::new());
+        let (resolved, render_warnings, _tags) = render_headers(
+            &parsed,
+            &mut facts,
+            None,
+            &env,
+            std::time::Duration::from_millis(0),
+        );
+        let mut warnings = parsed.warnings;
+        warnings.extend(render_warnings);
+        (resolved, warnings)
+    }
+
+    fn header_value<'a>(resolved: &'a [ResolvedHeader], name: &str) -> Option<&'a str> {
+        resolved
+            .iter()
+            .find(|item| item.header == name)
+            .map(|item| item.value.as_str())
+    }
+
+    #[test]
+    fn the_databricks_header_is_off_until_it_is_asked_for() {
+        let (resolved, _warnings) = headers_for("tags = [\"team:core\"]\n");
+        assert!(
+            header_value(&resolved, DATABRICKS_HEADER).is_none(),
+            "a session that talks to another provider must not carry one vendor's header: {resolved:?}"
+        );
+        // The same launch's payload header is unchanged: the switch adds a target,
+        // it does not take one away.
+        let payload: Value =
+            serde_json::from_str(header_value(&resolved, DEFAULT_HEADER).expect("the payload"))
+                .expect("JSON");
+        assert_eq!(payload["team"], serde_json::json!("core"), "{payload}");
+    }
+
+    #[test]
+    fn the_databricks_switch_adds_the_gateway_header_to_the_whole_tag_set() {
+        let (resolved, _warnings) = headers_for(
+            "databricks_request_tags = true\ntags = [\"team:core\", \"feature:billing\"]\n",
+        );
+        let value = header_value(&resolved, DATABRICKS_HEADER).expect("the switch adds the header");
+        let parsed: Value = serde_json::from_str(value).expect("the header is JSON");
+        let object = parsed.as_object().expect("a JSON object");
+        assert!(
+            object.values().all(Value::is_string),
+            "the gateway reads a string→string map: {value}"
+        );
+        assert_eq!(object["team"], serde_json::json!("core"));
+        assert_eq!(object["feature"], serde_json::json!("billing"));
+        assert_eq!(object["session_id"], serde_json::json!("cf11af87da7e4bf0"));
+        assert!(
+            header_value(&resolved, DEFAULT_HEADER).is_some(),
+            "the switch adds a target, it does not replace the set: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_json_typed_tag_reaches_databricks_as_a_string() {
+        // A settings tag cannot hold quotes, so `:=` reaches for numbers and
+        // booleans; a list or object arrives through a `tags_file`, and the same
+        // spelling applies there.
+        let (resolved, _warnings) =
+            headers_for("databricks_request_tags = true\ntags = ['cost:=1.5', 'canary:=true']\n");
+        let value = header_value(&resolved, DATABRICKS_HEADER).expect("the header");
+        let parsed: Value = serde_json::from_str(value).expect("JSON");
+        assert_eq!(parsed["cost"], serde_json::json!("1.5"), "{value}");
+        assert_eq!(parsed["canary"], serde_json::json!("true"), "{value}");
+        // The plain payload keeps the JSON types it was given.
+        let payload: Value =
+            serde_json::from_str(header_value(&resolved, DEFAULT_HEADER).expect("the payload"))
+                .expect("JSON");
+        assert_eq!(payload["cost"], serde_json::json!(1.5), "{payload}");
+    }
+
+    #[test]
+    fn a_hand_written_row_for_the_gateway_header_wins_over_the_switch() {
+        let (resolved, _warnings) = headers_for(
+            "databricks_request_tags = true\n\
+             [[targets]]\n\
+             name = \"Databricks-Ai-Gateway-Request-Tags\"\n\
+             env_var = \"MY_DATABRICKS_TAGS\"\n\
+             template = \"{{tags_json}}\"\n",
+        );
+        let rows: Vec<&ResolvedHeader> = resolved
+            .iter()
+            .filter(|item| item.header.eq_ignore_ascii_case(DATABRICKS_HEADER))
+            .collect();
+        assert_eq!(rows.len(), 1, "one header, not two: {resolved:?}");
+        assert_eq!(rows[0].env_var, "MY_DATABRICKS_TAGS", "the user's row kept");
+    }
+
+    #[test]
+    fn a_token_does_not_replace_the_gateway_map() {
+        // The token is one hand-written string; the gateway needs an object.
+        let table: toml::Table = "databricks_request_tags = true\ntags = [\"team:core\"]\n"
+            .parse()
+            .unwrap();
+        let parsed = Settings::from_table(&table, Vec::new());
+        let mut parsed = parsed;
+        parsed.token = "hand-written".to_string();
+        let mut facts = facts();
+        let env = Env::new(Vec::<(&str, &str)>::new());
+        let (resolved, _warnings, _tags) = render_headers(
+            &parsed,
+            &mut facts,
+            None,
+            &env,
+            std::time::Duration::from_millis(0),
+        );
+        assert_eq!(
+            header_value(&resolved, DEFAULT_HEADER),
+            Some("hand-written"),
+            "the token still replaces the payload header"
+        );
+        let value = header_value(&resolved, DATABRICKS_HEADER).expect("the header");
+        let parsed: Value = serde_json::from_str(value).expect("still an object");
+        assert_eq!(parsed["team"], serde_json::json!("core"), "{value}");
+    }
+
+    #[test]
+    fn a_switch_that_is_not_a_boolean_is_reported_not_guessed_at() {
+        let (resolved, warnings) = headers_for("databricks_request_tags = \"yes\"\n");
+        assert!(
+            header_value(&resolved, DATABRICKS_HEADER).is_none(),
+            "{resolved:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("is not true or false")),
+            "{warnings:?}"
         );
     }
 

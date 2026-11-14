@@ -102,7 +102,9 @@ a request header, a query parameter on the provider URL, or a JSON field in the 
 
 `kind` is `header`, `query` or `body`; `name` is the header or parameter name.
 `format` decides what the target carries: `json` (the default) sends the whole tag set as
-one object, `csv` sends the flat `team:core,feature:billing` list an older consumer expects.
+one object, `csv` sends the flat `team:core,feature:billing` list an older consumer expects,
+`json_strings` sends that same object with every value spelled as a string (for a consumer whose
+schema says `string → string`, such as the Databricks header the switch below adds).
 
 `template` overrides the format for one target and picks the slice itself: `{tags}` for the
 comma-joined list, `{tags_json}` for the tags alone as JSON, `{payload_json}` for the full
@@ -159,6 +161,27 @@ key = "enabled"
 label = "Enabled"
 type = "bool"
 default = true
+
+[[settings]]
+key = "databricks_request_tags"
+label = "Send the tags to Databricks as request tags"
+type = "bool"
+default = false
+help = """
+Also send the whole tag set in `Databricks-Ai-Gateway-Request-Tags`, the header Databricks AI
+Gateway reads its request tags from
+(learn.microsoft.com/azure/databricks/ai-gateway/request-tagging). The gateway logs them to the
+`request_tags` column of its usage and inference tables, so a session's tags become the dimension
+cost and usage are grouped by, and a service policy can require one before allowing a request.
+
+The header is one JSON object of string keys to string values — the shape the gateway documents —
+so a tag written `cost:=1.5` goes out as `"cost":"1.5"` there while the other targets keep the
+number. Off by default: the header is one vendor's, and a session that talks to another provider
+should not carry it.
+
+This adds a target, it does not replace the set. A row you write yourself in `targets` for the
+same header wins, including a disabled one — an explicit row is a decision.
+"""
 
 [[settings]]
 key = "rules"
