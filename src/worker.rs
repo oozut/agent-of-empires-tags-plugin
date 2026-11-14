@@ -40,8 +40,15 @@ pub fn run() -> i32 {
         rx,
         stdout: std::sync::Mutex::new(std::io::stdout()),
         pending: std::collections::HashMap::new(),
+        tabs: std::collections::HashMap::new(),
         next_id: 1_000_000,
     };
+    // Publish before reading anything: a spawned worker owns a fresh UI generation,
+    // so the host has already dropped whatever this plugin showed before the
+    // reload. A worker that waits for the next host event leaves its pane — and
+    // the page button in the header — missing until some session happens to change
+    // state, which for an idle workspace is never.
+    host.publish_state();
     while host.process_one() {}
     0
 }
@@ -51,6 +58,10 @@ struct Host {
     rx: std::sync::mpsc::Receiver<String>,
     stdout: std::sync::Mutex<std::io::Stdout>,
     pending: std::collections::HashMap<i64, std::sync::mpsc::Sender<serde_json::Value>>,
+    /// Which tab of the one LLM Tags pane each session is showing. The host has
+    /// no tab kind in its pane vocabulary, so the open tab is the worker's own
+    /// state: a click on a tab row stores it here and republishes.
+    tabs: std::collections::HashMap<String, String>,
     next_id: i64,
 }
 
@@ -230,6 +241,12 @@ impl Host {
             self.apply_level_edit(command, params);
             return;
         }
+        // The pane is one surface with three tabs, so the open tab belongs to the
+        // session it was clicked in; the republish after this call draws it.
+        if command == "pane.tab" {
+            self.apply_tab_edit(command, params);
+            return;
+        }
         let Some(session) = params.get("session_id").and_then(serde_json::Value::as_str) else {
             eprintln!("{command}: the host sent no session_id; refusing to guess one");
             return;
@@ -294,6 +311,35 @@ impl Host {
         };
         if let Err(err) = result {
             eprintln!("{command} for session {session}: {err}");
+        }
+    }
+
+    /// Which tab of the pane a session shows. A tab is UI state, never written to
+    /// a file: it is what the click asked for and nothing else.
+    fn apply_tab_edit(&mut self, command: &str, params: &serde_json::Value) {
+        let Some(session) = params.get("session_id").and_then(serde_json::Value::as_str) else {
+            eprintln!("{command}: the host sent no session_id; refusing to guess one");
+            return;
+        };
+        let tab = params
+            .get("tab")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default();
+        if !TABS.contains(&tab) {
+            eprintln!("{command}: {tab:?} is not a tab of this pane");
+            return;
+        }
+        self.tabs.insert(session.to_string(), tab.to_string());
+    }
+
+    /// Which tab a session's pane is showing: the one it last clicked, else the
+    /// session's own — and never the project tab of a session with no project.
+    fn active_tab(&self, session: &str, has_project: bool) -> &str {
+        match self.tabs.get(session).map(String::as_str) {
+            Some(tab) if TABS.contains(&tab) && (has_project || tab != crate::levels::PROJECT) => {
+                tab
+            }
+            _ => TABS[0],
         }
     }
 
@@ -439,8 +485,9 @@ impl Host {
         }
     }
 
-    /// Push every surface the plugin renders: the row badge, the session pane
-    /// and the editor page.
+    /// Push every surface the plugin renders: the one pane and the editor page.
+    /// The session header carries no badge — a tag's own home is the pane, and a
+    /// second copy in the row would be one more place to keep in step.
     ///
     /// Called on every host event and after every edit, so a click never leaves a
     /// stale pane behind. Everything a surface shows is derived from the same
@@ -496,6 +543,11 @@ impl Host {
             ("feature_tag", setting(self, "feature_tag")),
             ("activity_family", setting(self, "activity_family")),
             ("activity_families", setting(self, "activity_families")),
+            ("request_tag_header", setting(self, "request_tag_header")),
+            (
+                "request_tag_header_name",
+                setting(self, "request_tag_header_name"),
+            ),
         ];
 
         let mut table = toml::Table::new();
@@ -922,37 +974,37 @@ impl Host {
                 "tone": "neutral",
             }));
 
-            let mut blocks: Vec<serde_json::Value> = Vec::new();
+            let mut session_blocks: Vec<serde_json::Value> = Vec::new();
             if !edits.token.is_empty() {
-                blocks.push(serde_json::json!({
+                session_blocks.push(serde_json::json!({
                     "kind": "note",
                     "text": "a token override is set for this session (value not shown here)",
                     "tone": "info",
                 }));
             }
             if !target_rows.is_empty() {
-                blocks.push(serde_json::json!({
+                session_blocks.push(serde_json::json!({
                     "kind": "heading",
                     "text": "What this session sends",
                 }));
-                blocks.append(&mut target_rows);
-                blocks.push(serde_json::json!({"kind": "divider"}));
+                session_blocks.append(&mut target_rows);
+                session_blocks.push(serde_json::json!({"kind": "divider"}));
             }
-            blocks.push(serde_json::json!({
+            session_blocks.push(serde_json::json!({
                 "kind": "heading",
                 "text": "Tags",
             }));
             if session_rows.is_empty() {
-                blocks.push(serde_json::json!({
+                session_blocks.push(serde_json::json!({
                     "kind": "note",
                     "text": "no tags are set for this session",
                     "tone": "neutral",
                 }));
             } else {
-                blocks.append(&mut session_rows);
+                session_blocks.append(&mut session_rows);
             }
-            blocks.push(serde_json::json!({"kind": "divider"}));
-            blocks.push(serde_json::json!({
+            session_blocks.push(serde_json::json!({"kind": "divider"}));
+            session_blocks.push(serde_json::json!({
                 "kind": "section",
                 "title": "Activity",
                 "value": activity_value,
@@ -960,131 +1012,99 @@ impl Host {
                 "collapsed": false,
                 "children": activity_children,
             }));
-            blocks.push(serde_json::json!({"kind": "divider"}));
-            blocks.push(serde_json::json!({
+            session_blocks.push(serde_json::json!({"kind": "divider"}));
+            session_blocks.push(serde_json::json!({
                 "kind": "action",
                 "label": "Edit tags as JSON",
                 "href": EDITOR_PAGE,
             }));
-            blocks.push(serde_json::json!({
+            session_blocks.push(serde_json::json!({
                 "kind": "note",
                 "text": "The session tab overrides this one session. The project and AoE tabs set defaults for everything below them.",
                 "tone": "neutral",
             }));
 
-            // The row badge is only the activity: a tag list at a glance is noise
-            // in a narrow column, while "what is this session doing" is the one
-            // thing worth reading there. A typo is not an activity, so it does not
-            // get a badge; the pane still reports it.
-            let badge_payload = match activity {
-                Some(activity) => serde_json::json!({
-                    "items": [{
-                        "text": activity.label,
-                        "icon": activity.icon,
-                        "tone": activity.tone,
-                        "tooltip": format!("activity: {}", activity.key),
-                        "href": EDITOR_PAGE,
-                    }]
-                }),
-                None => serde_json::json!({"items": []}),
+            // One pane, three tabs. The host's pane vocabulary has no tab kind,
+            // so a tab is a `row` carrying a method: the open one is drawn with
+            // the host's own `selected` accent, and each row states the summary
+            // the old three-tab layout put in that pane's footer.
+            let has_project = !path.is_empty();
+            let active = self.active_tab(&id, has_project).to_string();
+            let project_summary = format!(
+                "{} override(s), {} hidden",
+                project_edits.tags.len(),
+                project_edits.unset.len()
+            );
+            let aoe_summary = format!(
+                "{} override(s), {} hidden",
+                aoe_edits.tags.len(),
+                aoe_edits.unset.len()
+            );
+            // All three rows speak the same language: what that level holds of its
+            // own, not what the session ends up sending.
+            let session_summary = format!(
+                "{} override(s), {} hidden",
+                edits.tags.len(),
+                edits.unset.len()
+            );
+            let mut pane_blocks = vec![tab_blocks(
+                &active,
+                has_project,
+                &[
+                    ("session", "Session", session_summary.as_str()),
+                    ("project", "Project", project_summary.as_str()),
+                    ("aoe", "AoE", aoe_summary.as_str()),
+                ],
+            )];
+            pane_blocks.push(serde_json::json!({"kind": "divider"}));
+            let footer = match active.as_str() {
+                "project" => (
+                    "defaults for every session in this checkout".to_string(),
+                    project_summary.clone(),
+                ),
+                "aoe" => (
+                    "defaults for every session on this machine".to_string(),
+                    aoe_summary.clone(),
+                ),
+                _ => (
+                    "a row's badge says where the tag comes from".to_string(),
+                    format!("{} target(s)", snap.resolved.len()),
+                ),
             };
-            let _ = self.call_host(
-                "ui.state.set",
-                serde_json::json!({
-                    "slot": "row-badge",
-                    "id": "llm_tags_badge",
-                    "session_id": id,
-                    "payload": badge_payload,
-                }),
-            );
-
-            let _ = self.call_host(
-                "ui.state.set",
-                serde_json::json!({
-                    "slot": "pane",
-                    "id": "llm_tags_session",
-                    "session_id": id,
-                    "payload": {
-                        "title": "LLM Tags · Session",
-                        // One icon per level, so the three dock tabs stay
-                        // distinguishable when they sit side by side.
-                        "icon": "tag",
-                        "default_location": "right",
-                        "blocks": blocks,
-                        "footer": {
-                            "text": "a row's badge says where the tag comes from",
-                            "value": format!("{} target(s)", snap.resolved.len()),
-                        },
-                    }
-                }),
-            );
-
-            if !path.is_empty() {
-                let project_blocks = level_blocks(
+            match active.as_str() {
+                "project" => pane_blocks.extend(level_blocks(
                     crate::levels::PROJECT,
                     &path,
                     &project_edits,
                     &families,
                     &default_entries,
-                );
-                let _ = self.call_host(
-                    "ui.state.set",
-                    serde_json::json!({
-                        "slot": "pane",
-                        "id": "llm_tags_project",
-                        "session_id": id,
-                        "payload": {
-                            "title": "LLM Tags · Project",
-                            "icon": "folder-git-2",
-                            "default_location": "right",
-                            "blocks": project_blocks,
-                            "footer": {
-                                "text": "defaults for every session in this checkout",
-                                "value": format!(
-                                    "{} override(s), {} hidden",
-                                    project_edits.tags.len(),
-                                    project_edits.unset.len()
-                                ),
-                            },
-                        }
-                    }),
-                );
-            } else {
-                let _ = self.call_host(
-                    "ui.state.remove",
-                    serde_json::json!({
-                        "slot": "pane",
-                        "id": "llm_tags_project",
-                        "session_id": id,
-                    }),
-                );
+                )),
+                "aoe" => pane_blocks.extend(level_blocks(
+                    crate::levels::AOE,
+                    "",
+                    &aoe_edits,
+                    &families,
+                    &default_entries,
+                )),
+                _ => pane_blocks.append(&mut session_blocks),
             }
-
-            let aoe_blocks = level_blocks(
-                crate::levels::AOE,
-                "",
-                &aoe_edits,
-                &families,
-                &default_entries,
-            );
             let _ = self.call_host(
                 "ui.state.set",
                 serde_json::json!({
                     "slot": "pane",
-                    "id": "llm_tags_aoe",
+                    "id": "llm_tags",
                     "session_id": id,
                     "payload": {
-                        "title": "LLM Tags · AoE",
-                        "icon": "globe",
+                        "title": "LLM Tags",
+                        // The dock tab and the header toggle draw this: without it the
+                        // host falls back to its generic puzzle piece, which says
+                        // nothing about what the pane holds.
+                        "icon": "tags",
                         "default_location": "right",
-                        "blocks": aoe_blocks,
+                        "blocks": pane_blocks,
                         "footer": {
-                            "text": "defaults for every session on this machine",
-                            "value": format!(
-                                "{} override(s), {} hidden",
-                                aoe_edits.tags.len(),
-                                aoe_edits.unset.len()
-                            ),
+                            "text": footer.0,
+                            "value": footer.1,
                         },
                     }
                 }),
@@ -1211,7 +1231,10 @@ impl Host {
 /// The worker methods a pane or page may fire. The host forwards a block's
 /// `method` verbatim, so these are whole names — not the trailing segment that
 /// names a host command (`plugin.<id>.status`).
-pub const EDITS: [&str; 16] = [
+pub const EDITS: [&str; 17] = [
+    // Not an edit: it only moves the one pane between its three tabs, and goes
+    // through the same fire-and-publish path so a click re-renders.
+    "pane.tab",
     "tag.set",
     "tag.remove",
     "tag.restore",
@@ -1232,6 +1255,10 @@ pub const EDITS: [&str; 16] = [
     "extension.enable",
     "extension.disable",
 ];
+
+/// The one pane's tabs, left to right: this session, this project's defaults and
+/// the machine-wide ones. The order is the layout, so it is spelled once.
+pub const TABS: [&str; 3] = ["session", "project", "aoe"];
 
 /// What this level says about the activity, if anything. `Some(Some(key))` is
 /// an entry here, `Some(None)` is a hide here, and `None` inherits.
@@ -1256,6 +1283,53 @@ fn level_params(level: &str, project_path: &str, extra: serde_json::Value) -> se
         }
     }
     params
+}
+
+/// The tab strip at the top of the pane, laid out left to right.
+///
+/// The host's pane vocabulary has no tab kind, so a tab is a button carrying a
+/// `method`: an `action` block, with the open one drawn in the host's `primary`
+/// variant. A `row` per tab would stack them down the pane, and a tab strip is
+/// the one thing that must not be a list.
+///
+/// `columns` is the only horizontal kind, and the host draws it as a grid of at
+/// most two, so three tabs are a two-wide grid holding a two-wide grid: the
+/// buttons land at the left edge, a quarter and a half of the pane. Buttons are
+/// as wide as their label, not their cell, so the third one is not stretched to
+/// the half the grid gives it.
+///
+/// Each button's tooltip carries what that level holds, so a closed tab still
+/// answers "what have I set here"; the footer repeats it for the open one. A
+/// session with no project has no project tab, so the button is left out rather
+/// than shown as a dead end.
+fn tab_blocks(active: &str, has_project: bool, tabs: &[(&str, &str, &str)]) -> serde_json::Value {
+    let buttons: Vec<serde_json::Value> = tabs
+        .iter()
+        .filter(|(tab, ..)| *tab != crate::levels::PROJECT || has_project)
+        .map(|(tab, label, summary)| {
+            let open = *tab == active;
+            let mut button = serde_json::json!({
+                "kind": "action",
+                "label": label,
+                "method": "pane.tab",
+                "params": {"tab": tab},
+                "tooltip": if open {
+                    format!("showing now \u{00b7} {summary}")
+                } else {
+                    format!("show this level \u{00b7} {summary}")
+                },
+            });
+            if open {
+                button["variant"] = serde_json::json!("primary");
+            }
+            button
+        })
+        .collect();
+    let cells: Vec<serde_json::Value> = buttons
+        .chunks(2)
+        .map(|pair| serde_json::json!({"kind": "columns", "children": pair}))
+        .collect();
+    serde_json::json!({"kind": "columns", "children": cells})
 }
 
 /// One level's whole tab. The session level has its own rows; a project or AoE

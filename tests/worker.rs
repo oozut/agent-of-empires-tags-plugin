@@ -142,7 +142,7 @@ impl Wire {
                 }
             }
         });
-        Self {
+        let mut wire = Self {
             child,
             stdin,
             lines,
@@ -153,7 +153,26 @@ impl Wire {
             pushes: Vec::new(),
             log,
             next_id: 900,
+        };
+        wire.drain_startup();
+        wire
+    }
+
+    /// Answer the publish the worker makes before it reads anything: it owns a
+    /// fresh UI generation at spawn, so the host has dropped what it showed before
+    /// the reload. Every test starts from that publish, and `pushes` keeps it, so a
+    /// test can still assert it happened.
+    fn drain_startup(&mut self) {
+        for _ in 0..400 {
+            if self.pushes.iter().any(|p| p["slot"] == json!("page")) {
+                return;
+            }
+            self.next_line();
         }
+        panic!(
+            "the worker never published at startup; stderr:\n{}",
+            self.log()
+        );
     }
 
     /// A `per_project` setting as the host would hand it back for one project.
@@ -232,22 +251,46 @@ impl Wire {
         })
     }
 
-    /// The last session-tab payload pushed for a session.
+    /// The last payload of the one pane, as that session's open tab has it.
     fn pane(&self, session: &str) -> &Value {
-        self.pane_with(session, "llm_tags_session")
-    }
-
-    /// The last payload for one of the three tabs.
-    fn pane_with(&self, session: &str, id: &str) -> &Value {
         self.pushes
             .iter()
             .rev()
             .find(|params| {
                 params["slot"] == json!("pane")
                     && params["session_id"] == json!(session)
-                    && params["id"] == json!(id)
+                    && params["id"] == json!("llm_tags")
             })
-            .unwrap_or_else(|| panic!("no {id} pane was pushed for {session}"))
+            .map(|params| &params["payload"])
+            .unwrap_or_else(|| panic!("no llm_tags pane was pushed for {session}"))
+    }
+
+    /// Click a tab and read what the pane renders for it. The click is a worker
+    /// method like any other, and the republish after it is the answer — read to
+    /// the page, the last push of one publish, so the next call starts on empty.
+    fn pane_tab(&mut self, session: &str, tab: &str) -> Value {
+        self.notify("pane.tab", json!({"tab": tab, "session_id": session}));
+        let mut rendered: Option<Value> = None;
+        for _ in 0..400 {
+            let line = self.next_line();
+            if line["method"] == json!("ui.state.set")
+                && line["params"]["slot"] == json!("pane")
+                && line["params"]["id"] == json!("llm_tags")
+                && line["params"]["session_id"] == json!(session)
+            {
+                rendered = Some(line["params"]["payload"].clone());
+            } else if line["method"] == json!("ui.state.set")
+                && line["params"]["slot"] == json!("page")
+            {
+                if let Some(payload) = rendered {
+                    return payload;
+                }
+            }
+        }
+        panic!(
+            "the pane never re-rendered for tab {tab}; stderr:\n{}",
+            self.log()
+        );
     }
 
     /// Every payload pushed so far, as one string: a value that must not leave the
@@ -315,28 +358,55 @@ fn tag<'a>(tags: &'a [Value], key: &str) -> &'a Value {
         .unwrap_or(&Value::Null)
 }
 
-/// Every row in a pane, whether it sits at the top level or inside a section.
+/// Every block in a pane, in render order, however deeply nested — the tab strip
+/// is a `columns` inside a `columns`, and its buttons are two levels down.
+fn pane_blocks(pane: &Value) -> Vec<Value> {
+    fn walk(block: &Value, out: &mut Vec<Value>) {
+        out.push(block.clone());
+        for child in block["children"].as_array().into_iter().flatten() {
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    for block in pane["blocks"].as_array().expect("pane blocks") {
+        walk(block, &mut out);
+    }
+    out
+}
+
+/// Every row in a pane, whether it sits at the top level, inside a section or in
+/// one of the tab strip's columns.
 fn pane_rows(pane: &Value) -> Vec<Value> {
-    pane["payload"]["blocks"]
-        .as_array()
-        .expect("pane blocks")
-        .iter()
-        .flat_map(|block| {
-            let mut rows = Vec::new();
-            if block["kind"] == json!("row") {
-                rows.push(block.clone());
-            }
-            if let Some(children) = block["children"].as_array() {
-                rows.extend(
-                    children
-                        .iter()
-                        .filter(|row| row["kind"] == json!("row"))
-                        .cloned(),
-                );
-            }
-            rows
-        })
+    pane_blocks(pane)
+        .into_iter()
+        .filter(|block| block["kind"] == json!("row"))
         .collect()
+}
+
+/// The labels of the pane's tab strip, left to right, and which one is open. The
+/// open tab is the host's `primary` action, since an action has no `selected`.
+fn tab_labels(pane: &Value) -> Vec<String> {
+    pane_blocks(pane)
+        .into_iter()
+        .filter(|block| block["method"] == json!("pane.tab"))
+        .map(|block| block["label"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+/// One tab button, by its label — the strip's buttons are actions, not rows.
+fn tab_button(pane: &Value, label: &str) -> Value {
+    pane_blocks(pane)
+        .into_iter()
+        .find(|block| block["method"] == json!("pane.tab") && block["label"] == json!(label))
+        .unwrap_or_else(|| panic!("no {label:?} tab button in {pane}"))
+}
+
+fn open_tab(pane: &Value) -> String {
+    pane_blocks(pane)
+        .into_iter()
+        .find(|block| block["method"] == json!("pane.tab") && block["variant"] == json!("primary"))
+        .and_then(|block| block["label"].as_str().map(str::to_string))
+        .unwrap_or_default()
 }
 
 fn pane_row(rows: &[Value], label: &str) -> Value {
@@ -493,7 +563,7 @@ fn the_git_switch_can_hide_an_inherited_sample() {
     let page = wire.wait_page();
     let tags = tags_of(&page["sessions"][0]);
     assert_eq!(tag(&tags, "git.branch")["origin"], json!("aoe"));
-    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
+    let aoe = wire.pane_tab(SESSION, "aoe");
     assert_eq!(
         pane_row(&pane_rows(&aoe), "Standard git information")["selected"],
         json!(true)
@@ -505,7 +575,7 @@ fn the_git_switch_can_hide_an_inherited_sample() {
     let page = wire.wait_page();
     let tags = tags_of(&page["sessions"][0]);
     assert!(tag(&tags, "git.branch").is_null(), "{tags:?}");
-    let session = wire.pane(SESSION).clone();
+    let session = wire.pane_tab(SESSION, "session");
     let switch = pane_row(&pane_rows(&session), "Standard git information");
     assert_eq!(switch["value"], json!("off here"));
     assert_eq!(switch["method"], json!("tag.git"));
@@ -842,10 +912,70 @@ fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
     assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
 }
 
-/// The row is a narrow glance, so it carries only the activity: a tag list there
-/// is noise. The icon is presentation — the text is what a terminal renders.
+/// The pane's dock tab and the header toggle draw the payload icon; with none the
+/// host falls back to a puzzle piece that says nothing about the pane.
 #[test]
-fn the_row_badge_shows_only_the_activity() {
+fn the_pane_names_its_own_icon() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    wire.notify("session.state", json!({}));
+    let pane = wire.pane(SESSION).clone();
+    assert_eq!(pane["icon"], json!("tags"), "{pane}");
+    assert_eq!(pane["title"], json!("LLM Tags"), "{pane}");
+
+    // One dock entry means one glyph, whichever tab is open: there is no longer a
+    // pane per level for a per-level icon to sit on, so the levels are told apart
+    // by their button's word and no tab button carries a glyph either.
+    for tab in ["session", "project", "aoe"] {
+        let pane = wire.pane_tab(SESSION, tab);
+        assert_eq!(pane["icon"], json!("tags"), "{tab}: {pane}");
+        let blocks = pane_blocks(&pane);
+        let buttons: Vec<&Value> = blocks
+            .iter()
+            .filter(|block| block["method"] == json!("pane.tab"))
+            .collect();
+        assert_eq!(buttons.len(), 3, "{tab}: {pane}");
+        assert!(
+            buttons.iter().all(|block| block.get("icon").is_none()),
+            "{tab}: a tab button carries no glyph: {buttons:?}"
+        );
+    }
+}
+
+/// A reloaded worker owns a fresh UI generation, so the host has already dropped
+/// what this plugin showed. Waiting for the next host event to publish leaves the
+/// pane and its header button missing until some session happens to change state —
+/// which for an idle workspace is never.
+#[test]
+fn the_worker_publishes_before_any_host_event() {
+    let sandbox = Sandbox::new();
+    let repo = repository(&sandbox, "repo");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    // No `notify`: `open` only answers what the worker asks for itself.
+    let wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
+    assert!(
+        wire.pushes
+            .iter()
+            .any(|p| p["slot"] == json!("pane") && p["session_id"] == json!(SESSION)),
+        "the pane is published before any event: {:?}",
+        wire.pushes
+    );
+    assert!(
+        wire.pushes.iter().any(|p| p["slot"] == json!("page")),
+        "so is the page button: {:?}",
+        wire.pushes
+    );
+}
+
+/// A tag has one home: the pane. The session header used to carry an activity
+/// badge — a second copy of a fact the pane already states, and one more place to
+/// keep in step — so nothing but the pane renders tag state now.
+#[test]
+fn the_pane_is_the_only_place_a_tag_shows() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config(
@@ -857,27 +987,34 @@ fn the_row_badge_shows_only_the_activity() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
 
-    let badge = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("row-badge"))
-        .unwrap_or_else(|| panic!("no badge was pushed: {:?}", wire.pushes));
-    let items = badge["payload"]["items"].as_array().expect("items");
-    assert_eq!(items.len(), 1, "only the activity belongs here: {badge}");
-    assert_eq!(items[0]["text"], json!("testing"), "{badge}");
-    assert_eq!(items[0]["icon"], json!("flask-conical"), "{badge}");
-    assert_eq!(items[0]["tone"], json!("warn"), "{badge}");
-    // The raw tag is still what travels; the icon never does.
-    assert!(!badge.to_string().contains("activity:test"), "{badge}");
     assert!(
-        items.iter().all(|item| item["text"] != json!("team")),
-        "ordinary tags stay out of the row: {badge}"
+        wire.pushes
+            .iter()
+            .all(|params| params["slot"] == json!("pane") || params["slot"] == json!("page")),
+        "no row badge is pushed: {:?}",
+        wire.pushes
     );
+    let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("the manifest");
+    assert!(
+        !manifest.contains("row-badge"),
+        "the manifest declares no row badge"
+    );
+
+    // The pane still names what the session is doing, with the family's own icon
+    // and tone, so dropping the badge lost no information.
+    let pane = wire.pane(SESSION).clone();
+    let section = pane_blocks(&pane)
+        .into_iter()
+        .find(|block| block["title"] == json!("Activity"))
+        .unwrap_or_else(|| panic!("no activity section in {pane}"));
+    assert_eq!(section["value"], json!("testing (inherited)"), "{section}");
+    let row = pane_row(&pane_rows(&pane), "testing");
+    assert_eq!(row["icon"], json!("flask-conical"), "{row}");
+    assert_eq!(row["tone"], json!("warn"), "{row}");
 }
 
 #[test]
-fn a_session_without_an_activity_has_no_row_badge() {
+fn a_session_without_an_activity_shows_none_in_the_pane() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
@@ -885,17 +1022,12 @@ fn a_session_without_an_activity_has_no_row_badge() {
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
     wire.notify("session.state", json!({}));
     wire.wait_page();
-    let badge = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("row-badge"))
-        .expect("a badge");
-    assert_eq!(
-        badge["payload"]["items"].as_array().map(Vec::len),
-        Some(0),
-        "{badge}"
-    );
+    let pane = wire.pane(SESSION).clone();
+    let section = pane_blocks(&pane)
+        .into_iter()
+        .find(|block| block["title"] == json!("Activity"))
+        .expect("an activity section");
+    assert_eq!(section["value"], json!("not set"), "{section}");
 }
 
 #[test]
@@ -911,19 +1043,14 @@ fn a_typo_in_the_activity_is_reported_not_iconified() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
     assert!(wire.log().contains("is not an activity"), "{}", wire.log());
-    let badge = wire
-        .pushes
-        .iter()
-        .rev()
-        .find(|params| params["slot"] == json!("row-badge"))
-        .expect("a badge");
-    let items = badge["payload"]["items"]
-        .as_array()
-        .unwrap_or_else(|| panic!("no items in {badge}"));
-    assert!(
-        items.is_empty(),
-        "a typo is not an activity, so the row stays empty: {badge}"
-    );
+    // A typo is not an activity, so the pane leaves the section unset rather than
+    // dressing the misspelling up as one.
+    let pane = wire.pane(SESSION).clone();
+    let section = pane_blocks(&pane)
+        .into_iter()
+        .find(|block| block["title"] == json!("Activity"))
+        .expect("an activity section");
+    assert_eq!(section["value"], json!("not set"), "{section}");
 }
 
 /// The activity has to be changeable from inside the session, not only from the
@@ -940,7 +1067,7 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
     wire.wait_page();
 
     let pane = wire.pane(SESSION);
-    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let blocks = pane["blocks"].as_array().expect("blocks");
     let section = blocks
         .iter()
         .find(|block| block["kind"] == json!("section") && block["title"] == json!("Activity"))
@@ -1015,7 +1142,7 @@ fn the_project_family_is_what_the_pane_offers() {
     wire.wait_page();
 
     let pane = wire.pane(SESSION);
-    let blocks = pane["payload"]["blocks"].as_array().expect("blocks");
+    let blocks = pane["blocks"].as_array().expect("blocks");
     // Exactly one: the activity is offered once, in the session's own section,
     // and a level above it does not repeat the picker.
     let sections: Vec<&serde_json::Value> = blocks
@@ -1051,6 +1178,70 @@ fn the_project_family_is_what_the_pane_offers() {
     let text = note["text"].as_str().unwrap_or_default();
     assert!(text.starts_with("family work ("), "{text}");
     assert!(text.contains("also defined here: default"), "{text}");
+}
+
+/// The header that carries the tags is a decision per project, so the page's
+/// target list follows the project's own choice while another project keeps the
+/// plugin's header. Nothing about it is per session: a session cannot name it.
+#[test]
+fn the_project_chooses_which_header_carries_its_tags() {
+    let sandbox = Sandbox::new();
+    let tagged = repository(&sandbox, "tagged");
+    let plain = repository(&sandbox, "plain");
+    sandbox.write_config(&settings_config("tags = [\"team:core\"]\n", ""));
+    sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
+    let mut wire = Wire::open(&sandbox, &[row(SESSION, &tagged), row(OTHER, &plain)], &[]);
+    wire.set_project(&tagged, "request_tag_header", json!("databricks"));
+    wire.notify("session.state", json!({}));
+    let page = wire.wait_page();
+
+    let targets = |id: &str| -> Vec<String> {
+        page["sessions"]
+            .as_array()
+            .expect("sessions")
+            .iter()
+            .find(|session| session["id"] == json!(id))
+            .map(|session| {
+                session["targets"]
+                    .as_array()
+                    .expect("targets")
+                    .iter()
+                    .filter_map(|target| target["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_else(|| panic!("no page row for {id}: {page}"))
+    };
+
+    assert_eq!(
+        targets(SESSION),
+        vec!["Databricks-Ai-Gateway-Request-Tags".to_string()],
+        "the project named the header"
+    );
+    assert_eq!(
+        targets(OTHER),
+        vec!["X-AoE-Tags".to_string()],
+        "another project keeps the plugin's own header"
+    );
+
+    // The switch is per project and per AoE, never per session: no block of the
+    // pane offers a header name to a session.
+    let pane = wire.pane(SESSION);
+    let mut blocks: Vec<&Value> = Vec::new();
+    fn walk<'a>(list: &'a [Value], out: &mut Vec<&'a Value>) {
+        for block in list {
+            out.push(block);
+            if let Some(children) = block["children"].as_array() {
+                walk(children, out);
+            }
+        }
+    }
+    walk(pane["blocks"].as_array().expect("blocks"), &mut blocks);
+    assert!(
+        !blocks
+            .iter()
+            .any(|block| block["label"] == json!("Header that carries the tags")),
+        "a session must not be offered the header choice: {pane}"
+    );
 }
 
 /// A user-scope row on the page says so: the same card, a wider grant, and the
@@ -1105,27 +1296,22 @@ fn a_session_without_a_project_has_no_project_tab() {
     wire.notify("session.state", json!({}));
     wire.wait_page();
 
-    assert!(
-        !wire
-            .pushes
-            .iter()
-            .any(|params| params["id"] == json!("llm_tags_project")),
-        "no project tab was pushed: {:?}",
-        wire.pushes
-    );
-    assert!(wire
-        .calls
-        .iter()
-        .any(|(method, params)| method == "ui.state.remove"
-            && params["id"] == json!("llm_tags_project")));
-    let session = wire.pane(SESSION);
-    let titles: Vec<&str> = session["payload"]["blocks"]
+    // One pane with two tabs, not three: a session with no project has no
+    // project default to edit, so the strip leaves the row out instead of
+    // offering a dead end.
+    let session = wire.pane(SESSION).clone();
+    assert_eq!(tab_labels(&session), vec!["Session", "AoE"]);
+    // Asking for it anyway (a stale click, a dashboard left open) stays on the
+    // session rather than showing an empty half.
+    let after = wire.pane_tab(SESSION, "project");
+    assert_eq!(open_tab(&after), "Session");
+    let titles: Vec<&str> = after["blocks"]
         .as_array()
         .expect("blocks")
         .iter()
         .filter_map(|block| block["title"].as_str())
         .collect();
-    assert_eq!(titles, vec!["Activity"], "{session}");
+    assert_eq!(titles, vec!["Activity"], "{after}");
 }
 
 #[test]
@@ -1142,13 +1328,47 @@ fn the_three_tabs_split_session_project_and_aoe() {
     wire.notify("session.status.changed", json!({"session_id": SESSION}));
     wire.wait_page();
 
-    // Three tabs, not four sections: the session pane is the session, and the
-    // project and AoE panes are their own dock entries.
+    // One dock entry, three tabs: the right panel carries a single LLM Tags
+    // pane, and the strip inside it names the levels from the session outwards.
+    assert!(
+        wire.pushes
+            .iter()
+            .filter(|params| params["slot"] == json!("pane"))
+            .all(|params| params["id"] == json!("llm_tags")),
+        "only one pane is pushed: {:?}",
+        wire.pushes
+    );
     let session = wire.pane(SESSION).clone();
-    assert_eq!(session["id"], json!("llm_tags_session"));
-    assert_eq!(session["payload"]["title"], json!("LLM Tags · Session"));
-    assert_eq!(session["payload"]["icon"], json!("tag"), "{session}");
-    let titles: Vec<&str> = session["payload"]["blocks"]
+    assert_eq!(session["title"], json!("LLM Tags"));
+    assert_eq!(tab_labels(&session), vec!["Session", "Project", "AoE"]);
+    assert_eq!(open_tab(&session), "Session");
+    // The strip is one row of buttons, not a list: three tabs side by side at the
+    // top, each a `columns` cell, and the open one is the host's primary action.
+    let strip = pane_blocks(&session);
+    let buttons: Vec<&Value> = strip
+        .iter()
+        .filter(|block| block["method"] == json!("pane.tab"))
+        .collect();
+    assert_eq!(buttons.len(), 3, "{session}");
+    assert!(
+        buttons.iter().all(|block| block["kind"] == json!("action")),
+        "a tab is a button: {buttons:?}"
+    );
+    // Every button's tooltip says what its level holds, in the same words, so the
+    // strip answers "what have I set here" without opening the tab.
+    for label in ["Session", "Project", "AoE"] {
+        let tooltip = buttons
+            .iter()
+            .find(|block| block["label"] == json!(label))
+            .and_then(|block| block["tooltip"].as_str())
+            .unwrap_or_default()
+            .to_string();
+        assert!(
+            tooltip.contains("0 override(s), 0 hidden"),
+            "{label}: {tooltip}"
+        );
+    }
+    let titles: Vec<&str> = session["blocks"]
         .as_array()
         .expect("blocks")
         .iter()
@@ -1156,23 +1376,13 @@ fn the_three_tabs_split_session_project_and_aoe() {
         .collect();
     assert_eq!(titles, vec!["Activity"], "{session}");
 
-    let project = wire.pane_with(SESSION, "llm_tags_project").clone();
-    assert_eq!(project["payload"]["title"], json!("LLM Tags · Project"));
-    assert_eq!(
-        project["payload"]["icon"],
-        json!("folder-git-2"),
-        "{project}"
-    );
-    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
-    assert_eq!(aoe["payload"]["title"], json!("LLM Tags · AoE"));
-    assert_eq!(aoe["payload"]["icon"], json!("globe"), "{aoe}");
-    // One icon per level: the three dock tabs are told apart at a glance, so no
-    // two of them may share a glyph.
-    let icons: std::collections::BTreeSet<&str> = [&session, &project, &aoe]
-        .into_iter()
-        .map(|pane| pane["payload"]["icon"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(icons.len(), 3, "each level gets its own icon: {icons:?}");
+    let project = wire.pane_tab(SESSION, "project");
+    assert_eq!(open_tab(&project), "Project");
+    let aoe = wire.pane_tab(SESSION, "aoe");
+    assert_eq!(open_tab(&aoe), "AoE");
+    // Back to the session tab: that is where a tag's origin is read.
+    let session = wire.pane_tab(SESSION, "session");
+    assert_eq!(open_tab(&session), "Session");
 
     // A project default for one checkout: the session in it picks it up, the
     // session in the other checkout keeps the settings' value.
@@ -1241,11 +1451,14 @@ fn the_three_tabs_split_session_project_and_aoe() {
         Value::Null,
         "{one_page}"
     );
-    let project = wire.pane_with(SESSION, "llm_tags_project").clone();
-    assert_eq!(
-        project["payload"]["footer"]["value"],
-        json!("2 override(s), 1 hidden")
-    );
+    let project = wire.pane_tab(SESSION, "project");
+    assert_eq!(project["footer"]["value"], json!("2 override(s), 1 hidden"));
+    // The strip says the same thing the footer does, one row up: a closed tab is
+    // not a question mark.
+    assert!(tab_button(&project, "Project")["tooltip"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("2 override(s), 1 hidden"));
     let project_rows = pane_rows(&project);
     assert_eq!(pane_row(&project_rows, "cost")["value"], json!("(hidden)"));
     assert_eq!(
@@ -1275,11 +1488,12 @@ fn the_three_tabs_split_session_project_and_aoe() {
             "{id}"
         );
     }
-    let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
-    assert_eq!(
-        aoe["payload"]["footer"]["value"],
-        json!("1 override(s), 0 hidden")
-    );
+    let aoe = wire.pane_tab(SESSION, "aoe");
+    assert_eq!(aoe["footer"]["value"], json!("1 override(s), 0 hidden"));
+    assert!(tab_button(&aoe, "AoE")["tooltip"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("1 override(s), 0 hidden"));
     assert_eq!(
         pane_row(&pane_rows(&aoe), "owner")["badges"][0]["text"],
         json!("AoE")

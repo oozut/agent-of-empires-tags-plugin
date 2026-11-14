@@ -111,8 +111,26 @@ pub const DEFAULT_KIND: &str = "header";
 /// a field (`tags["team"]`) instead of splitting a string and guessing where a
 /// value starts. `csv` is the M0 flat form, kept for consumers that already parse
 /// it and for values a JSON object would not carry (a bare header, a shell line).
-pub const FORMATS: [&str; 2] = ["json", "csv"];
+/// `json_strings` is that same object with every value spelled as a string, for a
+/// consumer whose own schema says `string → string` — Databricks AI Gateway's
+/// request tags, which reject a number where a string is required.
+pub const FORMATS: [&str; 3] = ["json", "csv", "json_strings"];
 pub const DEFAULT_FORMAT: &str = "json";
+
+/// The header Databricks AI Gateway reads its request tags from. The value must
+/// be a JSON object of string keys to string values; the gateway logs it to the
+/// `request_tags` column of its usage and inference tables.
+pub const DATABRICKS_HEADER: &str = "Databricks-Ai-Gateway-Request-Tags";
+
+/// The header families the plugin knows by name (`request_tag_header`). The
+/// choice names the one header that carries the whole tag set: `aoe` is this
+/// plugin's own (`X-AoE-Tags`), `databricks` is the AI Gateway's request tags,
+/// and `custom` is whatever name the operator types in
+/// `request_tag_header_name`. A vendor joins this list by being one more arm of
+/// [`payload_target`], not by a second switch.
+pub const HEADER_PRESETS: [&str; 3] = ["aoe", "databricks", "custom"];
+pub const DEFAULT_HEADER_PRESET: &str = "aoe";
+pub const CUSTOM_HEADER_PRESET: &str = "custom";
 
 /// One place the tag set is delivered to: a request header, a query parameter on
 /// the provider URL, or a JSON field in the request body.
@@ -219,6 +237,40 @@ pub fn default_targets() -> Vec<Target> {
     ]
 }
 
+/// The target one `request_tag_header` choice names, or `None` when a custom
+/// choice has no usable name. `aoe` is the built-in row
+/// [`default_targets`] already carries, so it is returned as that same target.
+pub fn payload_target(preset: &str, custom_name: &str) -> Option<Target> {
+    match preset {
+        // `json_strings` because the gateway reads a `string → string` map.
+        "databricks" => Some(
+            Target::new(
+                DATABRICKS_HEADER,
+                "",
+                &derive_env_var_for(DEFAULT_KIND, DATABRICKS_HEADER),
+            )
+            .with_format("json_strings"),
+        ),
+        CUSTOM_HEADER_PRESET => {
+            let name = custom_name.trim();
+            if name.is_empty() || !valid_header_name(name) {
+                return None;
+            }
+            Some(Target::new(
+                name,
+                "",
+                &derive_env_var_for(DEFAULT_KIND, name),
+            ))
+        }
+        _ => Some(Target::new(DEFAULT_HEADER, "", "AOE_LLM_TAGS")),
+    }
+}
+
+/// The Databricks AI Gateway's request-tag header, as a target.
+pub fn databricks_target() -> Target {
+    payload_target("databricks", "").expect("the gateway target needs no name")
+}
+
 /// Validated settings. Malformed rows are dropped with a warning, never fatal.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
@@ -289,7 +341,8 @@ impl Settings {
         let mut warns = warnings;
         let tags = parse_static_tags(table.get("tags"), &mut warns);
         let tags_file = parse_tags_file(table.get("tags_file"), &mut warns);
-        let targets = parse_targets(table, &mut warns);
+        let (mut targets, written) = parse_targets(table, &mut warns);
+        apply_header_preset(&mut targets, written, table, &mut warns);
         let rules = parse_rules(table.get("rules"), &mut warns);
 
         let mut tagging = table
@@ -1302,6 +1355,22 @@ pub fn payload_json(payload: &Payload) -> String {
     Value::Object(map).to_string()
 }
 
+/// The payload as a compact JSON object whose values are all strings — what a
+/// consumer that documents a `string → string` map reads. A tag written
+/// `cost:=1.5` is a JSON number in the payload; here it goes out as `"1.5"`, so
+/// the object keeps the shape the consumer promised to accept.
+pub fn payload_json_strings(payload: &Payload) -> String {
+    let mut map = serde_json::Map::new();
+    for (key, value) in payload {
+        let text = match value {
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        map.insert(key.clone(), Value::String(text));
+    }
+    Value::Object(map).to_string()
+}
+
 /// The value one target sends: its own template when it has one, else the
 /// configured format. Unknown fields in a template are returned for reporting.
 pub fn target_value(
@@ -1314,6 +1383,9 @@ pub fn target_value(
     }
     if target.format == "csv" {
         return (fields.get("tags").cloned().unwrap_or_default(), Vec::new());
+    }
+    if target.format == "json_strings" {
+        return (payload_json_strings(payload), Vec::new());
     }
     (payload_json(payload), Vec::new())
 }
@@ -2298,8 +2370,13 @@ pub fn render_headers(
         let (mut value, missing) = target_value(header, &payload, &fields);
         // A literal token is the session's hand-written value: it replaces the
         // payload a template-less target would render, and leaves a target that
-        // names its own field (`{session_id}`) alone.
-        if !configured_token.is_empty() && header.template.trim().is_empty() {
+        // names its own field (`{session_id}`) alone. A `json_strings` target is
+        // the exception — the token is not a `string → string` object, so the
+        // target keeps rendering its own payload.
+        if !configured_token.is_empty()
+            && header.template.trim().is_empty()
+            && header.format != "json_strings"
+        {
             value = configured_token.clone();
         }
         if !missing.is_empty() {
@@ -2356,7 +2433,10 @@ pub fn hook_lines(resolved: &[ResolvedHeader]) -> Vec<String> {
 
 // --- settings normalisation -------------------------------------------------
 
-fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target> {
+/// The configured target rows, and whether the user wrote them. `false` means
+/// the built-in set, which a `request_tag_header` choice may replace; a list the
+/// user wrote is theirs to shape, so a choice only adds to it.
+fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> (Vec<Target>, bool) {
     // `targets` is the M1 shape; `headers` is the M0 name, read as a header target.
     let legacy = table.get("targets").is_none();
     let rows = if legacy {
@@ -2365,14 +2445,14 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
         table.get("targets")
     };
     let Some(value) = rows else {
-        return default_targets();
+        return (default_targets(), false);
     };
     let Some(rows) = value.as_array() else {
         warnings.push(format!(
             "settings: {key} is not an array of tables; using the built-in target set",
             key = if legacy { "headers" } else { "targets" }
         ));
-        return default_targets();
+        return (default_targets(), false);
     };
     let label = if legacy { "headers" } else { "targets" };
     let mut targets = Vec::new();
@@ -2537,7 +2617,68 @@ fn parse_targets(table: &toml::Table, warnings: &mut Vec<String>) -> Vec<Target>
             format,
         });
     }
-    targets
+    (targets, true)
+}
+
+/// Apply `request_tag_header`: the choice names the one header that carries the
+/// whole tag set.
+///
+/// It replaces the built-in payload row rather than sitting beside it, because
+/// the choice is a decision about the name, not another destination — a session
+/// that tags for Databricks should not also carry this plugin's own header. A
+/// list the user wrote is left intact (the choice is added in front of it), and
+/// a row already naming that header wins outright: an explicit row is a
+/// decision, and a dropdown must not overrule it.
+fn apply_header_preset(
+    targets: &mut Vec<Target>,
+    written: bool,
+    table: &toml::Table,
+    warnings: &mut Vec<String>,
+) {
+    let preset = match table.get("request_tag_header") {
+        None => return,
+        Some(toml::Value::String(text)) => text.trim().to_string(),
+        Some(other) => {
+            warnings.push(format!(
+                "settings: request_tag_header={} is not a header choice; using {}",
+                render_toml_scalar(other),
+                DEFAULT_HEADER_PRESET
+            ));
+            return;
+        }
+    };
+    if preset == DEFAULT_HEADER_PRESET {
+        return;
+    }
+    if !HEADER_PRESETS.contains(&preset.as_str()) {
+        warnings.push(format!(
+            "settings: request_tag_header {preset:?} is not one of {}; using {}",
+            HEADER_PRESETS.join(", "),
+            DEFAULT_HEADER_PRESET
+        ));
+        return;
+    }
+    let custom = table
+        .get("request_tag_header_name")
+        .and_then(toml::Value::as_str)
+        .unwrap_or_default();
+    let Some(target) = payload_target(&preset, custom) else {
+        warnings.push(format!(
+            "settings: request_tag_header = {CUSTOM_HEADER_PRESET} needs a header name in \
+             request_tag_header_name (letters, digits and `-`); using {DEFAULT_HEADER_PRESET}"
+        ));
+        return;
+    };
+    if targets
+        .iter()
+        .any(|row| row.name.eq_ignore_ascii_case(&target.name))
+    {
+        return;
+    }
+    if !written {
+        targets.retain(|row| !row.name.eq_ignore_ascii_case(DEFAULT_HEADER));
+    }
+    targets.insert(0, target);
 }
 
 /// Static tags every session carries, merged in front of the rule matches.
@@ -3607,6 +3748,202 @@ mod tests {
             "{:?}",
             parsed.warnings
         );
+    }
+
+    /// Resolves one launch from a settings table, with no aoe and no git: the
+    /// zero timeout keeps every subprocess out of the test.
+    fn headers_for(table: &str) -> (Vec<ResolvedHeader>, Vec<String>) {
+        let parsed = Settings::from_table(&table.parse().unwrap(), Vec::new());
+        let mut facts = facts();
+        let env = Env::new(Vec::<(&str, &str)>::new());
+        let (resolved, render_warnings, _tags) = render_headers(
+            &parsed,
+            &mut facts,
+            None,
+            &env,
+            std::time::Duration::from_millis(0),
+        );
+        let mut warnings = parsed.warnings;
+        warnings.extend(render_warnings);
+        (resolved, warnings)
+    }
+
+    fn header_value<'a>(resolved: &'a [ResolvedHeader], name: &str) -> Option<&'a str> {
+        resolved
+            .iter()
+            .find(|item| item.header == name)
+            .map(|item| item.value.as_str())
+    }
+
+    #[test]
+    fn the_payload_header_is_the_plugins_own_until_another_is_named() {
+        let (resolved, _warnings) = headers_for("tags = [\"team:core\"]\n");
+        assert!(
+            header_value(&resolved, DATABRICKS_HEADER).is_none(),
+            "a session that talks to another provider must not carry one vendor's header: {resolved:?}"
+        );
+        let payload: Value =
+            serde_json::from_str(header_value(&resolved, DEFAULT_HEADER).expect("the payload"))
+                .expect("JSON");
+        assert_eq!(payload["team"], serde_json::json!("core"), "{payload}");
+    }
+
+    #[test]
+    fn naming_databricks_makes_its_header_the_payload_header() {
+        let (resolved, _warnings) = headers_for(
+            "request_tag_header = \"databricks\"\ntags = [\"team:core\", \"feature:billing\"]\n",
+        );
+        assert_eq!(
+            resolved.first().map(|item| item.header.as_str()),
+            Some(DATABRICKS_HEADER),
+            "the named header carries the payload: {resolved:?}"
+        );
+        assert!(
+            header_value(&resolved, DEFAULT_HEADER).is_none(),
+            "the choice names the header, it does not add a second one: {resolved:?}"
+        );
+        let value = header_value(&resolved, DATABRICKS_HEADER).expect("the header");
+        let parsed: Value = serde_json::from_str(value).expect("the header is JSON");
+        let object = parsed.as_object().expect("a JSON object");
+        assert!(
+            object.values().all(Value::is_string),
+            "the gateway reads a string→string map: {value}"
+        );
+        assert_eq!(object["team"], serde_json::json!("core"));
+        assert_eq!(object["feature"], serde_json::json!("billing"));
+        assert_eq!(object["session_id"], serde_json::json!("cf11af87da7e4bf0"));
+    }
+
+    #[test]
+    fn a_json_typed_tag_reaches_databricks_as_a_string() {
+        // A settings tag cannot hold quotes, so `:=` reaches for numbers and
+        // booleans; a list or object arrives through a `tags_file`, and the same
+        // spelling applies there.
+        let (resolved, _warnings) = headers_for(
+            "request_tag_header = \"databricks\"\ntags = ['cost:=1.5', 'canary:=true']\n",
+        );
+        let value = header_value(&resolved, DATABRICKS_HEADER).expect("the header");
+        let parsed: Value = serde_json::from_str(value).expect("JSON");
+        assert_eq!(parsed["cost"], serde_json::json!("1.5"), "{value}");
+        assert_eq!(parsed["canary"], serde_json::json!("true"), "{value}");
+
+        // The plugin's own header is the one that keeps the JSON types.
+        let (own, _warnings) = headers_for("tags = ['cost:=1.5']\n");
+        let payload: Value =
+            serde_json::from_str(header_value(&own, DEFAULT_HEADER).expect("the payload"))
+                .expect("JSON");
+        assert_eq!(payload["cost"], serde_json::json!(1.5), "{payload}");
+    }
+
+    #[test]
+    fn a_custom_choice_uses_the_name_it_was_given() {
+        let (resolved, _warnings) = headers_for(
+            "request_tag_header = \"custom\"\n\
+             request_tag_header_name = \"X-Monitoring-Tags\"\n\
+             tags = [\"team:core\"]\n",
+        );
+        let row = resolved.first().expect("a target");
+        assert_eq!(row.header, "X-Monitoring-Tags");
+        assert_eq!(row.env_var, "AOE_HDR_X_MONITORING_TAGS");
+        assert!(
+            header_value(&resolved, DEFAULT_HEADER).is_none(),
+            "one payload header, named: {resolved:?}"
+        );
+        let payload: Value = serde_json::from_str(&row.value).expect("JSON");
+        assert_eq!(payload["team"], serde_json::json!("core"), "{payload}");
+    }
+
+    #[test]
+    fn a_custom_choice_without_a_usable_name_keeps_the_plugin_header() {
+        for name in ["", "not a header"] {
+            let (resolved, warnings) = headers_for(&format!(
+                "request_tag_header = \"custom\"\nrequest_tag_header_name = {name:?}\n"
+            ));
+            assert!(
+                header_value(&resolved, DEFAULT_HEADER).is_some(),
+                "{name:?}: {resolved:?}"
+            );
+            assert!(
+                warnings
+                    .iter()
+                    .any(|warning| warning.contains("needs a header name")),
+                "{name:?}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unknown_header_choice_is_reported_not_guessed_at() {
+        let (resolved, warnings) = headers_for("request_tag_header = \"splunk\"\n");
+        assert!(
+            header_value(&resolved, DEFAULT_HEADER).is_some(),
+            "{resolved:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("is not one of aoe, databricks, custom")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_row_the_operator_wrote_for_the_gateway_header_wins_over_the_choice() {
+        let (resolved, _warnings) = headers_for(
+            "request_tag_header = \"databricks\"\n\
+             [[targets]]\n\
+             name = \"Databricks-Ai-Gateway-Request-Tags\"\n\
+             env_var = \"MY_DATABRICKS_TAGS\"\n\
+             template = \"{tags_json}\"\n",
+        );
+        let rows: Vec<&ResolvedHeader> = resolved
+            .iter()
+            .filter(|item| item.header.eq_ignore_ascii_case(DATABRICKS_HEADER))
+            .collect();
+        assert_eq!(rows.len(), 1, "one header, not two: {resolved:?}");
+        assert_eq!(rows[0].env_var, "MY_DATABRICKS_TAGS", "the user's row kept");
+    }
+
+    #[test]
+    fn a_written_target_list_keeps_its_rows_when_a_header_is_named() {
+        // A list the operator wrote is theirs: the choice adds the header, it
+        // does not delete a row from under them.
+        let (resolved, _warnings) = headers_for(
+            "request_tag_header = \"databricks\"\n\
+             [[targets]]\n\
+             name = \"X-AoE-Tags\"\n\
+             env_var = \"AOE_LLM_TAGS\"\n",
+        );
+        assert!(
+            header_value(&resolved, DEFAULT_HEADER).is_some(),
+            "the written row survives: {resolved:?}"
+        );
+        assert!(
+            header_value(&resolved, DATABRICKS_HEADER).is_some(),
+            "and the named header is added: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn a_token_does_not_replace_the_gateway_map() {
+        // The token is one hand-written string; the gateway needs an object.
+        let table: toml::Table = "request_tag_header = \"databricks\"\ntags = [\"team:core\"]\n"
+            .parse()
+            .unwrap();
+        let mut parsed = Settings::from_table(&table, Vec::new());
+        parsed.token = "hand-written".to_string();
+        let mut facts = facts();
+        let env = Env::new(Vec::<(&str, &str)>::new());
+        let (resolved, _warnings, _tags) = render_headers(
+            &parsed,
+            &mut facts,
+            None,
+            &env,
+            std::time::Duration::from_millis(0),
+        );
+        let value = header_value(&resolved, DATABRICKS_HEADER).expect("the header");
+        let parsed: Value = serde_json::from_str(value).expect("still an object");
+        assert_eq!(parsed["team"], serde_json::json!("core"), "{value}");
     }
 
     #[cfg(unix)]

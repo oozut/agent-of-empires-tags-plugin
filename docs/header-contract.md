@@ -78,11 +78,19 @@ tag, it cannot take a session field: `feature_tag = "session:mine"` is dropped w
 
 A target chooses **where** the payload travels and **what** of it travels there.
 
+Which header carries the whole payload is itself one setting, `request_tag_header`: `aoe` (this
+plugin's `X-AoE-Tags`, the default), `databricks` (`Databricks-Ai-Gateway-Request-Tags`) or
+`custom` with a name in `request_tag_header_name`. It is `per_project`, so a project that reports
+to one gateway is named there while the AoE-wide value stays the default — the choice replaces the
+built-in payload row rather than adding a second header, because naming a header is a decision
+about the name. A row you write in `targets` is left alone, and a row naming that header wins. It
+is deliberately not per session: a session says what it is *doing*, not where the numbers go.
+
 | Field | Meaning |
 |---|---|
 | `kind` | `header`, `query` or `body`. A harness that cannot carry a kind is refused rather than written. |
 | `name` | Wire name: a header name, a query parameter, or the body field to set. |
-| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects. A field holding a comma, a quote or a line break is quoted (`"team:x,org:evil"`, internal quotes doubled), so a value cannot forge a pair the sender never wrote. |
+| `format` | `json` (default) sends the whole payload object; `csv` sends the flat `team:core,feature:billing` list an older consumer expects; `json_strings` sends that same object with every value spelled as a string, for a consumer whose own schema says `string → string` (Databricks AI Gateway request tags). A field holding a comma, a quote or a line break is quoted (`"team:x,org:evil"`, internal quotes doubled), so a value cannot forge a pair the sender never wrote. |
 | `template` | Overrides the format for one target and picks the slice itself: `{tags}`, `{tags_json}`, `{payload_json}`, `{tags_b64}`, or one field such as `{feature}`. |
 | `literal` | Used instead of the rendered template, for a harness that does not expand `$NAME` in that position. Not a bypass: it is cleaned like every other value (control characters dropped, surrounding whitespace trimmed) and capped at 800 bytes where the settings are parsed, because a newline written as-is added a `NAME=value` line nobody set and a carriage return broke an `env_only` header list. |
 | `env_var` | Variable that carries the rendered value at launch: `AOE_HDR_` / `AOE_QRY_` / `AOE_BODY_` + the name in upper snake case (`X-AoE-Tags` → `AOE_HDR_X_AOE_TAGS`); pinnable for a harness whose config already names one. A pinned name has to be one — a letter or `_`, then letters, digits or `_` — or the row is refused: the name travels into `NAME=value` lines and into the shell command an `env_only` harness runs, where a `;` is a second command. |
@@ -212,6 +220,7 @@ rather than tuned to one:
 | Observability / metadata pipeline | Join keys that match the orchestration system's own records; high cardinality is fine here. | `{session_id}`, `{project_slug}`, `{tool}`; optional discrete headers. |
 | Session validation / management | Assert the request belongs to a live session, and let a control plane act on it (quota, pause, revoke). | A discrete `X-AoE-Session` header carrying the full id, plus an optional signed form: `<id>.<hmac>`, HMAC-SHA256 with a key the consumer is given, truncated to 16 hex. |
 | Policy / routing | Route or restrict by tenant, team or environment. | `{group_slug}`, `{profile}`, or any template the operator writes. |
+| A vendor's own request tags (Databricks AI Gateway) | A JSON object of string keys to string values, in that vendor's header, logged to its own usage tables. | `request_tag_header = "databricks"` makes `Databricks-Ai-Gateway-Request-Tags` the payload header, rendered as `json_strings`; `custom` takes a name of your own, and a row in `targets` for that header wins over the choice. |
 
 Consequences for the plugin: it must support **several headers, discrete values, and an optional
 signature**, and it must not assume the consumer parses a comma list. That is why the header set
@@ -269,14 +278,32 @@ would let a checked-out repository ship the file that configures it.
 
 | Surface | What it does |
 |---|---|
-| Session tab (`llm_tags_session`, `tag`) | This session's tags, each with its origin and the values it would send. A row hides a tag for this session; the git preset and reset sit here too. An **Activity** section offers one row per word in the family this session is pinned to, and names that family, its source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so editing a family changes the next launch, never a running session. |
-| Project tab (`llm_tags_project`, `folder-git-2`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
-| AoE tab (`llm_tags_aoe`, `globe`) | The same rows for every session, with the same operations as the project tab. |
+| Session tab (`llm_tags`, tab `session`) | This session's tags, each with its origin and the values it would send. A row hides a tag for this session; the git preset and reset sit here too. An **Activity** section offers one row per word in the family this session is pinned to, and names that family, its source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so editing a family changes the next launch, never a running session. |
+| Project tab (`llm_tags`, tab `project`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
+| AoE tab (`llm_tags`, tab `aoe`) | The same rows for every session, with the same operations as the project tab. |
+
+The three tabs are one dock entry, not three: the pane `llm_tags` renders a tab strip across the
+top and then the open tab's blocks. The host's pane vocabulary has no tab kind, so the strip is
+three `action` blocks (each with `method: "pane.tab"` and `params: {tab}`), the open one drawn in
+the host's `primary` variant. They carry a label and nothing else: three icons abreast read as three
+unrelated buttons, and the word is what says which level a tab is — a `row` per tab would stack them down the pane, and a tab strip is
+the one thing that must not be a list. `columns` is the only horizontal kind and the host draws it
+as a grid of at most two, so the three buttons are a two-wide grid holding a two-wide grid: they
+land at the left edge, a quarter and a half of the pane, and each is as wide as its label rather
+than its cell. Each button's tooltip says what its level holds of its own (`N override(s), N
+hidden`), so a closed tab is not a question mark; the footer repeats it for the open one.
+
+The dock glyph is the pane's own `tags`, for all three levels: there is one dock entry, so a glyph
+per level would be a glyph per tab it no longer has. A level is told apart by its button's word, not
+by a picture.
+
+The open tab is the worker's own per-session state. A session with no project path has no project
+button, and a click naming it is refused rather than rendered.
 | Session details page (`ui/tags.html`) | The literal token and the harness extension approvals, plus a JSON viewer/editor: the rendered values read-only, and the stored form editable at the session, project or AoE level. `null` hides a key there; removing a key hides the inherited value. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 
 The token is written but never read back into the UI. A surface is told that one is set, and the
-target row, the pane and the session badge say *that* it stands in for the value rather than what
+target row and the pane say *that* it stands in for the value rather than what
 it says: `ui.state.set` payloads are kept by the host and rendered to anyone who can see the
 session, so a secret there would be a secret in a dashboard. `aoe-llm-tags tag --show` prints it in
 the user's own terminal, and the session file that holds it is `0600` in a `0700` directory.

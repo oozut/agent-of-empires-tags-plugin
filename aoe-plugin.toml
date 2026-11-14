@@ -14,21 +14,12 @@ id = "status"
 title = "LLM Tags: status"
 description = "Report the header set this install would send, without starting a session."
 
-[[ui]]
-slot = "row-badge"
-id = "llm_tags_badge"
+# One pane, not three: this session, its project's defaults and the AoE-wide
+# ones are tabs inside it, so the right panel carries a single LLM Tags entry.
 
 [[ui]]
 slot = "pane"
-id = "llm_tags_session"
-
-[[ui]]
-slot = "pane"
-id = "llm_tags_project"
-
-[[ui]]
-slot = "pane"
-id = "llm_tags_aoe"
+id = "llm_tags"
 
 # Session details: the literal token and the harness extension approvals, plus
 # a JSON viewer/editor for the same values the panels show. The page cannot
@@ -111,7 +102,9 @@ a request header, a query parameter on the provider URL, or a JSON field in the 
 
 `kind` is `header`, `query` or `body`; `name` is the header or parameter name.
 `format` decides what the target carries: `json` (the default) sends the whole tag set as
-one object, `csv` sends the flat `team:core,feature:billing` list an older consumer expects.
+one object, `csv` sends the flat `team:core,feature:billing` list an older consumer expects,
+`json_strings` sends that same object with every value spelled as a string (for a consumer whose
+schema says `string → string`, such as the Databricks header the switch below adds).
 
 `template` overrides the format for one target and picks the slice itself: `{tags}` for the
 comma-joined list, `{tags_json}` for the tags alone as JSON, `{payload_json}` for the full
@@ -168,6 +161,45 @@ key = "enabled"
 label = "Enabled"
 type = "bool"
 default = true
+
+[[settings]]
+key = "request_tag_header"
+label = "Header that carries the tags"
+type = "select"
+options = ["aoe", "databricks", "custom"]
+default = "aoe"
+per_project = true
+help = """
+Which header carries the whole tag set. Set it here for every project, or per project on the
+project's own plugin settings page — a project that talks to one gateway can tag for it without
+relabelling every other session.
+
+* `aoe` — this plugin's own `X-AoE-Tags`, the default.
+* `databricks` — `Databricks-Ai-Gateway-Request-Tags`, the header Databricks AI Gateway logs to
+  its `request_tags` column, so usage and cost can be grouped by a session's tags
+  (learn.microsoft.com/azure/databricks/ai-gateway/request-tagging). It is sent as a JSON object
+  of string keys to string values, the shape the gateway documents, so a tag written `cost:=1.5`
+  goes out as `"cost":"1.5"` there while any other target keeps the number.
+* `custom` — the name in `request_tag_header_name`, for a monitoring or chargeback header this
+  plugin does not know yet.
+
+The choice replaces the built-in header rather than adding a second one: naming a header is a
+decision about the name, not another destination. Rows you write yourself in `targets` are left
+alone, and a row naming the same header wins — an explicit row is a decision. Changing the name
+means the harness needs the new mapping once: run `aoe-llm-tags setup` again for each harness.
+"""
+
+[[settings]]
+key = "request_tag_header_name"
+label = "Your own header name"
+type = "string"
+default = ""
+per_project = true
+help = """
+The header name used when `request_tag_header` is `custom`, for example `X-Monitoring-Tags`.
+Letters, digits and `-` (an HTTP header name); the environment variable is derived from it the
+same way every other header's is. Ignored for the `aoe` and `databricks` choices.
+"""
 
 [[settings]]
 key = "rules"
