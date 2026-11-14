@@ -293,6 +293,10 @@ land at the left edge, a quarter and a half of the pane, and each is as wide as 
 than its cell. Each button's tooltip says what its level holds of its own (`N override(s), N
 hidden`), so a closed tab is not a question mark; the footer repeats it for the open one.
 
+The dock glyph is the pane's own `tags`, for all three levels: there is one dock entry, so a glyph
+per level would be a glyph per tab it no longer has. A level is told apart by its button's word, not
+by a picture.
+
 The open tab is the worker's own per-session state. A session with no project path has no project
 button, and a click naming it is refused rather than rendered.
 | Session details page (`ui/tags.html`) | The literal token and the harness extension approvals, plus a JSON viewer/editor: the rendered values read-only, and the stored form editable at the session, project or AoE level. `null` hides a key there; removing a key hides the inherited value. |

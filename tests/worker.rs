@@ -925,6 +925,24 @@ fn the_pane_names_its_own_icon() {
     let pane = wire.pane(SESSION).clone();
     assert_eq!(pane["icon"], json!("tags"), "{pane}");
     assert_eq!(pane["title"], json!("LLM Tags"), "{pane}");
+
+    // One dock entry means one glyph, whichever tab is open: there is no longer a
+    // pane per level for a per-level icon to sit on, so the levels are told apart
+    // by their button's word and no tab button carries a glyph either.
+    for tab in ["session", "project", "aoe"] {
+        let pane = wire.pane_tab(SESSION, tab);
+        assert_eq!(pane["icon"], json!("tags"), "{tab}: {pane}");
+        let blocks = pane_blocks(&pane);
+        let buttons: Vec<&Value> = blocks
+            .iter()
+            .filter(|block| block["method"] == json!("pane.tab"))
+            .collect();
+        assert_eq!(buttons.len(), 3, "{tab}: {pane}");
+        assert!(
+            buttons.iter().all(|block| block.get("icon").is_none()),
+            "{tab}: a tab button carries no glyph: {buttons:?}"
+        );
+    }
 }
 
 /// A reloaded worker owns a fresh UI generation, so the host has already dropped

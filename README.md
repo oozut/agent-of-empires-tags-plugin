@@ -10,8 +10,9 @@ request, including a sandboxed leg via podman) still holds; M2 changed *what* tr
 
 Tags are edited from the **LLM Tags panel** — one entry on the right of the dashboard, with three
 tabs across the top of the pane: **Session**, **Project** (only when the session has a project
-path), and **AoE**. Clicking a tab switches the pane to that level; each tab's tooltip says what
-that level currently holds, and the footer repeats it for the open one. A tag row names where its
+path), and **AoE**. Clicking a tab switches the pane to that level; the buttons carry a label and
+nothing else, so the word is what says which level a tab is — each one's tooltip says what that
+level currently holds, and the footer repeats it for the open one. A tag row names where its
 value came from (`this session`, `project`, `AoE`, `settings`), and the two upper tabs can add,
 hide, restore, copy the session's set upward, or clear that level. The session's detail page adds a JSON viewer/editor for the same
 values, so a whole object can be changed in place without writing one row at a time.
