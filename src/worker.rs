@@ -1006,6 +1006,9 @@ impl Host {
                     "session_id": id,
                     "payload": {
                         "title": "LLM Tags · Session",
+                        // One icon per level, so the three dock tabs stay
+                        // distinguishable when they sit side by side.
+                        "icon": "tag",
                         "default_location": "right",
                         "blocks": blocks,
                         "footer": {
@@ -1032,6 +1035,7 @@ impl Host {
                         "session_id": id,
                         "payload": {
                             "title": "LLM Tags · Project",
+                            "icon": "folder-git-2",
                             "default_location": "right",
                             "blocks": project_blocks,
                             "footer": {
@@ -1071,6 +1075,7 @@ impl Host {
                     "session_id": id,
                     "payload": {
                         "title": "LLM Tags · AoE",
+                        "icon": "globe",
                         "default_location": "right",
                         "blocks": aoe_blocks,
                         "footer": {

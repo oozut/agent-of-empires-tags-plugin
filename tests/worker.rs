@@ -1147,7 +1147,7 @@ fn the_three_tabs_split_session_project_and_aoe() {
     let session = wire.pane(SESSION).clone();
     assert_eq!(session["id"], json!("llm_tags_session"));
     assert_eq!(session["payload"]["title"], json!("LLM Tags · Session"));
-    assert!(session["payload"].get("icon").is_none(), "{session}");
+    assert_eq!(session["payload"]["icon"], json!("tag"), "{session}");
     let titles: Vec<&str> = session["payload"]["blocks"]
         .as_array()
         .expect("blocks")
@@ -1158,10 +1158,21 @@ fn the_three_tabs_split_session_project_and_aoe() {
 
     let project = wire.pane_with(SESSION, "llm_tags_project").clone();
     assert_eq!(project["payload"]["title"], json!("LLM Tags · Project"));
-    assert!(project["payload"].get("icon").is_none(), "{project}");
+    assert_eq!(
+        project["payload"]["icon"],
+        json!("folder-git-2"),
+        "{project}"
+    );
     let aoe = wire.pane_with(SESSION, "llm_tags_aoe").clone();
     assert_eq!(aoe["payload"]["title"], json!("LLM Tags · AoE"));
-    assert!(aoe["payload"].get("icon").is_none(), "{aoe}");
+    assert_eq!(aoe["payload"]["icon"], json!("globe"), "{aoe}");
+    // One icon per level: the three dock tabs are told apart at a glance, so no
+    // two of them may share a glyph.
+    let icons: std::collections::BTreeSet<&str> = [&session, &project, &aoe]
+        .into_iter()
+        .map(|pane| pane["payload"]["icon"].as_str().unwrap_or_default())
+        .collect();
+    assert_eq!(icons.len(), 3, "each level gets its own icon: {icons:?}");
 
     // A project default for one checkout: the session in it picks it up, the
     // session in the other checkout keeps the settings' value.

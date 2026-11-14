@@ -9,7 +9,8 @@ Status: M0 and M1 done, M2 delivering per session, with project and AoE defaults
 request, including a sandboxed leg via podman) still holds; M2 changed *what* travels and *where*.
 
 Tags are edited from the **LLM Tags panel** on the right of the dashboard, in three tabs:
-**Session**, **Project** (only when the session has a project path), and **AoE**. Each row says
+**Session** (`tag`), **Project** (`folder-git-2`, only when the session has a project path), and
+**AoE** (`globe`). Each row says
 where its tag came from (`this session`, `project`, `AoE`, `settings`) and the two upper tabs can
 add, hide, restore, copy the session's set upward, or clear that level. The session's detail page
 adds a JSON viewer/editor for the same values, so a whole object can be changed in place without
