@@ -356,6 +356,26 @@ impl Host {
             .map(str::to_string)
     }
 
+    /// One `ui.state.set`, with a refusal made visible.
+    ///
+    /// A push the host rejects leaves the surface blank, which looks exactly like a
+    /// surface with nothing to say — and the worker is the only party that ever
+    /// learns the difference. So the reason is printed instead of dropped.
+    fn push_ui(&mut self, slot: &str, id: &str, session_id: &str, payload: serde_json::Value) {
+        let result = self.call_host(
+            "ui.state.set",
+            serde_json::json!({
+                "slot": slot,
+                "id": id,
+                "session_id": session_id,
+                "payload": payload,
+            }),
+        );
+        if let Err(why) = result {
+            eprintln!("{session_id}: the host refused `{slot}` `{id}`: {why}");
+        }
+    }
+
     fn call_host(
         &mut self,
         method: &str,
@@ -398,9 +418,11 @@ impl Host {
         }
     }
 
-    /// Push the one surface the plugin renders: the pane. Neither the session
-    /// header nor the dashboard header carries a second copy — a tag's own home is
-    /// the pane, and another would be one more place to keep in step.
+    /// Push the surfaces the plugin renders: the pane, and the session row's flag.
+    /// The row carries the activity and nothing else — a tag list in a narrow
+    /// column is noise — and `activity_badge` decides whether it is there at all
+    /// and how much of it travels. Neither the session header nor the dashboard
+    /// header carries a third copy: a tag's own home is the pane.
     ///
     /// Called on every host event and after every edit, so a click never leaves a
     /// stale pane behind. Everything a surface shows is derived from the same
@@ -450,6 +472,9 @@ impl Host {
         let rules_val = setting(self, "rules");
         let session_tagging_val = setting(self, "session_tagging");
         let harness_extension_val = setting(self, "harness_extension");
+        // The row's flag is a display choice, so it is read here like the other
+        // global settings and validated by the same parser every surface uses.
+        let activity_badge_val = setting(self, "activity_badge");
         // These are per_project; fetch the global value once as a fallback for a
         // session with no project, or for a key the project did not set.
         let per_project_global = [
@@ -470,6 +495,7 @@ impl Host {
             ("targets", targets_val),
             ("rules", rules_val),
             ("session_tagging", session_tagging_val),
+            ("activity_badge", activity_badge_val),
             ("harness_extension", harness_extension_val.clone()),
         ] {
             if let Some(value) = value {
@@ -645,6 +671,33 @@ impl Host {
                     KEY = crate::activity::KEY
                 );
             }
+            // The row's flag is the activity and nothing else: what a session is
+            // *doing* is the one thing worth reading in a narrow column, while a
+            // tag list there is noise the pane already carries in full. A mode of
+            // `off`, or a session with no activity (a typo included), pushes an
+            // empty `items` list — the host renders nothing, and a flag pushed
+            // before a setting change cannot be left behind.
+            let badge_mode = snap.settings.activity_badge.as_str();
+            let badge_payload = match (badge_mode, activity) {
+                ("off", _) | (_, None) => serde_json::json!({"items": []}),
+                (mode, Some(activity)) => {
+                    let mut item = serde_json::json!({
+                        "tone": activity.tone,
+                        "tooltip": format!("activity: {}", activity.key),
+                    });
+                    // `icon` is the narrow form and `text` the one a terminal can
+                    // draw: the host drops an icon it cannot render, so `both` is
+                    // safe everywhere and the word is the fallback.
+                    if mode != "icon" {
+                        item["text"] = serde_json::json!(activity.label);
+                    }
+                    if mode != "text" {
+                        item["icon"] = serde_json::json!(activity.icon);
+                    }
+                    serde_json::json!({"items": [item]})
+                }
+            };
+            self.push_ui("row-badge", "llm_tags_badge", &id, badge_payload);
             for tag in &snap.tags {
                 let (origin, origin_text, origin_tone) = if session_keys.contains(&tag.key) {
                     ("session", "this session", "info")
@@ -994,25 +1047,22 @@ impl Host {
                 )),
                 _ => pane_blocks.append(&mut session_blocks),
             }
-            let _ = self.call_host(
-                "ui.state.set",
+            self.push_ui(
+                "pane",
+                "llm_tags",
+                &id,
                 serde_json::json!({
-                    "slot": "pane",
-                    "id": "llm_tags",
-                    "session_id": id,
-                    "payload": {
-                        "title": "LLM Tags",
-                        // The dock tab and the header toggle draw this: without it the
-                        // host falls back to its generic puzzle piece, which says
-                        // nothing about what the pane holds.
-                        "icon": "tags",
-                        "default_location": "right",
-                        "blocks": pane_blocks,
-                        "footer": {
-                            "text": footer.0,
-                            "value": footer.1,
-                        },
-                    }
+                    "title": "LLM Tags",
+                    // The dock tab and the header toggle draw this: without it the
+                    // host falls back to its generic puzzle piece, which says
+                    // nothing about what the pane holds.
+                    "icon": "tags",
+                    "default_location": "right",
+                    "blocks": pane_blocks,
+                    "footer": {
+                        "text": footer.0,
+                        "value": footer.1,
+                    },
                 }),
             );
         }

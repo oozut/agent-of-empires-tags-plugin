@@ -278,6 +278,7 @@ would let a checked-out repository ship the file that configures it.
 
 | Surface | What it does |
 |---|---|
+| Session row (`llm_tags_badge`, slot `row-badge`) | The activity this session is in, as a flag beside its name in the sidebar: the label, lucide icon and tone its family gives it. `activity_badge` chooses how much of that travels — `both` (the default), `text`, `icon`, or `off` — so a user who wants the row clear gets an empty flag, not a stale one. Only the activity: ordinary tags stay in the pane, where a row can say where each came from. A session with no activity, or a misspelt one, gets no flag. |
 | Session tab (`llm_tags`, tab `session`) | This session's tags, each with its origin and the values it would send. A row hides a tag for this session; the git preset and reset sit here too. An **Activity** section offers one row per word in the family this session is pinned to, and names that family, its source (`built-in`, `settings`, `repo <file>`) and the other families defined here — so editing a family changes the next launch, never a running session. |
 | Project tab (`llm_tags`, tab `project`) | The same rows for this checkout's defaults, shown only when the session has a project path: hide/restore a tag, choose a default activity, include the standard git information, copy this session's set upward, or clear the level. |
 | AoE tab (`llm_tags`, tab `aoe`) | The same rows for every session, with the same operations as the project tab. |
@@ -299,13 +300,21 @@ by a picture.
 
 The open tab is the worker's own per-session state. A session with no project path has no project
 button, and a click naming it is refused rather than rendered.
+
+The row flag is the one fact the sidebar repeats, and it is the one worth repeating: what a session
+is *doing* is what a glance at the list is for, while the tags themselves are a set that needs the
+pane's room to say where each one came from. It was removed once, when the user asked for a clear
+row, so it comes back as a choice rather than a default: `activity_badge = "off"` publishes an
+empty `items` list, which is how the host is told to draw nothing. The tone travels in every mode,
+because the tone is what the flag is for; a mode that drops the word keeps the activity's key in
+the tooltip, and the terminal UI draws the word regardless — it has no icons to draw instead.
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 
 Two things used to live on a page and no longer have one: the literal token (`aoe-llm-tags tag
 --token`, `--show`) and the harness extension approvals (`aoe-llm-tags extension enable|disable`,
-which prints the disclosure and takes the digest it printed). The plugin declares a pane and no
-`page`, because the host draws a dashboard-header button for every declared page and a page here
-would be a second LLM Tags entry offering what the pane already shows.
+which prints the disclosure and takes the digest it printed). The plugin declares a pane and a row
+flag and no `page`, because the host draws a dashboard-header button for every declared page and a
+page here would be a second LLM Tags entry offering what the pane already shows.
 
 The token is written but never read back into the UI. The pane is told that one is set, and its
 target row says *that* it stands in for the value rather than what it says: `ui.state.set` payloads

@@ -453,6 +453,7 @@ mod tests {
             activity_families: Vec::new(),
             activity_file: crate::activity::DEFAULT_FILE.to_string(),
             activity_repo: None,
+            activity_badge: crate::resolver::DEFAULT_ACTIVITY_BADGE.to_string(),
             warnings: Vec::new(),
         }
     }
