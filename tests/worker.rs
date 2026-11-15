@@ -3,8 +3,8 @@
 //! `src/worker.rs`'s own tests cover a single line in isolation. These start the
 //! binary the host starts — no arguments, newline-delimited JSON-RPC on stdio —
 //! answer the host calls it makes (`sessions.list`, `config.get`) and read the
-//! state it pushes back. That is the only way to see the tick box, the page
-//! payload, the file behind them and the `references` verb agree, because the
+//! state it pushes back. That is the only way to see a tab button, the pane it
+//! re-renders, the file behind both and the `references` verb agree, because the
 //! agreement is what a user clicks on.
 
 mod common;
@@ -25,6 +25,7 @@ const OTHER: &str = "0123456789abcdef";
 const STATUS: &str = "plugin.dev.oozut.llm-tags.status";
 
 /// One target naming a git fact, so every render in this file reads the checkout.
+const BRANCH_HEADER: &str = "X-AoE-Branch";
 const BRANCH_TARGET: &str =
     "targets = [ { header = \"X-AoE-Branch\", template = \"{git.branch}\", env_var = \"AOE_HDR_BRANCH\" } ]\n";
 
@@ -94,7 +95,7 @@ struct Wire {
     rows: Vec<Value>,
     /// Every host call the worker made, in order: `(method, params)`.
     calls: Vec<(String, Value)>,
-    /// Every `ui.state.set` it pushed, so a test can read the pane as well as the page.
+    /// Every `ui.state.set` it pushed: the pane, and nothing else.
     pushes: Vec<Value>,
     log: Arc<Mutex<String>>,
     next_id: i64,
@@ -163,14 +164,24 @@ impl Wire {
     /// the reload. Every test starts from that publish, and `pushes` keeps it, so a
     /// test can still assert it happened.
     fn drain_startup(&mut self) {
+        // A workspace with no sessions has no pane to push, so "quiet" is the end
+        // of the publish as much as a push is.
         for _ in 0..400 {
-            if self.pushes.iter().any(|p| p["slot"] == json!("page")) {
-                return;
+            match self.lines.recv_timeout(Duration::from_millis(300)) {
+                Ok(line) => {
+                    if line.get("method").is_some() {
+                        if line["method"] == "ui.state.set" {
+                            self.pushes.push(line["params"].clone());
+                        }
+                        let answer = self.answer(&line);
+                        self.send(&answer);
+                    }
+                }
+                Err(_) => return,
             }
-            self.next_line();
         }
         panic!(
-            "the worker never published at startup; stderr:\n{}",
+            "the worker never finished publishing at startup; stderr:\n{}",
             self.log()
         );
     }
@@ -266,11 +277,9 @@ impl Wire {
     }
 
     /// Click a tab and read what the pane renders for it. The click is a worker
-    /// method like any other, and the republish after it is the answer — read to
-    /// the page, the last push of one publish, so the next call starts on empty.
+    /// method like any other, and the republish after it is the answer.
     fn pane_tab(&mut self, session: &str, tab: &str) -> Value {
         self.notify("pane.tab", json!({"tab": tab, "session_id": session}));
-        let mut rendered: Option<Value> = None;
         for _ in 0..400 {
             let line = self.next_line();
             if line["method"] == json!("ui.state.set")
@@ -278,13 +287,7 @@ impl Wire {
                 && line["params"]["id"] == json!("llm_tags")
                 && line["params"]["session_id"] == json!(session)
             {
-                rendered = Some(line["params"]["payload"].clone());
-            } else if line["method"] == json!("ui.state.set")
-                && line["params"]["slot"] == json!("page")
-            {
-                if let Some(payload) = rendered {
-                    return payload;
-                }
+                return line["params"]["payload"].clone();
             }
         }
         panic!(
@@ -303,15 +306,21 @@ impl Wire {
             .join("\n")
     }
 
-    /// Read pushes until the editor page's payload arrives, answering each call.
-    fn wait_page(&mut self) -> Value {
+    /// Read pushes until the pane for a session arrives, answering each call.
+    fn wait_pane(&mut self, session: &str) -> Value {
         for _ in 0..400 {
             let line = self.next_line();
-            if line["method"] == "ui.state.set" && line["params"]["slot"] == "page" {
+            if line["method"] == "ui.state.set"
+                && line["params"]["slot"] == json!("pane")
+                && line["params"]["session_id"] == json!(session)
+            {
                 return line["params"]["payload"].clone();
             }
         }
-        panic!("the worker never pushed a page; stderr:\n{}", self.log());
+        panic!(
+            "the worker never pushed a pane for {session}; stderr:\n{}",
+            self.log()
+        );
     }
 }
 
@@ -348,14 +357,45 @@ fn overrides_path(sandbox: &Sandbox, session: &str) -> PathBuf {
     llm_tags::session_tags::path(&app_dir, session)
 }
 
-fn tags_of(session: &Value) -> Vec<Value> {
-    session["tags"].as_array().cloned().unwrap_or_default()
+/// The session tab's tag rows: the pane's answer to "what does this session
+/// carry, and where did each entry come from". A row's label is the key, except
+/// for the activity row, which names what the session is doing instead — so
+/// `tag(rows, "activity")` finds it by the method that edits it, not the label.
+fn pane_tags(pane: &Value) -> Vec<Value> {
+    pane_rows(pane)
+        .into_iter()
+        .filter(|row| row["method"] == json!("tag.remove") && row["params"]["origin"].is_string())
+        .collect()
 }
 
+/// One tag row by key: the session tab's rows are keyed by label, except the
+/// activity row, which names what the session is doing — so an activity lookup
+/// goes through the method that edits it.
 fn tag<'a>(tags: &'a [Value], key: &str) -> &'a Value {
     tags.iter()
-        .find(|tag| tag["key"] == json!(key))
+        .find(|row| {
+            row["label"] == json!(key)
+                || (row["params"]["key"] == json!(key) && row["params"]["origin"].is_string())
+        })
         .unwrap_or(&Value::Null)
+}
+
+/// Where a tag row says its entry came from, in the pane's own words.
+fn origin_of(row: &Value) -> String {
+    row["badges"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The header names the "What this session sends" section lists, top to bottom:
+/// a target row is the only row with no method (it is a read-out, not a button).
+fn pane_targets(pane: &Value) -> Vec<String> {
+    pane_rows(pane)
+        .into_iter()
+        .filter(|row| row.get("method").is_none() && row["badges"].is_null())
+        .map(|row| row["label"].as_str().unwrap_or_default().to_string())
+        .collect()
 }
 
 /// Every block in a pane, in render order, however deeply nested — the tab strip
@@ -419,7 +459,7 @@ fn pane_row(rows: &[Value], label: &str) -> Value {
 // --- the tests --------------------------------------------------------------
 
 #[test]
-fn ticking_the_git_box_writes_the_sample_and_the_page_matches_the_verb() {
+fn ticking_the_git_box_writes_the_sample_and_the_pane_renders_it() {
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
     sandbox.write_config(&settings_config(BRANCH_TARGET, ""));
@@ -429,82 +469,47 @@ fn ticking_the_git_box_writes_the_sample_and_the_page_matches_the_verb() {
         "tag.preset",
         json!({"preset": "git", "applied": true, "session_id": SESSION}),
     );
-    let page = wire.wait_page();
+    let pane = wire.wait_pane(SESSION);
 
-    let session = &page["sessions"][0];
-    assert_eq!(session["id"], json!(SESSION));
-    let tags = tags_of(session);
-    let keys: Vec<&str> = tags
-        .iter()
-        .map(|tag| tag["key"].as_str().unwrap_or_default())
-        .collect();
-    assert_eq!(keys, vec!["vcs", "git.branch", "git.commit", "git.tag"]);
-
-    // The editor shows the entry as stored — editing a rendered branch would
-    // freeze it — while the pane and the target show what is sent.
+    // The pane renders the set: `git.branch` is the branch, not the reference it
+    // was written as.
+    let rows = pane_rows(&pane);
     let branch = git(&repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let commit = git(&repo, &["rev-parse", "--short", "HEAD"]);
-    assert_eq!(tag(&tags, "vcs")["value"], json!("git"));
-    assert_eq!(tag(&tags, "git.branch")["value"], json!("{git.branch}"));
-    assert_eq!(tag(&tags, "git.commit")["value"], json!("{git.commit}"));
-    assert_eq!(session["targets"][0]["value"], json!(branch));
-
-    let pane = wire.pane(SESSION);
-    let rows = pane_rows(pane);
-    let pane_tag = |key: &str| -> Value {
-        rows.iter()
-            .find(|row| row["label"] == json!(key))
-            .unwrap_or_else(|| panic!("no {key} row in the pane: {pane}"))
-            .clone()
-    };
-    assert_eq!(pane_tag("git.branch")["value"], json!(branch));
-    assert_eq!(pane_tag("git.commit")["value"], json!(commit));
-    assert_eq!(
-        pane_tag("git.branch")["badges"][0]["text"],
-        json!("this session")
-    );
+    assert_eq!(pane_row(&rows, "git.branch")["value"], json!(branch));
+    assert_eq!(pane_row(&rows, "git.commit")["value"], json!(commit));
+    assert_eq!(pane_row(&rows, "vcs")["value"], json!("git"));
     // Every entry came from this session's file, not from the settings.
+    let tags = pane_tags(&pane);
     assert!(
-        tags.iter().all(|tag| tag["origin"] == json!("session")),
+        tags.iter().all(|row| origin_of(row) == "this session"),
         "{tags:?}"
     );
+    assert_eq!(pane_targets(&pane), vec![BRANCH_HEADER.to_string()]);
+    assert_eq!(pane_row(&rows, BRANCH_HEADER)["value"], json!(branch));
 
-    // Behind the page: ordinary tag grammar, one session's file, settings untouched.
+    // Behind the pane: ordinary tag grammar, one session's file, settings
+    // untouched. The stored entry is the reference — editing a rendered branch
+    // would freeze it — and the pane is what turns it into a value.
     let file = overrides_path(&sandbox, SESSION);
     let text = std::fs::read_to_string(&file).expect("overrides.toml");
     assert!(text.contains(r#""vcs:git""#), "{text}");
     assert!(text.contains(r#""git.branch:{git.branch}""#), "{text}");
+    assert!(text.contains(r#""git.commit:{git.commit}""#), "{text}");
     let settings = std::fs::read_to_string(sandbox.config_path("")).expect("settings");
     assert!(!settings.contains("vcs:git"), "{settings}");
 
-    // The tick box and the dropdown are the same catalogue the verb prints: a
-    // reference cannot be offered here and unknown to the resolver.
-    let offered: Vec<String> = page["references"]
-        .as_array()
-        .expect("references")
+    // The tick writes what the preset spells, and the sample's references are
+    // ones the resolver knows: a reference that could not be resolved would be
+    // written into the file and rendered as its own braces.
+    for raw in llm_tags::resolver::GIT_PRESET {
+        assert!(text.contains(raw), "the tick did not write {raw:?}: {text}");
+    }
+    let known: Vec<String> = llm_tags::resolver::reference_catalog()
         .iter()
-        .map(|item| item["name"].as_str().unwrap_or_default().to_string())
+        .map(|item| item.name.to_string())
         .collect();
-    let verb = sandbox.run(&["references", "--json"]);
-    verb.assert_ok();
-    let printed: Value = serde_json::from_str(&verb.stdout).expect("references --json");
-    let listed: Vec<String> = printed["references"]
-        .as_array()
-        .expect("references")
-        .iter()
-        .map(|item| item["name"].as_str().unwrap_or_default().to_string())
-        .collect();
-    assert_eq!(offered, listed);
-    assert!(offered.iter().any(|name| name == "git.subject"));
-
-    let preset = &page["presets"][0];
-    assert_eq!(preset["id"], json!("git"));
-    assert_eq!(preset["label"], json!("Add standard git information"));
-    assert_eq!(
-        preset["tags"],
-        json!(llm_tags::resolver::GIT_PRESET),
-        "the tick writes what the preset spells"
-    );
+    assert!(known.iter().any(|name| name == "git.subject"), "{known:?}");
 }
 
 #[test]
@@ -522,24 +527,24 @@ fn unticking_the_box_brings_the_configured_value_back() {
         "tag.preset",
         json!({"preset": "git", "applied": true, "session_id": SESSION}),
     );
-    let page = wire.wait_page();
-    let tags = tags_of(&page["sessions"][0]);
-    assert_eq!(tag(&tags, "vcs")["value"], json!("git"));
-    assert_eq!(tag(&tags, "vcs")["origin"], json!("session"));
+    let pane = wire.wait_pane(SESSION);
+    let tags = pane_tags(&pane);
+    assert_eq!(pane_row(&pane_rows(&pane), "vcs")["value"], json!("git"));
+    assert_eq!(origin_of(tag(&tags, "vcs")), "this session");
 
     wire.notify(
         "tag.preset",
         json!({"preset": "git", "applied": false, "session_id": SESSION}),
     );
-    let page = wire.wait_page();
-    let tags = tags_of(&page["sessions"][0]);
+    let pane = wire.wait_pane(SESSION);
+    let rows = pane_rows(&pane);
     // Unticking is an undo: the settings' value is back, the sample's is gone.
-    assert_eq!(tag(&tags, "vcs")["value"], json!("prod"));
-    assert_eq!(tag(&tags, "vcs")["origin"], json!("config"));
-    assert_eq!(tag(&tags, "team")["value"], json!("core"));
+    assert_eq!(pane_row(&rows, "vcs")["value"], json!("prod"));
+    assert_eq!(origin_of(&pane_row(&rows, "vcs")), "settings");
+    assert_eq!(pane_row(&rows, "team")["value"], json!("core"));
     assert!(
-        tag(&tags, "git.branch").is_null(),
-        "the sample's keys are gone: {tags:?}"
+        !rows.iter().any(|row| row["label"] == json!("git.branch")),
+        "the sample's keys are gone: {pane}"
     );
     assert!(
         !overrides_path(&sandbox, SESSION).exists(),
@@ -560,9 +565,8 @@ fn the_git_switch_can_hide_an_inherited_sample() {
         "tag.level.git",
         json!({"level": "aoe", "enabled": true, "session_id": SESSION}),
     );
-    let page = wire.wait_page();
-    let tags = tags_of(&page["sessions"][0]);
-    assert_eq!(tag(&tags, "git.branch")["origin"], json!("aoe"));
+    let pane = wire.wait_pane(SESSION);
+    assert_eq!(origin_of(tag(&pane_tags(&pane), "git.branch")), "AoE");
     let aoe = wire.pane_tab(SESSION, "aoe");
     assert_eq!(
         pane_row(&pane_rows(&aoe), "Standard git information")["selected"],
@@ -572,9 +576,13 @@ fn the_git_switch_can_hide_an_inherited_sample() {
     // Hiding it here must win over the AoE default, which a per-key `tag.remove`
     // could not do: the level that set it would still carry it.
     wire.notify("tag.git", json!({"enabled": false, "session_id": SESSION}));
-    let page = wire.wait_page();
-    let tags = tags_of(&page["sessions"][0]);
-    assert!(tag(&tags, "git.branch").is_null(), "{tags:?}");
+    let pane = wire.wait_pane(SESSION);
+    assert!(
+        !pane_rows(&pane)
+            .iter()
+            .any(|row| row["label"] == json!("git.branch")),
+        "{pane}"
+    );
     let session = wire.pane_tab(SESSION, "session");
     let switch = pane_row(&pane_rows(&session), "Standard git information");
     assert_eq!(switch["value"], json!("off here"));
@@ -587,9 +595,11 @@ fn the_git_switch_can_hide_an_inherited_sample() {
     // Turning it back on materialises the sample for this session, so the pane
     // can label it as this session's own again.
     wire.notify("tag.git", json!({"enabled": true, "session_id": SESSION}));
-    let page = wire.wait_page();
-    let tags = tags_of(&page["sessions"][0]);
-    assert_eq!(tag(&tags, "git.branch")["origin"], json!("session"));
+    let pane = wire.wait_pane(SESSION);
+    assert_eq!(
+        origin_of(tag(&pane_tags(&pane), "git.branch")),
+        "this session"
+    );
     let text = std::fs::read_to_string(&file).expect("overrides.toml");
     assert!(text.contains("git_tags = true"), "{text}");
 }
@@ -634,20 +644,22 @@ fn two_sessions_keep_their_own_edits() {
         "tag.set",
         json!({"key": "team", "value": "core", "session_id": SESSION}),
     );
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     wire.notify(
         "tag.set",
         json!({"key": "team", "value": "platform", "session_id": OTHER}),
     );
-    let page = wire.wait_page();
+    let other = wire.wait_pane(OTHER);
 
-    let sessions = page["sessions"].as_array().expect("sessions");
-    for (id, expected) in [(SESSION, "core"), (OTHER, "platform")] {
-        let session = sessions
-            .iter()
-            .find(|session| session["id"] == json!(id))
-            .unwrap_or_else(|| panic!("no {id} in {page}"));
-        assert_eq!(tag(&tags_of(session), "team")["value"], json!(expected));
+    for (id, expected, pane) in [
+        (SESSION, "core", wire.pane(SESSION).clone()),
+        (OTHER, "platform", other),
+    ] {
+        assert_eq!(
+            pane_row(&pane_rows(&pane), "team")["value"],
+            json!(expected),
+            "{id}"
+        );
         let env = llm_tags::env::Env::new(sandbox.env.clone());
         let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
         let (edits, warnings) = llm_tags::session_tags::load(&app_dir, id);
@@ -660,32 +672,33 @@ fn two_sessions_keep_their_own_edits() {
     }
 }
 
+/// A literal token stands in for the rendered payload, so the row that shows what
+/// a session sends would be the token itself. The host keeps every `ui.state.set`
+/// payload and renders it to everyone who can see the session, so the value never
+/// leaves the session file: the pane says one is set and names it in the row.
+///
+/// The token is written the way the CLI writes it — the pane has no box for it —
+/// and the test reads the republish, which is the path that could leak it.
 #[test]
 fn a_token_override_is_never_published() {
     const SECRET: &str = "sk-live-3f9c2a1b-do-not-publish";
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
-    // The default target has no template, so the token is what it renders: the row
-    // that shows the wire value would otherwise be the token itself.
+    // The default target has no template, so the token is what it renders.
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
 
-    wire.notify("token.set", json!({"token": SECRET, "session_id": SESSION}));
-    let page = wire.wait_page();
-    let session = &page["sessions"][0];
-    // The page learns that a token is set and nothing about what it says: the host
-    // keeps every `ui.state.set` payload and renders it to everyone who can see
-    // the session, so the value stays in the session file.
-    assert_eq!(session["token_set"], json!(true), "{session}");
-    assert!(session.get("token").is_none(), "{session}");
+    let env = llm_tags::env::Env::new(sandbox.env.clone());
+    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
+    llm_tags::session_tags::set_token(&app_dir, SESSION, SECRET).expect("write the token");
+    wire.notify("session.state", json!({}));
+    let pane = wire.wait_pane(SESSION);
+
+    let rows = pane_rows(&pane);
     assert_eq!(
-        session["targets"][0]["value"],
+        pane_row(&rows, "X-AoE-Tags")["value"],
         json!("(the session's token, not shown here)"),
-        "{session}"
+        "{pane}"
     );
-    // The pane names it too, in the row that would otherwise show it.
-    let pane = wire.pane(SESSION).to_string();
-    assert!(!pane.contains(SECRET), "{pane}");
-    assert!(pane.contains("not shown here"), "{pane}");
     let pushed = wire.pushed_text();
     assert!(
         !pushed.contains(SECRET),
@@ -695,15 +708,19 @@ fn a_token_override_is_never_published() {
     assert!(!wire.log().contains(SECRET), "{}", wire.log());
 
     // It is kept, though: it is what the launch sends instead of the payload.
-    let env = llm_tags::env::Env::new(sandbox.env.clone());
-    let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
     let (edits, _) = llm_tags::session_tags::load(&app_dir, SESSION);
     assert_eq!(edits.token, SECRET);
 
     // Clearing it takes that back, still without publishing it.
-    wire.notify("token.clear", json!({"session_id": SESSION}));
-    let page = wire.wait_page();
-    assert_eq!(page["sessions"][0]["token_set"], json!(false));
+    llm_tags::session_tags::set_token(&app_dir, SESSION, "").expect("clear the token");
+    wire.notify("session.state", json!({}));
+    let pane = wire.wait_pane(SESSION);
+    assert!(
+        !pane_rows(&pane)
+            .iter()
+            .any(|row| row["value"] == json!("(the session's token, not shown here)")),
+        "{pane}"
+    );
     assert!(!wire.pushed_text().contains(SECRET));
 }
 
@@ -716,7 +733,7 @@ fn an_edit_without_a_session_id_is_refused_and_the_worker_keeps_answering() {
     // The host always merges `session_id` in; a guess here would edit the wrong
     // session's file, so the edit is refused — and a refusal is not a crash.
     wire.notify("tag.set", json!({"key": "team", "value": "core"}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     assert!(!overrides_path(&sandbox, SESSION).exists());
     assert!(wire.log().contains("no session_id"), "{}", wire.log());
 
@@ -728,7 +745,7 @@ fn an_edit_without_a_session_id_is_refused_and_the_worker_keeps_answering() {
         "tag.nonsense",
         json!({"session_id": SESSION, "key": "team"}),
     );
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     assert!(!overrides_path(&sandbox, SESSION).exists());
 }
 
@@ -793,7 +810,7 @@ fn a_live_file_follows_an_edit_and_a_revoke_without_a_relaunch() {
         "tag.set",
         json!({"session_id": SESSION, "key": "activity", "value": "test"}),
     );
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     let body = read();
     assert_eq!(
         body["targets"][0]["value"],
@@ -809,7 +826,7 @@ fn a_live_file_follows_an_edit_and_a_revoke_without_a_relaunch() {
         "tag.set",
         json!({"session_id": SESSION, "key": "activity", "value": "review"}),
     );
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     let body = read();
     assert_eq!(body["enabled"], json!(false), "{body}");
     assert_eq!(body["targets"][0]["value"], json!("aoe,activity:review"));
@@ -827,89 +844,49 @@ fn no_live_file_is_written_for_a_session_without_an_extension() {
         "tag.set",
         json!({"session_id": SESSION, "key": "team", "value": "core"}),
     );
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     let env = llm_tags::env::Env::new(sandbox.env.clone());
     let app_dir = llm_tags::settings::app_dir(&env).expect("app dir");
     assert!(!llm_tags::harness_extension::live_path(&app_dir, SESSION).exists());
 }
 
-/// The page is where a user reads the disclosure and gives the approval, so its
-/// rows are the same verdict the launch uses — and the checkbox approves *those*
-/// bytes by echoing the digest it displayed.
+/// The extension approval was a page: the disclosure, the digest a click approves,
+/// and the revoke. A page is gone, and the pane never had those rows — so the
+/// methods that served them are gone from the worker too, rather than left as
+/// surface nobody can reach. `aoe-llm-tags extension enable|disable` is the way in,
+/// and `tests/extension.rs` is where that path is checked.
 #[test]
-fn the_page_shows_the_disclosure_and_its_checkbox_is_the_approval() {
+fn the_methods_only_a_page_could_fire_are_gone() {
+    for method in [
+        "token.set",
+        "token.clear",
+        "extension.enable",
+        "extension.disable",
+    ] {
+        assert!(
+            !llm_tags::worker::EDITS.contains(&method),
+            "{method} is still offered to a surface, and no surface can fire it"
+        );
+    }
+    // Nothing in the pane offers one either: the payload is the only surface.
     let sandbox = Sandbox::new();
     let repo = repository(&sandbox, "repo");
-    sandbox.write_config(&settings_config(
-        "harness_extension = [\"pi\"]\n\
-         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
-         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
-        "",
-    ));
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
-
-    // The worker publishes on a host event, not at startup.
     wire.notify("session.state", json!({}));
-    let page = wire.wait_page();
-    let rows = page["extensions"].as_array().expect("extensions");
-    let pi = rows
-        .iter()
-        .find(|row| row["harness"] == json!("pi"))
-        .unwrap_or_else(|| panic!("no pi row in {page}"));
-    assert_eq!(pi["requested"], json!(true));
-    assert_eq!(pi["approved"], json!(false));
-    assert_eq!(pi["state"], json!("no_receipt"), "{pi}");
-    // Before anything is approved the page already carries the text that would be
-    // approved, so enabling is a decision the user could actually read first.
-    let disclosure = pi["disclosure"].as_str().expect("disclosure");
-    assert!(disclosure.contains("does not"), "{disclosure}");
-    assert!(disclosure.contains("session config"), "{disclosure}");
-    let digest = pi["sha256"].as_str().expect("the digest").to_string();
-    assert_eq!(digest.len(), 64);
-
-    // A stale page approves nothing: the digest it shows is the whole point.
-    wire.notify(
+    let pane = wire.wait_pane(SESSION);
+    let offered: Vec<String> = pane_blocks(&pane)
+        .into_iter()
+        .filter_map(|block| block["method"].as_str().map(str::to_string))
+        .collect();
+    for method in [
+        "token.set",
+        "token.clear",
         "extension.enable",
-        json!({"harness": "pi", "accept": "0".repeat(64), "session_id": SESSION}),
-    );
-    let page = wire.wait_page();
-    assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
-    assert!(
-        wire.log().contains("not the file this build ships"),
-        "{}",
-        wire.log()
-    );
-
-    wire.notify(
-        "extension.enable",
-        json!({"harness": "pi", "accept": digest, "session_id": SESSION}),
-    );
-    let page = wire.wait_page();
-    let pi = &page["extensions"][0];
-    assert_eq!(pi["approved"], json!(true), "{pi}");
-    assert_eq!(pi["state"], json!("ok"));
-    assert!(pi["accepted_at"].as_str().unwrap_or_default().len() >= 10);
-
-    // The page has to say which of the two grants a row needs, and where the
-    // files go: a session copy and the user's own config are not the same offer.
-    let pi = &page["extensions"][0];
-    assert_eq!(pi["scope"], json!("session"), "{pi}");
-    let files = pi["files"].as_array().expect("the disclosed files");
-    assert_eq!(files.len(), 3, "{pi}");
-    assert!(files.iter().all(|path| path
-        .as_str()
-        .unwrap_or_default()
-        .starts_with("<session config>/")));
-
-    // And the button that stops it removes the approval, so the next launch of
-    // that harness installs nothing.
-    wire.notify(
         "extension.disable",
-        json!({"harness": "pi", "session_id": SESSION}),
-    );
-    let page = wire.wait_page();
-    assert_eq!(page["extensions"][0]["approved"], json!(false), "{page}");
+    ] {
+        assert!(!offered.contains(&method.to_string()), "{offered:?}");
+    }
 }
 
 /// The pane's dock tab and the header toggle draw the payload icon; with none the
@@ -965,8 +942,8 @@ fn the_worker_publishes_before_any_host_event() {
         wire.pushes
     );
     assert!(
-        wire.pushes.iter().any(|p| p["slot"] == json!("page")),
-        "so is the page button: {:?}",
+        wire.pushes.iter().all(|p| p["slot"] == json!("pane")),
+        "the pane is the only surface: {:?}",
         wire.pushes
     );
 }
@@ -985,19 +962,23 @@ fn the_pane_is_the_only_place_a_tag_shows() {
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
     wire.notify("session.state", json!({}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
 
     assert!(
         wire.pushes
             .iter()
-            .all(|params| params["slot"] == json!("pane") || params["slot"] == json!("page")),
-        "no row badge is pushed: {:?}",
+            .all(|params| params["slot"] == json!("pane")),
+        "the pane is the only surface: {:?}",
         wire.pushes
     );
     let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("the manifest");
     assert!(
         !manifest.contains("row-badge"),
         "the manifest declares no row badge"
+    );
+    assert!(
+        !manifest.contains("slot = \"page\""),
+        "the manifest declares no page, so the dashboard header carries no LLM Tags button"
     );
 
     // The pane still names what the session is doing, with the family's own icon
@@ -1021,7 +1002,7 @@ fn a_session_without_an_activity_shows_none_in_the_pane() {
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
     wire.notify("session.state", json!({}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     let pane = wire.pane(SESSION).clone();
     let section = pane_blocks(&pane)
         .into_iter()
@@ -1041,7 +1022,7 @@ fn a_typo_in_the_activity_is_reported_not_iconified() {
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
     wire.notify("session.state", json!({}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
     assert!(wire.log().contains("is not an activity"), "{}", wire.log());
     // A typo is not an activity, so the pane leaves the section unset rather than
     // dressing the misspelling up as one.
@@ -1064,7 +1045,7 @@ fn the_pane_offers_every_activity_and_marks_the_current_one() {
     sandbox.write_pi_models(r#"{"providers":{"litellm":{"models":[{"id":"m1"}]}}}"#);
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
     wire.notify("session.state", json!({}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
 
     let pane = wire.pane(SESSION);
     let blocks = pane["blocks"].as_array().expect("blocks");
@@ -1139,7 +1120,7 @@ fn the_project_family_is_what_the_pane_offers() {
         ]),
     );
     wire.notify("session.state", json!({}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
 
     let pane = wire.pane(SESSION);
     let blocks = pane["blocks"].as_array().expect("blocks");
@@ -1180,9 +1161,10 @@ fn the_project_family_is_what_the_pane_offers() {
     assert!(text.contains("also defined here: default"), "{text}");
 }
 
-/// The header that carries the tags is a decision per project, so the page's
-/// target list follows the project's own choice while another project keeps the
-/// plugin's header. Nothing about it is per session: a session cannot name it.
+/// The header that carries the tags is a decision per project, so what a session's
+/// pane lists as "what this session sends" follows its project's own choice while
+/// another project keeps the plugin's header. Nothing about it is per session: a
+/// session cannot name it.
 #[test]
 fn the_project_chooses_which_header_carries_its_tags() {
     let sandbox = Sandbox::new();
@@ -1193,32 +1175,16 @@ fn the_project_chooses_which_header_carries_its_tags() {
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &tagged), row(OTHER, &plain)], &[]);
     wire.set_project(&tagged, "request_tag_header", json!("databricks"));
     wire.notify("session.state", json!({}));
-    let page = wire.wait_page();
-
-    let targets = |id: &str| -> Vec<String> {
-        page["sessions"]
-            .as_array()
-            .expect("sessions")
-            .iter()
-            .find(|session| session["id"] == json!(id))
-            .map(|session| {
-                session["targets"]
-                    .as_array()
-                    .expect("targets")
-                    .iter()
-                    .filter_map(|target| target["name"].as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_else(|| panic!("no page row for {id}: {page}"))
-    };
+    let tagged_pane = wire.wait_pane(SESSION);
+    let plain_pane = wire.wait_pane(OTHER);
 
     assert_eq!(
-        targets(SESSION),
+        pane_targets(&tagged_pane),
         vec!["Databricks-Ai-Gateway-Request-Tags".to_string()],
         "the project named the header"
     );
     assert_eq!(
-        targets(OTHER),
+        pane_targets(&plain_pane),
         vec!["X-AoE-Tags".to_string()],
         "another project keeps the plugin's own header"
     );
@@ -1244,47 +1210,6 @@ fn the_project_chooses_which_header_carries_its_tags() {
     );
 }
 
-/// A user-scope row on the page says so: the same card, a wider grant, and the
-/// paths it would write named before anything is written.
-#[test]
-fn the_page_names_the_users_own_config_for_a_user_scope_row() {
-    let sandbox = Sandbox::new();
-    let repo = repository(&sandbox, "repo");
-    sandbox.write_config(&settings_config(
-        "harness_extension = [\"claude\"]\n\
-         [[plugins.\"dev.oozut.llm-tags\".settings.targets]]\n\
-         kind = \"header\"\nname = \"X-AoE-Tags\"\ntemplate = \"aoe,{tags}\"\nenv_var = \"AOE_LLM_TAGS\"\n",
-        "",
-    ));
-    let mut wire = Wire::open(&sandbox, &[row(SESSION, &repo)], &[]);
-    wire.notify("session.state", json!({}));
-    let page = wire.wait_page();
-    let claude = page["extensions"]
-        .as_array()
-        .expect("extensions")
-        .iter()
-        .find(|row| row["harness"] == json!("claude"))
-        .unwrap_or_else(|| panic!("no claude row in {page}"))
-        .clone();
-    assert_eq!(claude["requested"], json!(true));
-    assert_eq!(claude["scope"], json!("user"), "{claude}");
-    let files: Vec<&str> = claude["files"]
-        .as_array()
-        .expect("the disclosed files")
-        .iter()
-        .map(|path| path.as_str().unwrap_or_default())
-        .collect();
-    assert!(files.iter().all(|path| path.starts_with("~/")), "{files:?}");
-    assert!(
-        files.contains(&"~/.claude/CLAUDE.md"),
-        "the instruction file is not disclosed: {files:?}"
-    );
-    let disclosure = claude["disclosure"].as_str().expect("the disclosure");
-    assert!(disclosure.contains("your own"), "{disclosure}");
-    assert!(disclosure.contains("marker"), "{disclosure}");
-    assert!(!disclosure.contains("private config copy"), "{disclosure}");
-}
-
 #[test]
 fn a_session_without_a_project_has_no_project_tab() {
     let sandbox = Sandbox::new();
@@ -1294,7 +1219,7 @@ fn a_session_without_a_project_has_no_project_tab() {
     sandbox.write_config(&settings_config("", ""));
     let mut wire = Wire::open(&sandbox, &[session], &[]);
     wire.notify("session.state", json!({}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
 
     // One pane with two tabs, not three: a session with no project has no
     // project default to edit, so the strip leaves the row out instead of
@@ -1326,7 +1251,7 @@ fn the_three_tabs_split_session_project_and_aoe() {
     let mut wire = Wire::open(&sandbox, &[row(SESSION, &one), row(OTHER, &two)], &[]);
     // Any host event republishes every surface; this one carries no edit.
     wire.notify("session.status.changed", json!({"session_id": SESSION}));
-    wire.wait_page();
+    wire.wait_pane(SESSION);
 
     // One dock entry, three tabs: the right panel carries a single LLM Tags
     // pane, and the strip inside it names the levels from the session outwards.
@@ -1396,37 +1321,18 @@ fn the_three_tabs_split_session_project_and_aoe() {
             "session_id": SESSION,
         }),
     );
-    let page = wire.wait_page();
-    let sessions = page["sessions"].as_array().expect("page sessions");
-    let one_page = sessions
-        .iter()
-        .find(|session| session["id"] == json!(SESSION))
-        .expect("this session");
-    let two_page = sessions
-        .iter()
-        .find(|session| session["id"] == json!(OTHER))
-        .expect("the other session");
-    assert_eq!(tag(&tags_of(one_page), "team")["value"], json!("core"));
-    assert_eq!(
-        tag(&tags_of(one_page), "feature")["value"],
-        json!("billing")
-    );
-    assert_eq!(tag(&tags_of(two_page), "team")["value"], json!("config"));
-    assert_eq!(tag(&tags_of(one_page), "team")["origin"], json!("project"));
-    assert_eq!(
-        one_page["levels"]["project"]["values"]["team"],
-        json!("core"),
-        "{one_page}"
-    );
+    let one_pane = wire.wait_pane(SESSION);
+    let two_pane = wire.wait_pane(OTHER);
+    let one_rows = pane_rows(&one_pane);
+    let two_rows = pane_rows(&two_pane);
+    assert_eq!(pane_row(&one_rows, "team")["value"], json!("core"));
+    assert_eq!(pane_row(&one_rows, "feature")["value"], json!("billing"));
+    assert_eq!(pane_row(&two_rows, "team")["value"], json!("config"));
 
     // The row says where it came from, so a project default is not mistaken for
     // something this session wrote.
-    let session = wire.pane(SESSION).clone();
-    let rows = pane_rows(&session);
-    assert_eq!(
-        pane_row(&rows, "team")["badges"][0]["text"],
-        json!("project")
-    );
+    assert_eq!(origin_of(&pane_row(&one_rows, "team")), "project");
+    assert_eq!(origin_of(&pane_row(&two_rows, "team")), "settings");
 
     // A hide at the project level drops the settings' `cost`, and the project
     // tab says how many entries and hides it owns.
@@ -1439,17 +1345,14 @@ fn the_three_tabs_split_session_project_and_aoe() {
             "session_id": SESSION,
         }),
     );
-    let page = wire.wait_page();
-    let sessions = page["sessions"].as_array().expect("page sessions");
-    let one_page = sessions
-        .iter()
-        .find(|session| session["id"] == json!(SESSION))
-        .expect("this session");
-    assert_eq!(tag(&tags_of(one_page), "cost"), &Value::Null);
-    assert_eq!(
-        one_page["levels"]["project"]["values"]["cost"],
-        Value::Null,
-        "{one_page}"
+    let one_pane = wire.wait_pane(SESSION);
+    // A hide is not a deletion: the row says "(hidden)" and offers the way back,
+    // and the project tab says what it owns.
+    assert!(
+        !pane_rows(&one_pane)
+            .iter()
+            .any(|row| row["label"] == json!("cost") && row["method"] == json!("tag.remove")),
+        "the hide is still rendered as a live row: {one_pane}"
     );
     let project = wire.pane_tab(SESSION, "project");
     assert_eq!(project["footer"]["value"], json!("2 override(s), 1 hidden"));
@@ -1475,19 +1378,20 @@ fn the_three_tabs_split_session_project_and_aoe() {
             "session_id": SESSION,
         }),
     );
-    let page = wire.wait_page();
-    let sessions = page["sessions"].as_array().expect("page sessions");
-    for id in [SESSION, OTHER] {
-        let session = sessions
-            .iter()
-            .find(|session| session["id"] == json!(id))
-            .expect("a session");
-        assert_eq!(
-            tag(&tags_of(session), "owner")["value"],
-            json!("me"),
-            "{id}"
-        );
-    }
+    // The open tab is per session, and this one is still on the project level, so
+    // the session tab is asked for by name.
+    let session_pane = wire.pane_tab(SESSION, "session");
+    assert_eq!(
+        pane_row(&pane_rows(&session_pane), "owner")["value"],
+        json!("me"),
+        "{SESSION}"
+    );
+    let other_pane = wire.wait_pane(OTHER);
+    assert_eq!(
+        pane_row(&pane_rows(&other_pane), "owner")["value"],
+        json!("me"),
+        "{OTHER}"
+    );
     let aoe = wire.pane_tab(SESSION, "aoe");
     assert_eq!(aoe["footer"]["value"], json!("1 override(s), 0 hidden"));
     assert!(tab_button(&aoe, "AoE")["tooltip"]

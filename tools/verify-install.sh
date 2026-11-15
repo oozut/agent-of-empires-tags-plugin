@@ -38,7 +38,7 @@ fi
 if [ -x "$INSTALLED/bin/aoe-llm-tags-worker" ]; then
   pass "worker binary"
 else
-  fail "no worker binary: the page will render and never answer"
+  fail "no worker binary: the pane will render and never answer"
 fi
 
 for artefact in harness/pi.ts harness/activity.append.md harness/skills/aoe-activity/SKILL.md; do
@@ -199,12 +199,12 @@ else
   pass "doctor: $summary"
 fi
 
-# --- the page and the worker ------------------------------------------------
+# --- the pane and the worker ------------------------------------------------
 
 if "$CLI" extension status --json >/dev/null 2>&1; then
   pass "extension status answers"
 else
-  fail "extension status failed: the page's extension panel has nothing to show"
+  fail "extension status failed: the extension disclosure has nothing to show"
 fi
 
 if [ -f "$APP_DIR/harness-extension.toml" ]; then

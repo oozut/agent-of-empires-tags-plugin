@@ -121,101 +121,61 @@ fn the_manifest_asks_only_for_the_capabilities_the_plugin_uses() {
     }
 }
 
-/// The editor page is declared in the manifest, its entry must exist in the
-/// tree, and the page must speak the same bridge methods the worker pushes to.
-/// A page whose script drifted from the worker would render an empty editor and
-/// never say why, which is worse than no page.
+/// The plugin declares one surface and one only: a pane.
+///
+/// The host draws a button in the dashboard header for every `page` a plugin
+/// declares — with the generic puzzle piece when the page names no icon — so a
+/// page here is a second LLM Tags entry in the header, offering what the pane
+/// already shows. A manifest that grows one back is a regression, not a feature,
+/// and this is the test that says so.
 #[test]
-fn the_editor_page_exists_and_speaks_the_bridge_it_is_given() {
+fn the_plugin_declares_a_pane_and_no_page() {
     let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("aoe-plugin.toml");
-    let mut entries: Vec<(String, String)> = Vec::new();
-    let mut slot = String::new();
-    for line in manifest.lines() {
-        let line = line.trim();
-        if line == "[[ui]]" {
-            slot.clear();
-            continue;
-        }
-        if let Some(value) = line.strip_prefix("slot = ") {
-            slot = value.trim_matches('"').to_string();
-        }
-        if slot == "page" {
-            if let Some(id) = line.strip_prefix("id = ") {
-                entries.push((id.trim_matches('"').to_string(), String::new()));
-            }
-            if let Some(entry) = line.strip_prefix("entry = ") {
-                if let Some(last) = entries.last_mut() {
-                    last.1 = entry.trim_matches('"').to_string();
-                }
-            }
-        }
-    }
-    assert!(!entries.is_empty(), "the manifest declares no page");
-    for (id, entry) in entries {
-        assert!(!entry.is_empty(), "page {id} has no entry file");
-        let body = std::fs::read_to_string(&entry)
-            .unwrap_or_else(|err| panic!("page {id} entry {entry:?}: {err}"));
-        // The dashboard opens a page at /plugins/<id>/<page id>, so the link the
-        // worker pushes and the route the host serves must agree.
-        let route = format!("/plugins/dev.oozut.llm-tags/{id}");
-        assert!(
-            std::fs::read_to_string("src/worker.rs")
-                .expect("worker source")
-                .contains(&route),
-            "the worker never links to {route}"
-        );
-        for method in ["plugins.uiState", "action", "ready"] {
-            assert!(
-                body.contains(method),
-                "page {id} never calls the {method} bridge method"
-            );
-        }
-        // The bridge helper takes a message object and a transport. A call site
-        // that passed its transport where the params belong made the page die
-        // with "send is not a function" the moment the document ran, which no
-        // static check of the method *names* would have caught.
-        assert!(
-            body.contains("function request(message, send)"),
-            "page {id} changed the bridge helper's shape: it takes a message object and a \
-             transport, and a third parameter turns every two-argument call into the \
-             \"send is not a function\" crash"
-        );
-        let mut rest = body.as_str();
-        while let Some(start) = rest.find("request(") {
-            let after = &rest[start + "request(".len()..];
-            if !after.starts_with("message") {
-                assert!(
-                    after.trim_start().starts_with('{'),
-                    "page {id} calls request() with something other than a message object: {:?}",
-                    &after[..after.len().min(40)]
-                );
-            }
-            rest = after;
-        }
-        // One self-contained file: the host serves only this document.
-        for forbidden in ["<script src=", "<link ", "fetch(", "XMLHttpRequest"] {
-            assert!(
-                !body.contains(forbidden),
-                "page {id} leans on {forbidden:?}, which the sandbox blocks"
-            );
-        }
-    }
+    let slots: Vec<String> = manifest
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("slot = "))
+        .map(|value| value.trim_matches('"').to_string())
+        .collect();
+    assert_eq!(
+        slots,
+        vec!["pane".to_string()],
+        "the manifest declares something other than the one pane"
+    );
+    assert!(
+        !manifest.contains("entry = "),
+        "a page needs an `entry`, and this plugin ships none"
+    );
+    // Nothing left to serve: the page's document and the checker that ran its
+    // script are gone with it.
+    assert!(
+        !std::path::Path::new("ui").exists(),
+        "ui/ outlived the page"
+    );
+    assert!(
+        !std::path::Path::new("tools/check-page.mjs").exists(),
+        "check-page.mjs outlived the page it checked"
+    );
+    // And the worker still links to nothing it cannot serve.
+    let worker = std::fs::read_to_string("src/worker.rs").expect("worker source");
+    assert!(
+        !worker.contains("/plugins/dev.oozut.llm-tags/"),
+        "the worker links to a dashboard route the plugin no longer declares"
+    );
 }
 
-/// The host forwards a pane or page `method` to the worker **verbatim**, so the
-/// strings in the page and the ones the worker dispatches on have to be the same
-/// strings. A page that prefixed them with the plugin id — a natural mistake,
-/// since a host command is `plugin.<id>.<command>` — would send edits that the
-/// worker silently ignores.
+/// The host forwards a pane `method` to the worker **verbatim**, so the strings
+/// the pane's rows carry and the ones the worker dispatches on have to be the
+/// same strings. A row that prefixed them with the plugin id — a natural
+/// mistake, since a host command is `plugin.<id>.<command>` — would send edits
+/// that the worker silently ignores. And the reverse: a method the worker
+/// dispatches that no row ever fires is dead weight in its match.
 #[test]
-fn the_page_fires_the_methods_the_worker_dispatches_on() {
-    let page = std::fs::read_to_string("ui/tags.html").expect("ui/tags.html");
+fn every_method_the_pane_fires_is_one_the_worker_dispatches_on() {
     // The pane's rows carry their method in the payload the worker builds, so the
-    // worker's own source is the second place a method is named. A surface may
-    // only fire what the worker dispatches, so both are scanned.
+    // worker's own source is where a method is named.
     let worker = std::fs::read_to_string("src/worker.rs").expect("src/worker.rs");
     let mut fired: Vec<String> = Vec::new();
-    for source in [page.as_str(), worker.as_str()] {
+    for source in [worker.as_str()] {
         // `edit` is a session edit; `extensionAction` is the machine-wide pair,
         // which deliberately has no session to send; `"method": "..."` is a pane
         // row, and a tuple like `("tag.preset", ...)` picks one dynamically. All
@@ -270,7 +230,7 @@ fn the_page_fires_the_methods_the_worker_dispatches_on() {
             llm_tags::worker::EDITS
         );
     }
-    // And the reverse: every edit the worker knows is reachable from the page.
+    // And the reverse: every edit the worker knows is reachable from the pane.
     for method in llm_tags::worker::EDITS {
         assert!(
             fired.contains(&method.to_string()),
@@ -279,7 +239,7 @@ fn the_page_fires_the_methods_the_worker_dispatches_on() {
     }
 }
 
-/// `docs/carrier-matrix.md` is what the page's labels are drawn from, so its
+/// `docs/carrier-matrix.md` is what `extension status` draws its labels from, so its
 /// host columns are checked against the table they describe. The sandbox columns
 /// are only checked where the answer is the plugin's own (a `session`-scope
 /// carrier is in a copy a container never opens); the rest depend on what aoe

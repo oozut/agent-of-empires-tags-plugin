@@ -485,8 +485,8 @@ fn status_lists_the_requested_harness_and_its_receipt() {
     assert_eq!(row["receipt"]["disclosure_version"], DISCLOSURE_VERSION);
 }
 
-/// The page and the CLI must not disagree about where the file goes: the path in
-/// the disclosure is the path the writer uses, from the same row.
+/// The disclosure and the writer must not disagree about where the file goes: the
+/// path in the printed text is the path the writer uses, from the same row.
 #[test]
 fn the_disclosure_names_the_path_the_writer_uses() {
     let sandbox = Sandbox::new();

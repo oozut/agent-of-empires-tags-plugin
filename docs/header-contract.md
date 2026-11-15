@@ -161,9 +161,9 @@ aoe-llm-tags tag --git                      # vcs:git, git.branch, git.commit, g
 aoe-llm-tags references                     # every reference, with this session's value
 ```
 
-The Session tab offers the same set as one "Standard git information" row, and the page's old
-"Insert a reference" dropdown was removed with the tag editor: references still come from the same
-catalogue the `references` verb prints, so the CLI can never offer one the renderer does not know.
+The Session tab offers the same set as one "Standard git information" row. The old "Insert a
+reference" dropdown went with the tag editor: references come from the same catalogue the
+`references` verb prints, so the pane can never offer one the renderer does not know.
 
 Rules that keep the contract honest:
 
@@ -299,14 +299,19 @@ by a picture.
 
 The open tab is the worker's own per-session state. A session with no project path has no project
 button, and a click naming it is refused rather than rendered.
-| Session details page (`ui/tags.html`) | The literal token and the harness extension approvals, plus a JSON viewer/editor: the rendered values read-only, and the stored form editable at the session, project or AoE level. `null` hides a key there; removing a key hides the inherited value. |
 | `aoe-llm-tags tag` | The same edits from a shell, for a script or a session with no dashboard; `--level project\|aoe` edits the upper rungs. |
 
-The token is written but never read back into the UI. A surface is told that one is set, and the
-target row and the pane say *that* it stands in for the value rather than what
-it says: `ui.state.set` payloads are kept by the host and rendered to anyone who can see the
-session, so a secret there would be a secret in a dashboard. `aoe-llm-tags tag --show` prints it in
-the user's own terminal, and the session file that holds it is `0600` in a `0700` directory.
+Two things used to live on a page and no longer have one: the literal token (`aoe-llm-tags tag
+--token`, `--show`) and the harness extension approvals (`aoe-llm-tags extension enable|disable`,
+which prints the disclosure and takes the digest it printed). The plugin declares a pane and no
+`page`, because the host draws a dashboard-header button for every declared page and a page here
+would be a second LLM Tags entry offering what the pane already shows.
+
+The token is written but never read back into the UI. The pane is told that one is set, and its
+target row says *that* it stands in for the value rather than what it says: `ui.state.set` payloads
+are kept by the host and rendered to anyone who can see the session, so a secret there would be a
+secret in a dashboard. `aoe-llm-tags tag --show` prints it in the user's own terminal, and the
+session file that holds it is `0600` in a `0700` directory.
 
 The file holds the same tag grammar the settings use, in three keys:
 
@@ -331,17 +336,17 @@ Two honest limits:
 - Dropping a tag the settings carry is still per-session: it records the key in `unset` rather than
   editing the settings, so the same tag stays on every other session.
 
-Both clickable surfaces reach the worker the same way: the host forwards a block's `method`
-**verbatim**, so `tag.set`, `tag.remove`, `token.set`, `token.clear` and `tags.reset` are whole
-names, not `plugin.<id>.<command>` — which is how a host *request* is addressed. `worker::EDITS`
-lists them, `tests/docs.rs` holds the page and the worker to the same list, and the host adds the
-session id it trusts (a `session_id` in the page's params is overwritten, never believed).
+The pane's blocks reach the worker one way: the host forwards a block's `method` **verbatim**, so
+`tag.set`, `tag.level.unset` and `pane.tab` are whole names, not `plugin.<id>.<command>` — which is
+how a host *request* is addressed. `worker::EDITS` lists them, `tests/docs.rs` holds the pane and
+the worker to the same list, and the host adds the session id it trusts (a `session_id` in a
+block's params is overwritten, never believed).
 
 Checked against the running daemon, not only in tests: `POST /api/plugins/dev.oozut.llm-tags/action`
 with `{"method":"tag.set","params":{"key":"team","value":"platform"}}` answered `202`, wrote
 `sessions/cf11af87da7e4bf0/overrides.toml`, moved that session's UI revision (so the clicked
 control's spinner clears), and the next `/api/plugins/ui-state` read carried the tag with
-`origin: "session"` in both the pane row and the page payload; `tags.reset` removed the file
+`origin: "session"` in the pane row; `tags.reset` removed the file
 again. `tools/drive-worker.py` reproduces the same conversation without a browser, which is what
 makes the payload shape checkable on a machine with no dashboard open.
 

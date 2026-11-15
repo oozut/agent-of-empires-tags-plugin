@@ -16,19 +16,16 @@ description = "Report the header set this install would send, without starting a
 
 # One pane, not three: this session, its project's defaults and the AoE-wide
 # ones are tabs inside it, so the right panel carries a single LLM Tags entry.
+#
+# And no page: the host draws a button in the dashboard header for every page a
+# plugin declares, so a page here would be a second LLM Tags entry in the header
+# with nothing to do that the pane cannot — the tag set has one home, the pane.
+# The literal token and the harness extension approvals, which only a page could
+# offer, stay on the command line (`aoe-llm-tags tag --token`, `extension`).
 
 [[ui]]
 slot = "pane"
 id = "llm_tags"
-
-# Session details: the literal token and the harness extension approvals, plus
-# a JSON viewer/editor for the same values the panels show. The page cannot
-# write the global settings.
-[[ui]]
-slot = "page"
-id = "tags"
-title = "LLM Tags"
-entry = "ui/tags.html"
 
 [[settings]]
 key = "tags"
@@ -410,9 +407,8 @@ aoe-llm-tags extension enable pi --print   # read it, note the sha256
 aoe-llm-tags extension enable pi --accept <sha256>
 ```
 
-The same disclosure and its checkbox are on this plugin's page, which is the easier place to read
-it; the page echoes the file's sha256 back, so a page left open across a plugin update approves
-nothing. The approval is durable: a plugin update, a reinstall, a harness upgrade or a config edit
+`--print` writes the disclosure and nothing else, and `--accept` needs the digest that same
+disclosure printed, so a transcript of an older build approves nothing. The approval is durable: a plugin update, a reinstall, a harness upgrade or a config edit
 leaves it working. Only three things end it — a change to the bytes of any file in the set, a
 bumped disclosure version, or `aoe-llm-tags extension disable <harness>`. Nothing is installed until both halves are in
 place, and `doctor` prints one line per harness either way.

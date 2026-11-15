@@ -14,7 +14,7 @@ path), and **AoE**. Clicking a tab switches the pane to that level; the buttons 
 nothing else, so the word is what says which level a tab is — each one's tooltip says what that
 level currently holds, and the footer repeats it for the open one. A tag row names where its
 value came from (`this session`, `project`, `AoE`, `settings`), and the two upper tabs can add,
-hide, restore, copy the session's set upward, or clear that level. The session's detail page adds a JSON viewer/editor for the same
+hide, restore, copy the session's set upward, or clear that level.
 values, so a whole object can be changed in place without writing one row at a time.
 
 Every write stays in the plugin's own files: a session's edits in
@@ -229,9 +229,9 @@ Plan (what ships when, and with which values):
 | `aoe-plugin.toml` | Manifest: id `dev.oozut.llm-tags`, `api_version = 18` (`aoe_version = ">=1.21.0, <2.0.0"`), `capabilities = ["runtime.worker", "session.read"]` (no `net`: the plugin hands the harness a header and never opens a connection itself), one `status` command, `[runtime]` + source-install build step |
 | `Cargo.toml` | One library (`llm_tags`) and two binaries; release profile is LTO + stripped |
 | `src/main.rs` | `aoe-llm-tags`: the CLI surface — `hook` / `value` / `doctor` / `setup` / `classify` / `tag` / `verify` (stub) |
-| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the one LLM Tags pane with its session/project/AoE tabs and the detail page, and applies the tabs' session and level edits) |
+| `src/worker_main.rs` | `aoe-llm-tags-worker`: the stdio JSON-RPC worker the plugin host launches (answers `status`, pushes the one LLM Tags pane with its session/project/AoE tabs, and applies the tabs' session and level edits) |
 | `src/resolver.rs` | Session facts → template fields → rendered values: rule matching, env-name derivation, the 2 s row query, the one `snapshot()` every verb shares |
-| `src/session_tags.rs`, `ui/tags.html` | A session's own edits (`overrides.toml`: add, drop, a literal token) and the detail page that writes the token and edits the stored values as JSON at the chosen level |
+| `src/session_tags.rs` | A session's own edits (`overrides.toml`: add, drop, a literal token), applied inside `snapshot` so no two verbs can disagree |
 | `src/levels.rs` | The two levels above a session, in `<app dir>/tags.toml`: a project's defaults and the AoE-wide ones, each an overlay of entries and hides; the settings are never rewritten |
 | `src/activity.rs` | The activity vocabulary as data: a *family* of activities (label, lucide icon, tone, `when` sentence), the built-in `default` of nine phases, the precedence built-in → settings → repository file, and the family a session pins at launch |
 | `src/registry.rs` | A launch's read of the host's `projects.json` (global, then the profile's): `activity_family` and `activity_families` are `per_project`, and a launch hook has no host RPC |
@@ -240,9 +240,8 @@ Plan (what ships when, and with which values):
 | `src/adapters.rs`, `adapters.toml` | Per-harness header mechanism, as data; the file is embedded, so an install without it still works |
 | `src/setup.rs`, `src/doctor.rs`, `src/cli.rs` | The printed mapping/lines, the checks, and the clap surface with its exit codes |
 | `tools/build-worker.sh` | The source-install build step (finds cargo, builds, installs both binaries into `bin/`) |
-| `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane and page payloads — and a click's edit — can be checked without a browser |
+| `tools/drive-worker.py` | Plays the host side of the worker's stdio conversation, so the pane payload — and a click's edit — can be checked without a browser |
 | `tools/verify-install.sh` | Checks one installed copy against the host it is installed in: the binaries and artefacts, the grant, both hook lines against `setup --print`, a host launch and a sandboxed one, and `doctor`. Prints `PASS`/`FAIL` per line |
-| `tools/check-page.mjs` | Runs the page's script against a stub DOM and a stub dashboard (needs `node`), which is how the bridge handshake is checked: a page can pass every static check and still throw the moment it runs |
 | `tools/probe-sandbox.sh` | Measures the delivery mechanisms inside the real sandbox image, one container per mechanism plus one real `aoe add --sandbox` session, so "does the tag reach a sandboxed harness?" is answered by a request at a sink and not by reading aoe's source (evidence: `docs/harness-evidence/sandbox-pi.json`) |
 | `.github/workflows/ci.yml` | fmt + clippy + tests on every push; the linux/macos × x86_64/aarch64 asset matrix on a `v*` tag |
 | `tests/` | CLI, resolver and `doctor` tests behind a sandboxed app dir and a fake `aoe`; no aoe and no network needed |
