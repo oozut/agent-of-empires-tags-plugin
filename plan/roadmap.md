@@ -85,3 +85,18 @@ and in the disclosure.
 
 The remaining upstream option is unchanged: aoe itself could expose a per-request hook
 (`plan/milestones.md` §Upstream). If it does, this extension is the migration path, not a dead end.
+
+## 6. A tag board — in a pane, not a page
+
+**What was planned:** an M3 "page board" (`slot = "page"`, `llm_tags_page`) drawing spend or
+request count per tag, unseen headers and sessions with no spend (`plan/m3.md`).
+
+**Decided against, 2026-11-15:** the plugin now declares **one pane and no page**. The host draws a
+dashboard-header button for every declared `page` — with the generic puzzle piece when the page
+names no icon — so a page is a second LLM Tags entry in the header, and the surface it offered (a
+JSON view of the stored values, the literal token, the extension approvals) is either in the pane
+already or on the CLI (`aoe-llm-tags tag`, `extension enable|disable`). `tests/docs.rs`
+(`the_plugin_declares_a_pane_and_no_page`) fails if a manifest grows a `page` back.
+
+**If a board comes back:** it is a fourth tab in the existing pane, or a second pane — never a
+page. The pane vocabulary has no table kind, so it would be `bar`/`sparkline` rows plus a `note`.

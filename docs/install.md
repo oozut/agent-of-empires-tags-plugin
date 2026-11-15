@@ -254,12 +254,11 @@ already have an `APPEND_SYSTEM.md` there it is *appended to*, not replaced; a ma
 same name that carries no plugin marker is left alone.
 
 Only `pi` re-reads the value per request, so only `pi` shows an activity change mid-session. For
-every other harness the change reaches the agent at the next launch; the pane and the page change
-at once either way.
+every other harness the change reaches the agent at the next launch; the pane changes at once
+either way.
 
-The plugin's page (Dashboard → plugins → LLM Tags) shows the same disclosure for each harness, with
-a checkbox and an enable button — the page sends back the digest it displayed, so a stale page
-approves nothing. On the command line:
+The disclosure is granted from the command line — there is no page to tick a box on, and the
+`--accept` digest is what makes an approval specific to the bytes it was read against:
 
 ```sh
 "<install>/bin/aoe-llm-tags" extension enable pi --print     # the disclosure + the sha256

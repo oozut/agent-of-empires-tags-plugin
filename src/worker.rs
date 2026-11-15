@@ -45,9 +45,9 @@ pub fn run() -> i32 {
     };
     // Publish before reading anything: a spawned worker owns a fresh UI generation,
     // so the host has already dropped whatever this plugin showed before the
-    // reload. A worker that waits for the next host event leaves its pane — and
-    // the page button in the header — missing until some session happens to change
-    // state, which for an idle workspace is never.
+    // reload. A worker that waits for the next host event leaves its pane missing
+    // until some session happens to change state, which for an idle workspace is
+    // never.
     host.publish_state();
     while host.process_one() {}
     0
@@ -139,10 +139,10 @@ impl Host {
     }
 
     fn handle_notification(&mut self, method: &str, params: &serde_json::Value) {
-        // A pane button and a page form both arrive here: the host forwards the
-        // block's `method` **verbatim** and merges in the authoritative
-        // `session_id`. The call has no reply, so the edit is applied and the
-        // state re-pushed, which is what clears the clicked control's spinner.
+        // A pane button arrives here: the host forwards the block's `method`
+        // **verbatim** and merges in the authoritative `session_id`. The call has
+        // no reply, so the edit is applied and the state re-pushed, which is what
+        // clears the clicked control's spinner.
         if EDITS.contains(&method) {
             self.apply_session_edit(method, params);
         }
@@ -150,90 +150,11 @@ impl Host {
         self.publish_state();
     }
 
-    /// The page's checkbox: the approval a receipt records.
-    ///
-    /// The page echoes the digest it displayed, so approving is approving *those*
-    /// bytes — exactly what `--accept` does on the command line. Anything else
-    /// writes nothing, which is the only safe way for a stale page to behave.
-    fn apply_extension_edit(&mut self, command: &str, params: &serde_json::Value) {
-        let Some(harness) = params.get("harness").and_then(serde_json::Value::as_str) else {
-            eprintln!("{command}: no harness named; refusing to guess one");
-            return;
-        };
-        let app_dir = match crate::settings::app_dir(&self.env) {
-            Ok(dir) => dir,
-            Err(message) => {
-                eprintln!("{command} for {harness}: {message}");
-                return;
-            }
-        };
-        let (adapters, _) = crate::adapters::load(None);
-        let Some(adapter) = crate::adapters::find(&adapters, harness) else {
-            eprintln!("{command}: {harness} is not a harness this build knows");
-            return;
-        };
-        let home = crate::harness_extension::home();
-        let result = if command == "extension.disable" {
-            crate::harness_extension::revoke(&app_dir, home.as_deref(), adapter).map(|revoked| {
-                // The page has no terminal: a copy left to AoE is reported here,
-                // because a user who clicks disable and then finds the directory
-                // still there deserves the reason.
-                for (path, why) in &revoked.kept {
-                    eprintln!("kept: {} ({why})", path.display());
-                }
-            })
-        } else {
-            let Some(carrier) = crate::harness_extension::carrier(adapter) else {
-                eprintln!(
-                    "{command} for {harness}: {}",
-                    crate::harness_extension::Refusal::NoDestination {
-                        harness: adapter.agent.clone()
-                    }
-                    .detail()
-                );
-                return;
-            };
-            let accepted = params
-                .get("accept")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or_default();
-            match crate::harness_extension::bundle_sha(adapter, carrier) {
-                Ok(shipped) if accepted.eq_ignore_ascii_case(&shipped) => {
-                    // The page names no harness version, and the receipt's copy of
-                    // it is informational, so it stays empty rather than guessed.
-                    crate::harness_extension::accept(
-                        &app_dir,
-                        home.as_deref(),
-                        adapter,
-                        &shipped,
-                        "",
-                    )
-                    .map(|_| ())
-                }
-                Ok(shipped) => Err(format!(
-                    "{harness}: that is not the file this build ships (sha256 {shipped})"
-                )),
-                Err(refusal) => Err(refusal.detail()),
-            }
-        };
-        if let Err(why) = result {
-            eprintln!("{command} for {harness}: {why}");
-        }
-    }
-
-    /// One edit from the pane or the page, written to that session's own file.
+    /// One edit from the pane, written to that session's own file.
     ///
     /// Every arm is a per-session write: the global settings are never touched,
     /// so two sessions cannot collide even when both are edited at once.
     fn apply_session_edit(&mut self, command: &str, params: &serde_json::Value) {
-        // Approving an extension is not a session edit: it is one machine-wide
-        // decision, so it is taken here before the session is looked at (the host
-        // merges a `session_id` into every page action, and this one has no use
-        // for it).
-        if command == "extension.enable" || command == "extension.disable" {
-            self.apply_extension_edit(command, params);
-            return;
-        }
         // A level edit is not tied to one session; the pane names the level and,
         // for a project, the path. The host still merges a `session_id` into the
         // action, so the path can be recovered from it when the pane omitted it.
@@ -282,14 +203,6 @@ impl Host {
                     .unwrap_or(true);
                 crate::session_tags::set_git(&app_dir, session, enabled)
             }
-            "token.set" => {
-                let token = params
-                    .get("token")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                crate::session_tags::set_token(&app_dir, session, token)
-            }
-            "token.clear" => crate::session_tags::set_token(&app_dir, session, ""),
             // A tick box: one action writes (or removes) the whole sample set,
             // through the same per-session file every other edit lands in.
             "tag.preset" => {
@@ -485,9 +398,9 @@ impl Host {
         }
     }
 
-    /// Push every surface the plugin renders: the one pane and the editor page.
-    /// The session header carries no badge — a tag's own home is the pane, and a
-    /// second copy in the row would be one more place to keep in step.
+    /// Push the one surface the plugin renders: the pane. Neither the session
+    /// header nor the dashboard header carries a second copy — a tag's own home is
+    /// the pane, and another would be one more place to keep in step.
     ///
     /// Called on every host event and after every edit, so a click never leaves a
     /// stale pane behind. Everything a surface shows is derived from the same
@@ -584,7 +497,6 @@ impl Host {
         // The adapter rows are how a session's tool becomes a delivery and an
         // extension decision; loaded once, because every session needs them.
         let adapters = crate::adapters::load(None).0;
-        let mut page_sessions: Vec<serde_json::Value> = Vec::new();
 
         for session in sessions {
             let id = session
@@ -681,8 +593,8 @@ impl Host {
                 }
             }
             // What this session adds on top of the settings, and what it drops:
-            // the pane and the page label each tag with where it came from, so a
-            // "make it platform for this one session" reads as exactly that.
+            // the pane labels each tag with where it came from, so a "make it
+            // platform for this one session" reads as exactly that.
             let (edits, edit_warnings) = match &app_dir {
                 Ok(app_dir) => crate::session_tags::load(app_dir, &id),
                 // No app dir means no session file to read: say so once per
@@ -711,8 +623,8 @@ impl Host {
             let mut tag_rows: Vec<serde_json::Value> = Vec::new();
             // The pane answers "what is this session sending", so it shows the
             // rendered tag set — `git.branch = git-tags`, not the reference it was
-            // written as. The editor page below shows the stored entry instead,
-            // because that is what a user edits.
+            // written as. The stored form is in the session's own file, which
+            // `aoe-llm-tags tag --show` reads back.
             // The family this session was launched with, not the one the settings
             // hold now: an edited family applies to the next session, and the pane
             // must not relabel a running one.
@@ -1012,12 +924,6 @@ impl Host {
                 "collapsed": false,
                 "children": activity_children,
             }));
-            session_blocks.push(serde_json::json!({"kind": "divider"}));
-            session_blocks.push(serde_json::json!({
-                "kind": "action",
-                "label": "Edit tags as JSON",
-                "href": EDITOR_PAGE,
-            }));
             session_blocks.push(serde_json::json!({
                 "kind": "note",
                 "text": "The session tab overrides this one session. The project and AoE tabs set defaults for everything below them.",
@@ -1109,129 +1015,14 @@ impl Host {
                     }
                 }),
             );
-
-            page_sessions.push(serde_json::json!({
-                "id": id,
-                "title": title,
-                "tool": tool,
-                "targets": snap.resolved.iter().map(|item| serde_json::json!({
-                    "name": item.header,
-                    "env_var": item.env_var,
-                    "value": unpublished(&item.value, &edits.token),
-                })).collect::<Vec<_>>(),
-                "tags": snap.settings.tags.iter().filter_map(|raw| {
-                    let tag = resolver::Tag::parse(raw).ok()?;
-                    let origin = if session_keys.contains(&tag.key) {
-                        "session"
-                    } else if project_keys.contains(&tag.key) {
-                        "project"
-                    } else if aoe_keys.contains(&tag.key) {
-                        "aoe"
-                    } else {
-                        "config"
-                    };
-                    Some(serde_json::json!({
-                        "key": tag.key,
-                        "value": tag.value,
-                        "origin": origin,
-                    }))
-                }).collect::<Vec<_>>(),
-                "unset": edits.unset,
-                // The JSON viewer's two halves: the effective map is what the
-                // targets will render, and each level's own map is what that
-                // level's file says. A `null` means "hidden here", not "unset".
-                "effective": snap.tags.iter().map(|tag| {
-                    (tag.key.clone(), tag.value.clone())
-                }).collect::<serde_json::Map<String, Value>>(),
-                "own": values_object(&edits.tags, &edits.unset),
-                "levels": {
-                    "aoe": level_values("", &aoe_edits),
-                    "project": if path.is_empty() {
-                        Value::Null
-                    } else {
-                        level_values(&path, &project_edits)
-                    },
-                },
-                // Never the token itself: the page is a read-only surface for a
-                // value the host keeps, so it learns that one is set and nothing
-                // about what it says. The CLI (`tag --show`) is where it is read.
-                "token_set": !edits.token.is_empty(),
-                // The activity is edited in the pane and in the JSON viewer, so
-                // the page is told the family but never the token.
-                "activity": activity.map(|now| serde_json::json!({
-                    "key": now.key,
-                    "label": now.label,
-                    "icon": now.icon,
-                    "tone": now.tone,
-                })),
-                "path": match &app_dir {
-                    Ok(app_dir) => crate::session_tags::path(app_dir, &id)
-                        .display()
-                        .to_string(),
-                    Err(_) => String::new(),
-                },
-            }));
         }
-
-        // The page's dropdown is fed from the same catalogue the `references`
-        // verb prints, so a reference can never be insertable-but-unresolvable.
-        let references: Vec<serde_json::Value> = resolver::reference_catalog()
-            .iter()
-            .map(|item| {
-                serde_json::json!({
-                    "name": item.name,
-                    "reference": format!("{{{}}}", item.name),
-                    "group": item.group,
-                    "description": item.description,
-                })
-            })
-            .collect();
-        let presets: Vec<serde_json::Value> = crate::session_tags::PRESETS
-            .iter()
-            .map(|(id, tags)| {
-                serde_json::json!({
-                    "id": id,
-                    "label": match *id {
-                        "git" => "Add standard git information",
-                        other => other,
-                    },
-                    "tags": tags,
-                })
-            })
-            .collect();
-        let intent: Vec<String> = harness_extension_val
-            .as_ref()
-            .and_then(|value| value.as_array())
-            .map(|names| {
-                names
-                    .iter()
-                    .filter_map(|name| name.as_str())
-                    .map(|name| name.trim().to_ascii_lowercase())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let extensions = extension_rows(&adapters, &intent, app_dir.as_deref().ok());
-        let _ = self.call_host(
-            "ui.state.set",
-            serde_json::json!({
-                "slot": "page",
-                "id": "tags",
-                "payload": {
-                    "sessions": page_sessions,
-                    "references": references,
-                    "presets": presets,
-                    "extensions": extensions,
-                    "page": EDITOR_PAGE,
-                }
-            }),
-        );
     }
 }
 
-/// The worker methods a pane or page may fire. The host forwards a block's
+/// The worker methods the pane may fire. The host forwards a block's
 /// `method` verbatim, so these are whole names — not the trailing segment that
 /// names a host command (`plugin.<id>.status`).
-pub const EDITS: [&str; 17] = [
+pub const EDITS: [&str; 13] = [
     // Not an edit: it only moves the one pane between its three tabs, and goes
     // through the same fire-and-publish path so a click re-renders.
     "pane.tab",
@@ -1246,14 +1037,7 @@ pub const EDITS: [&str; 17] = [
     "tag.level.replace",
     "tag.level.reset",
     "tag.level.git",
-    "token.set",
-    "token.clear",
     "tags.reset",
-    // Machine-wide, not session-wide: the page is where a user reads the
-    // disclosure and approves it, and the host merges a `session_id` into every
-    // page action, which these two simply ignore.
-    "extension.enable",
-    "extension.disable",
 ];
 
 /// The one pane's tabs, left to right: this session, this project's defaults and
@@ -1509,12 +1293,6 @@ fn level_blocks(
         "method": "tag.level.reset",
         "params": level_params(level, project_path, serde_json::json!({})),
     }));
-    blocks.push(serde_json::json!({"kind": "divider"}));
-    blocks.push(serde_json::json!({
-        "kind": "action",
-        "label": "Edit tags as JSON",
-        "href": EDITOR_PAGE,
-    }));
     blocks.push(serde_json::json!({
         "kind": "note",
         "text": if level == crate::levels::PROJECT {
@@ -1541,31 +1319,6 @@ fn owned_keys(edits: &crate::levels::EditSet) -> Vec<String> {
     }
     keys
 }
-
-fn values_object(tags: &[String], unset: &[String]) -> serde_json::Map<String, Value> {
-    let mut values = serde_json::Map::new();
-    for raw in tags {
-        if let Ok(tag) = resolver::Tag::parse(raw) {
-            values.insert(tag.key, tag.value);
-        }
-    }
-    for key in unset {
-        values.insert(key.clone(), Value::Null);
-    }
-    values
-}
-
-fn level_values(path: &str, edits: &crate::levels::EditSet) -> Value {
-    serde_json::json!({
-        "path": path,
-        "values": values_object(&edits.tags, &edits.unset),
-        "git_tags": edits.git_tags,
-    })
-}
-
-/// The editor page's route: the dashboard serves it from the manifest's
-/// `entry`, so a relative link is the only portable spelling.
-const EDITOR_PAGE: &str = "/plugins/dev.oozut.llm-tags/tags";
 
 /// A value for a pane row: long enough to recognise, short enough not to push
 /// the payload past its 64 KiB cap on a wide session list.
@@ -1596,9 +1349,9 @@ fn elide(value: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-/// The tag entry a pane/page edit names.
+/// The tag entry a pane edit names.
 ///
-/// A page sends `key` and `value` apart; a pane row sends a whole entry. A value
+/// A row sends `key` and `value` apart, or a whole entry. A value
 /// is written with `:=` and JSON so a value containing a colon (`https://…`) or a
 /// leading space survives the round trip unambiguously.
 fn tag_entry(params: &serde_json::Value) -> Option<String> {
@@ -1642,91 +1395,6 @@ pub fn handle_line(line: &str, env: &Env) -> Option<Value> {
             },
         }),
     })
-}
-
-/// What this install would send right now, for the `status` command.
-/// What the page shows for each harness that could take an extension: whether it
-/// was asked for, whether it was approved, and the exact file and wording that
-/// approval covers. The page never decides anything — it echoes the digest back.
-fn extension_rows(
-    adapters: &[crate::adapters::Adapter],
-    intent: &[String],
-    app_dir: Option<&std::path::Path>,
-) -> Vec<Value> {
-    let Some(app_dir) = app_dir else {
-        return Vec::new();
-    };
-    let (receipts, _) = crate::harness_extension::receipts(app_dir);
-    adapters
-        .iter()
-        .filter(|adapter| {
-            crate::harness_extension::carrier(adapter).is_some()
-                || intent.iter().any(|name| name == &adapter.agent)
-        })
-        .map(|adapter| {
-            let harness = adapter.agent.clone();
-            let requested = intent.iter().any(|name| name == &harness);
-            let receipt = receipts.get(&harness);
-            let carrier = crate::harness_extension::carrier(adapter);
-            let sha256 = carrier
-                .and_then(|carrier| crate::harness_extension::bundle_sha(adapter, carrier).ok());
-            // One verdict, the same one the launch and `doctor` use; the page only
-            // renders it, so the three can never disagree.
-            let verdict = crate::harness_extension::plan(
-                adapter,
-                intent,
-                app_dir,
-                "",
-                crate::harness_extension::home().as_deref(),
-            );
-            let (state, detail) = match &verdict {
-                Ok(_) => ("ok".to_string(), String::new()),
-                Err(refusal) => (refusal.reason().to_string(), refusal.detail()),
-            };
-            let disclosure = match (&verdict, &sha256) {
-                (Ok(plan), _) => crate::harness_extension::disclosure(plan, ""),
-                // Not allowed (or not asked for yet), so the page shows the same
-                // text the approval would cover if the user goes ahead.
-                _ => crate::harness_extension::proposal(
-                    adapter,
-                    app_dir,
-                    "",
-                    crate::harness_extension::home().as_deref(),
-                )
-                .map(|plan| {
-                    crate::harness_extension::disclosure(&plan, "")
-                        .lines()
-                        .skip(3)
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default(),
-            };
-            serde_json::json!({
-                "harness": harness,
-                "requested": requested,
-                "approved": receipt.is_some(),
-                "state": state,
-                "detail": detail,
-                "sha256": sha256,
-                // What the approval covers, spelled the way the disclosure
-                // spells it, and where it lands: a session copy or the user's
-                // own config.
-                "scope": carrier.map(|carrier| carrier.name()).unwrap_or("none"),
-                "files": carrier
-                    .map(|carrier| {
-                        crate::harness_extension::bundle(adapter, carrier)
-                            .parts()
-                            .map(|placement| placement.display.clone())
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default(),
-                "disclosure_version": crate::harness_extension::DISCLOSURE_VERSION,
-                "accepted_at": receipt.map(|receipt| receipt.accepted_at.clone()),
-                "disclosure": disclosure,
-            })
-        })
-        .collect()
 }
 
 pub fn status(env: &Env) -> Value {
@@ -1809,7 +1477,7 @@ mod tests {
 
     #[test]
     fn an_edit_names_a_tag_the_way_the_settings_would() {
-        // A page sends key and value apart; the value is written as JSON so a
+        // A row sends key and value apart; the value is written as JSON so a
         // colon in it (`https://…`) does not turn into a second separator.
         assert_eq!(
             tag_entry(&json!({"key": "team", "value": "platform"})).as_deref(),

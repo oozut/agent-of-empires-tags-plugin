@@ -247,7 +247,7 @@ pub enum Refusal {
 }
 
 impl Refusal {
-    /// A stable machine-readable reason (`--json`, tests, the page).
+    /// A stable machine-readable reason (`--json`, tests, `doctor`).
     pub fn reason(&self) -> &'static str {
         match self {
             Refusal::NoArtifact { .. } => "no_artifact",
@@ -1401,8 +1401,7 @@ pub fn disclosure(plan: &Plan, harness_version: &str) -> String {
                  socket; change a request that is already running; or write anywhere except the \
                  files\nabove{only_managed}.\n\
                  Because {harness} has no in-process request hook here, an activity change \
-                 reaches\n{harness} at the next launch. The badge, the pane and the page change at \
-                 once.\n\
+                 reaches\n{harness} at the next launch. The pane changes at once.\n\
                  To undo: run `aoe-llm-tags extension disable {harness}`, which {undo}\n\
                  and set `{SETTING} = []` so new sessions do not use it.\n\
                  \n\

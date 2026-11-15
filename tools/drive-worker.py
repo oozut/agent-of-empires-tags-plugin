@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Drive the plugin worker the way the daemon does, and show what it pushes.
 
-The dashboard has two surfaces the worker feeds — the session pane and the LLM
-Tags page — and an edit path that runs the other way: pane row / page form →
-`POST /api/plugins/<id>/action` → a JSON-RPC notification to the worker. Neither
-surface needs a browser to check: the worker is a stdio peer, and this script
-plays the host side of that conversation (answering `sessions.list` and
-`config.get`, recording `ui.state.set`), so the exact payloads the dashboard
-would render can be read as JSON.
+The dashboard has one surface the worker feeds — the session pane — and an edit
+path that runs the other way: a pane row → `POST /api/plugins/<id>/action` → a
+JSON-RPC notification to the worker. Neither side needs a browser to check: the
+worker is a stdio peer, and this script plays the host side of that conversation
+(answering `sessions.list` and `config.get`, recording `ui.state.set`), so the
+exact payloads the dashboard would render can be read as JSON.
 
 Usage:
 
@@ -17,7 +16,7 @@ Usage:
 
 `--edit` sends a worker method the way a click does: the method name **verbatim**
 (no `plugin.<id>.` prefix — the host forwards the block's `method` as written) and
-the session id the page would pass, which the host overwrites with the one it
+the session id a pane row would pass, which the host overwrites with the one it
 trusts.
 
 The session list comes from a real `aoe list --json`, but the config tree can be
@@ -50,15 +49,15 @@ def parse_args():
     )
     parser.add_argument(
         "--slot",
-        choices=["pane", "page"],
+        choices=["pane"],
         help="print only this slot",
     )
     parser.add_argument("--limit", type=int, default=4000, help="bytes per payload")
     parser.add_argument(
         "--edit",
         metavar="METHOD",
-        help="also fire this worker method (tag.set, tag.remove, token.set, "
-        "token.clear, tags.reset)",
+        help="also fire this worker method (pane.tab, tag.set, tag.remove, "
+        "tag.level.unset, tags.reset)",
     )
     parser.add_argument(
         "--param",

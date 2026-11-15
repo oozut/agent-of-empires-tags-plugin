@@ -1,10 +1,10 @@
 # What reaches a session: every harness, both substrates
 
 A session can get four separate things, and each is separately true or false. This page says
-which, per harness, for a host launch and for a sandboxed one. It exists because the page
-(`ui/tags.html`) has to say something for every harness, and "installed" is a claim: a row that
-ships a skill no loader opens, or a carrier a container cannot read, must not look the same as a
-row that works.
+which, per harness, for a host launch and for a sandboxed one. It exists because `status`,
+`doctor` and `aoe-llm-tags extension status` have to say something for every harness, and
+"installed" is a claim: a row that ships a skill no loader opens, or a carrier a container cannot
+read, must not look the same as a row that works.
 
 | Thing | What it is | Where it comes from |
 |---|---|---|
@@ -112,11 +112,11 @@ reminder stays on the host.
 **`openclaw` and `cline`** have no destination at all: openclaw has a channel but no row in aoe's
 seeding list and no carrier scope, cline has no write path and expands nothing. Both are refused
 by name (`no_destination`) rather than given an invented path, and both appear in `status`,
-`doctor` and the page with that reason.
+`doctor` and `extension status` with that reason.
 
-## What the page may say
+## What a row may say
 
-The page already carries `scope` and the file list per row. Three states cover every cell, and
+`extension status` already carries `scope` and the file list per row. Three states cover every cell, and
 each has one sentence that is true of the whole row:
 
 | state | when | label | tooltip |
@@ -125,7 +125,7 @@ each has one sentence that is true of the whole row:
 | `installed-sandbox` | `user` scope, carriers land in a seeded directory | “Installed in your own `<harness>` config” | “`<files>`. aoe copies this into a sandboxed session's container, so the skill and the reminder arrive there too.” |
 | `installed-host-only` | `user` scope, carriers land in a directory aoe does not seed (`opencode`, `droid`) | “Installed in your own `<harness>` config” | “`<files>`. A sandboxed launch does not get these: aoe seeds only `<list>` for this harness.” |
 
-Three things the page must never do, because each is a claim the code does not back:
+Three things a row must never do, because each is a claim the code does not back:
 
 1. **Show a per-request badge for a sandboxed row.** No harness has one there.
 2. **Say “installed” for a harness whose carriers are unreachable in the substrate the session
