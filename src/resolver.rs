@@ -50,6 +50,8 @@ pub const AOE_FALLBACK: &str = "/usr/local/bin/aoe";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub const SESSION_TAGGING_MODES: [&str; 3] = ["none", "short_id", "full_id"];
+pub const DEFAULT_ACTIVITY_BADGE: &str = "both";
+pub const ACTIVITY_BADGE_MODES: [&str; 4] = ["off", "icon", "text", "both"];
 pub const MATCH_KINDS_M0: [&str; 2] = ["project", "manual"];
 pub const MATCH_KINDS_M1: [&str; 3] = ["group", "tool", "title_regex"];
 
@@ -312,6 +314,10 @@ pub struct Settings {
     pub activity_file: String,
     /// That file, once the project path is known; `None` means "not read".
     pub activity_repo: Option<toml::Table>,
+    /// How much of the activity the session row's flag carries
+    /// (`activity_badge`): `off`, `icon`, `text` or `both`. A display choice
+    /// only — it never changes what a session sends.
+    pub activity_badge: String,
     pub warnings: Vec<String>,
 }
 
@@ -331,6 +337,7 @@ impl Default for Settings {
             activity_families: Vec::new(),
             activity_file: crate::activity::DEFAULT_FILE.to_string(),
             activity_repo: None,
+            activity_badge: DEFAULT_ACTIVITY_BADGE.to_string(),
             warnings: Vec::new(),
         }
     }
@@ -360,6 +367,21 @@ impl Settings {
             tagging = DEFAULT_SESSION_TAGGING.to_string();
         }
 
+        let mut badge = table
+            .get("activity_badge")
+            .map(|value| match value.as_str() {
+                Some(text) => text.to_string(),
+                None => render_toml_scalar(value),
+            })
+            .unwrap_or_else(|| DEFAULT_ACTIVITY_BADGE.to_string());
+        if !ACTIVITY_BADGE_MODES.contains(&badge.as_str()) {
+            warns.push(format!(
+                "settings: activity_badge = {badge:?} is not one of {}; using {DEFAULT_ACTIVITY_BADGE}",
+                ACTIVITY_BADGE_MODES.join(", ")
+            ));
+            badge = DEFAULT_ACTIVITY_BADGE.to_string();
+        }
+
         let feature_tag = parse_feature_tag(table.get("feature_tag"), &mut warns);
 
         Self {
@@ -380,6 +402,7 @@ impl Settings {
             activity_families: parse_activity_families(table.get("activity_families"), &mut warns),
             activity_file: parse_activity_file(table.get("activity_file"), &mut warns),
             activity_repo: None,
+            activity_badge: badge,
             warnings: warns,
         }
     }
@@ -3037,6 +3060,7 @@ mod tests {
             activity_families: Vec::new(),
             activity_file: crate::activity::DEFAULT_FILE.to_string(),
             activity_repo: None,
+            activity_badge: DEFAULT_ACTIVITY_BADGE.to_string(),
             warnings: Vec::new(),
         }
     }
@@ -3465,6 +3489,7 @@ mod tests {
             activity_families: Vec::new(),
             activity_file: crate::activity::DEFAULT_FILE.to_string(),
             activity_repo: None,
+            activity_badge: DEFAULT_ACTIVITY_BADGE.to_string(),
             warnings: Vec::new(),
         }
     }

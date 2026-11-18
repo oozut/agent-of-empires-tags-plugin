@@ -23,6 +23,14 @@ description = "Report the header set this install would send, without starting a
 # The literal token and the harness extension approvals, which only a page could
 # offer, stay on the command line (`aoe-llm-tags tag --token`, `extension`).
 
+# The session row's flag: the activity this session is in, so the sidebar answers
+# "what is this session doing" without opening a pane. It is declared here and
+# rendered only when `activity_badge` says so; `off` pushes an empty badge, so a
+# user who wants the row clear gets a row with nothing in it, not a stale flag.
+[[ui]]
+slot = "row-badge"
+id = "llm_tags_badge"
+
 [[ui]]
 slot = "pane"
 id = "llm_tags"
@@ -374,6 +382,30 @@ family it names replaces that family whole, while families it does not name stil
 settings. A missing file is silent; a malformed one, one that leaves the project, or one over 64 KiB
 is a warning and no families, never a failed launch. It is read at launch, so an edit applies to the
 next session.
+"""
+
+[[settings]]
+key = "activity_badge"
+label = "Activity flag on the session row"
+type = "select"
+options = ["off", "icon", "text", "both"]
+default = "both"
+help = """
+What the flag beside a session's name in the left sidebar shows: the activity that session is in,
+so the row says what it is doing without opening the pane.
+
+* `both` — the activity's label and its icon (`testing` with a flask), the default.
+* `text` — the label only, for a row with no room for a glyph.
+* `icon` — the icon only, with the activity's key in the tooltip; the terminal UI draws the label
+  anyway, because it has no icons.
+* `off` — no flag; the pane's Activity section still names it, and the value still travels in the
+  tags a session sends.
+
+The flag carries the activity and nothing else: ordinary tags stay in the pane, where a row can say
+where each one came from. A session with no activity shows no flag, and a misspelt activity is
+reported in the worker log rather than dressed up with a guessed icon. This is a display choice for
+the whole machine — it changes nothing about what a session sends, and the project and AoE tabs do
+not have a copy of it.
 """
 
 [[settings]]

@@ -121,15 +121,17 @@ fn the_manifest_asks_only_for_the_capabilities_the_plugin_uses() {
     }
 }
 
-/// The plugin declares one surface and one only: a pane.
+/// The plugin declares two host-rendered surfaces, a row flag and a pane, and no
+/// page.
 ///
 /// The host draws a button in the dashboard header for every `page` a plugin
 /// declares — with the generic puzzle piece when the page names no icon — so a
 /// page here is a second LLM Tags entry in the header, offering what the pane
 /// already shows. A manifest that grows one back is a regression, not a feature,
-/// and this is the test that says so.
+/// and this is the test that says so. The row flag is not a page: it is the
+/// session's activity in the sidebar, and `activity_badge` can turn it off.
 #[test]
-fn the_plugin_declares_a_pane_and_no_page() {
+fn the_plugin_declares_a_row_flag_and_a_pane_and_no_page() {
     let manifest = std::fs::read_to_string("aoe-plugin.toml").expect("aoe-plugin.toml");
     let slots: Vec<String> = manifest
         .lines()
@@ -138,8 +140,8 @@ fn the_plugin_declares_a_pane_and_no_page() {
         .collect();
     assert_eq!(
         slots,
-        vec!["pane".to_string()],
-        "the manifest declares something other than the one pane"
+        vec!["row-badge".to_string(), "pane".to_string()],
+        "the manifest declares something other than the row flag and the pane"
     );
     assert!(
         !manifest.contains("entry = "),
